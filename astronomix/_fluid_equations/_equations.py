@@ -79,6 +79,15 @@ def primitive_state_from_conserved(
     else:
         p = pressure_from_energy(E, rho, u, gamma)
 
+    # NOTE: no analogous branch for the grey two-moment CR model
+    # (registered_variables.cosmic_ray_e_active). That model tracks e_cr/F_cr
+    # as independent state rather than folding a CR pressure into this
+    # (gas-only) pressure/energy slot, so primitive <-> conserved recovery of
+    # the gas state is unaffected by it -- e_cr/F_cr fall through untouched,
+    # like any other independent registered row (see the "All other
+    # variables..." comment below, and cr_grey_fluid_equations.py's
+    # docstring).
+
     # Write the recovered pressure and velocities into the primitive state.
     primitive_state = conserved_state.at[registered_variables.pressure_index].set(p)
 
@@ -139,6 +148,9 @@ def conserved_state_from_primitive(
         E = total_energy_from_primitives_with_crs(primitive_state, registered_variables)
     else:
         E = total_energy_from_primitives(rho, u, p, gamma)
+
+    # NOTE: no analogous branch for the grey two-moment CR model here either
+    # -- see the matching NOTE in primitive_state_from_conserved above.
 
     conserved_state = primitive_state.at[registered_variables.pressure_index].set(E)
 

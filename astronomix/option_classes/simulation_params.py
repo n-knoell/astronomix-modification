@@ -17,6 +17,9 @@ import jax.numpy as jnp
 from astronomix._modules._cnn_mhd_corrector._cnn_mhd_corrector_options import CNNMHDconfig
 from astronomix._modules._cooling.cooling_options import CoolingParams
 from astronomix._modules._cosmic_rays.cosmic_ray_options import CosmicRayParams
+from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
+    CosmicRayGreyParams,
+)
 from astronomix._modules._nbody._nbody_options import NBodyParams
 from astronomix._modules._neural_net_force._neural_net_force_options import NeuralNetForceParams
 from astronomix._modules._stellar_wind.stellar_wind_options import WindParams
@@ -125,6 +128,10 @@ class SimulationParams(NamedTuple):
 
     #: Cosmic ray parameters
     cosmic_ray_params: CosmicRayParams = CosmicRayParams()
+
+    #: Grey two-moment cosmic-ray parameters (separate model, see
+    #: astronomix/_modules/_cosmic_rays_grey/DESIGN.md).
+    cosmic_ray_grey_params: CosmicRayGreyParams = CosmicRayGreyParams()
 
     #: The parameters of the N-body point-mass gravity solver.
     nbody_params: NBodyParams = NBodyParams()

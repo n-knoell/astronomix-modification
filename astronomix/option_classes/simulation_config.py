@@ -27,6 +27,9 @@ from astronomix._modules._cnn_mhd_corrector._cnn_mhd_corrector_options import (
 )
 from astronomix._modules._cooling.cooling_options import CoolingConfig
 from astronomix._modules._cosmic_rays.cosmic_ray_options import CosmicRayConfig
+from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
+    CosmicRayGreyConfig,
+)
 from astronomix._modules._nbody._nbody_options import NBodyConfig
 from astronomix._modules._neural_net_force._neural_net_force_options import (
     NeuralNetForceConfig,
@@ -633,6 +636,10 @@ class SimulationConfig(NamedTuple):
 
     #: Cosmic rays
     cosmic_ray_config: CosmicRayConfig = CosmicRayConfig()
+
+    #: Grey two-moment cosmic rays (separate model, see
+    #: astronomix/_modules/_cosmic_rays_grey/DESIGN.md).
+    cosmic_ray_grey_config: CosmicRayGreyConfig = CosmicRayGreyConfig()
 
     #: The configuration for the N-body point-mass gravity solver.
     nbody_config: NBodyConfig = NBodyConfig()

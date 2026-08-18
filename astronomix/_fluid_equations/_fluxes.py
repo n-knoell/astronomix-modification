@@ -28,6 +28,7 @@ from astronomix.variable_registry.registered_variables import AxisInfo, Register
 from astronomix._modules._cosmic_rays.cr_fluid_equations import (
     total_energy_from_primitives_with_crs,
 )
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_flux_terms
 from astronomix._fluid_equations._equations import (
     get_absolute_velocity,
     total_energy_from_primitives,
@@ -108,5 +109,41 @@ def _euler_flux(
 
     # Add the pressure to the momentum component in the flux direction.
     flux_vector = flux_vector.at[flux_direction_index].add(p)
+
+    # Grey two-moment cosmic rays (astronomix._modules._cosmic_rays_grey): unlike
+    # the cosmic_ray_n branch above, e_cr/F_cr are tracked as independent state
+    # (not folded into the gas total energy E). Their flux is not the generic
+    # u_n * q pass-through the multiplication above gives every other unlisted
+    # row (e_cr is transported by F_cr, not by the bulk velocity) -- so the
+    # e_cr/F_cr rows are overwritten (not added to) with the two-moment flux
+    # from grey_cr_flux_terms. See that module's DESIGN.md.
+    if registered_variables.cosmic_ray_e_active:
+        cr_flux = grey_cr_flux_terms(
+            primitive_state, gamma, config, registered_variables, flux_direction_index
+        )
+        flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].set(
+            cr_flux[registered_variables.cosmic_ray_e_index]
+        )
+        if config.dimensionality == 1:
+            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index].set(
+                cr_flux[registered_variables.cosmic_ray_flux_index]
+            )
+        elif config.dimensionality == 2:
+            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.x].set(
+                cr_flux[registered_variables.cosmic_ray_flux_index.x]
+            )
+            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.y].set(
+                cr_flux[registered_variables.cosmic_ray_flux_index.y]
+            )
+        elif config.dimensionality == 3:
+            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.x].set(
+                cr_flux[registered_variables.cosmic_ray_flux_index.x]
+            )
+            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.y].set(
+                cr_flux[registered_variables.cosmic_ray_flux_index.y]
+            )
+            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.z].set(
+                cr_flux[registered_variables.cosmic_ray_flux_index.z]
+            )
 
     return flux_vector

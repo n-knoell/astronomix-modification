@@ -236,6 +236,15 @@ def _iteration_level_updates(
                     params.minimum_pressure,
                 )
             )
+        if registered_variables.cosmic_ray_e_active:
+            primitive_state = primitive_state.at[
+                registered_variables.cosmic_ray_e_index
+            ].set(
+                jnp.maximum(
+                    primitive_state[registered_variables.cosmic_ray_e_index],
+                    params.cosmic_ray_grey_params.minimum_e_cr,
+                )
+            )
     elif config.positivity_config.per_step_mode == POSITIVITY_REDISTRIBUTE:
         forcing_already_runs_protection = (
             config.turbulent_forcing_config.turbulent_forcing

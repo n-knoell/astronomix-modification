@@ -32,6 +32,7 @@ from astronomix.option_classes.simulation_config import SimulationConfig
 
 # astronomix functions
 from astronomix._modules._cosmic_rays.cr_fluid_equations import speed_of_sound_crs
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
 from astronomix._stencil_operations._stencil_operations import _stencil_add
 from astronomix._fluid_equations._equations import (
     conserved_state_from_primitive,
@@ -84,6 +85,14 @@ def _hll_solver(
     else:
         c_L = speed_of_sound_crs(primitives_left, registered_variables)
         c_R = speed_of_sound_crs(primitives_right, registered_variables)
+
+    # Grey two-moment cosmic rays: a separate hyperbolic subsystem with its
+    # own (reduced free-streaming) characteristic speed, combined with the
+    # gas/old-CR-model wave speed as max(., .) rather than folded into one
+    # effective sound speed -- see cr_grey_transport.py's module docstring.
+    if registered_variables.cosmic_ray_e_active:
+        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, registered_variables))
+        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, registered_variables))
 
     # get the left and right states and fluxes
     fluxes_left = _euler_flux(
@@ -184,6 +193,14 @@ def _hllc_solver(
     else:
         c_L = speed_of_sound_crs(primitives_left, registered_variables)
         c_R = speed_of_sound_crs(primitives_right, registered_variables)
+
+    # Grey two-moment cosmic rays: a separate hyperbolic subsystem with its
+    # own (reduced free-streaming) characteristic speed, combined with the
+    # gas/old-CR-model wave speed as max(., .) rather than folded into one
+    # effective sound speed -- see cr_grey_transport.py's module docstring.
+    if registered_variables.cosmic_ray_e_active:
+        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, registered_variables))
+        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, registered_variables))
 
     # get the left and right states and fluxes
     F_L = _euler_flux(

@@ -40,6 +40,7 @@ from astronomix._modules._cosmic_rays.cr_fluid_equations import (
     gas_pressure_from_primitives_with_crs,
     speed_of_sound_crs,
 )
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
 
 
 # NOTE: these wave speeds are computed without the reconstruction. For the
@@ -91,6 +92,12 @@ def get_wave_speeds(
     else:
         c_L = speed_of_sound_crs(primitives_left, registered_variables)
         c_R = speed_of_sound_crs(primitives_right, registered_variables)
+
+    # Grey two-moment cosmic rays: combine with the CR-grey fast speed as
+    # max(., .), not folded in -- see hll.py's identical pattern.
+    if registered_variables.cosmic_ray_e_active:
+        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, registered_variables))
+        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, registered_variables))
 
     # A simple symmetric estimate of the maximum signal speed on either side of
     # the interface; the |u| + c form is sufficient for the time-step bound.

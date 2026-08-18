@@ -49,6 +49,11 @@ from astronomix._modules._cooling._cooling import update_pressure_by_cooling
 from astronomix._modules._cooling._simple_mixing_cooling import (
     update_pressure_by_cooling_mixing,
 )
+from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
+    cr_adiabatic_work_source,
+    cr_pressure_gradient_source,
+    cr_streaming_heating_source,
+)
 from astronomix._modules._gravity._gravity import (
     _compute_total_potential,
     _fd_gravity_source,
@@ -214,5 +219,34 @@ def _time_integrator_sources(
         source_term += fd_conduction_source(
             primitive_state, params, config, registered_variables
         ) * dt
+
+    # Grey two-moment cosmic-ray feedback (astronomix._modules._cosmic_rays_grey):
+    # -grad(P_cr) momentum coupling, adiabatic -P_cr * div(v) work, and
+    # streaming heating. registered_variables.cosmic_ray_e_active is only ever
+    # set by the FV branch of get_registered_variables (see that module's
+    # DESIGN.md "FD limitation"), so this is a no-op under FD for now.
+    if registered_variables.cosmic_ray_e_active:
+        cr_primitive_state = primitive_state_from_conserved(
+            conserved_state, gamma, config, registered_variables
+        )
+        source_term += (
+            cr_pressure_gradient_source(
+                cr_primitive_state, config, registered_variables, params
+            )
+            * dt
+        )
+        source_term += (
+            cr_adiabatic_work_source(
+                cr_primitive_state, config, registered_variables, params
+            )
+            * dt
+        )
+        if config.cosmic_ray_grey_config.streaming:
+            source_term += (
+                cr_streaming_heating_source(
+                    cr_primitive_state, config, registered_variables, params
+                )
+                * dt
+            )
 
     return source_term

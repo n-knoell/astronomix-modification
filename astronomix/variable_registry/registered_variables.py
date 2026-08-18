@@ -118,6 +118,15 @@ class RegisteredVariables(NamedTuple):
     cosmic_ray_n_index: int = -1
     cosmic_ray_n_active: bool = False
 
+    #: grey two-moment cosmic rays (astronomix._modules._cosmic_rays_grey), a
+    #: separate model from the simplified cosmic_ray_n above: e_cr and F_cr
+    #: are evolved as independent state rather than folded into the total
+    #: gas pressure. FV only for now -- see that module's DESIGN.md.
+    cosmic_ray_e_index: int = -1
+    cosmic_ray_e_active: bool = False
+    cosmic_ray_flux_index: Union[int, StaticIntVector] = -1
+    cosmic_ray_flux_active: bool = False
+
     # here you can add more variables
 
 
@@ -213,8 +222,53 @@ def get_registered_variables(config: SimulationConfig) -> RegisteredVariables:
             )
             registered_variables = registered_variables._replace(cosmic_ray_n_active=True)
 
+        # NOTE: CURRENTLY ONLY IMPLEMENTED FOR FINITE VOLUME MODE. e_cr is a
+        # scalar; F_cr has one component per spatial dimension, allocated the
+        # same way velocity_index is above.
+        if config.cosmic_ray_grey_config.grey_cosmic_rays:
+            registered_variables = registered_variables._replace(
+                cosmic_ray_e_index=registered_variables.num_vars
+            )
+            registered_variables = registered_variables._replace(
+                num_vars=registered_variables.num_vars + 1
+            )
+            registered_variables = registered_variables._replace(cosmic_ray_e_active=True)
+
+            flux_base = registered_variables.num_vars
+            if config.dimensionality == 1:
+                registered_variables = registered_variables._replace(
+                    cosmic_ray_flux_index=flux_base
+                )
+                registered_variables = registered_variables._replace(
+                    num_vars=registered_variables.num_vars + 1
+                )
+            elif config.dimensionality == 2:
+                registered_variables = registered_variables._replace(
+                    cosmic_ray_flux_index=StaticIntVector(flux_base, flux_base + 1, -1)
+                )
+                registered_variables = registered_variables._replace(
+                    num_vars=registered_variables.num_vars + 2
+                )
+            elif config.dimensionality == 3:
+                registered_variables = registered_variables._replace(
+                    cosmic_ray_flux_index=StaticIntVector(
+                        flux_base, flux_base + 1, flux_base + 2
+                    )
+                )
+                registered_variables = registered_variables._replace(
+                    num_vars=registered_variables.num_vars + 3
+                )
+            registered_variables = registered_variables._replace(cosmic_ray_flux_active=True)
+
 
     if config.solver_mode == FINITE_DIFFERENCE:
+
+        # NOTE: grey two-moment cosmic rays (cosmic_ray_e_index/
+        # cosmic_ray_flux_index) are not allocated here. The FD WENO
+        # reconstruction decomposes into characteristic fields against a
+        # hardcoded eigensystem (_eigen_hydro.py/_eigen_mhd.py) with no hook
+        # for extra registered scalars -- see
+        # astronomix/_modules/_cosmic_rays_grey/DESIGN.md ("FD limitation").
 
         if config.mhd:
 
