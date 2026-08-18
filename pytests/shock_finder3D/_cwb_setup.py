@@ -52,7 +52,9 @@ import astropy.constants as const
 from astropy import units as u
 
 # astronomix constants
-from astronomix import CARTESIAN, FINITE_VOLUME, HLLC, MINMOD
+from astronomix import CARTESIAN, FINITE_VOLUME, HLLC
+from astronomix.option_classes.simulation_config import MUSCL, SPLIT, MINMOD
+from astronomix import OPEN_BOUNDARY, FORWARDS
 
 # astronomix containers
 from astronomix import CodeUnits, SimulationConfig, SimulationParams
@@ -65,18 +67,32 @@ from astronomix import (
     get_registered_variables,
     time_integration,
 )
+from astronomix import (
+    CodeUnits,
+    WindParams,
+    SimulationConfig,
+    SimulationParams,
+    BoundarySettings,
+    BoundarySettings1D,
+    SnapshotSettings,
+)
 from astronomix.option_classes import EI, WindConfig, WindParams
+from astronomix.option_classes import NBodyConfig, NBodyParams, NGP
 
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
+
+from astronomix._modules._nbody._nbody import binary_starting_orbits_at_phase
 
 # ---- physical setup (see examples/stellar_wind/colliding_wind_binary.py) ----
 GAMMA = 5.0 / 3.0
 BOX_SIZE = 1.0
-SEPARATION = 0.3  # binary separation, in code units (box-centered coordinates)
+SEPARATION = 0.4  # binary separation, in code units (box-centered coordinates)
 
-STAR_MASS = 45 * u.M_sun  # equal for both stars -> mirror-symmetric collision
-MASS_LOSS_RATE = 7e-7 * u.M_sun / u.yr  # equal for both stars
-WIND_VELOCITY = 2000 * u.km / u.s  # equal for both stars
+# STAR_MASS = 45 * u.M_sun  # equal for both stars -> mirror-symmetric collision
+M1 = 50 * u.M_sun
+M2 = 40 * u.M_sun
+# MASS_LOSS_RATE = 7e-7 * u.M_sun / u.yr  # equal for both stars
+# WIND_VELOCITY = 2000 * u.km / u.s  # equal for both stars
 SEPARATION_PHYSICAL = 20 * u.au
 
 # warm neutral/ionized ambient medium (same values as the example script)
@@ -86,15 +102,23 @@ P_0 = 3e4 * u.K / u.cm**3 * const.k_B
 # code units: length set by the physical separation, mass by one star's mass,
 # velocity by the resulting Keplerian scale (matches CodeUnits usage in
 # colliding_wind_binary.py, though these stars do not orbit here).
-CODE_LENGTH = SEPARATION_PHYSICAL / SEPARATION
-CODE_MASS = STAR_MASS
-CODE_VELOCITY = np.sqrt(const.G * CODE_MASS / CODE_LENGTH).to(u.km / u.s)
-CODE_UNITS = CodeUnits(CODE_LENGTH, CODE_MASS, CODE_VELOCITY)
+# CODE_LENGTH = SEPARATION_PHYSICAL / SEPARATION
+# CODE_MASS = M1 # STAR_MASS
+# CODE_VELOCITY = np.sqrt(const.G * CODE_MASS / CODE_LENGTH).to(u.km / u.s)
+# CODE_UNITS = CodeUnits(CODE_LENGTH, CODE_MASS, CODE_VELOCITY)
 
-WIND_MASS_LOSS_RATE = MASS_LOSS_RATE.to(
-    CODE_UNITS.code_mass / CODE_UNITS.code_time
-).value
-WIND_TERMINAL_VELOCITY = WIND_VELOCITY.to(CODE_UNITS.code_velocity).value
+sep_in_au = 20 # upper limit: 80, lower limit: 5
+length_temp = sep_in_au / 10
+mass_temp = 1
+code_length = length_temp * u.au
+code_mass = mass_temp * u.M_sun
+code_velocity = np.sqrt(const.G * code_mass / code_length).to(u.km / u.s)
+CODE_UNITS = CodeUnits(code_length, code_mass, code_velocity)
+
+# WIND_MASS_LOSS_RATE = MASS_LOSS_RATE.to(
+#     CODE_UNITS.code_mass / CODE_UNITS.code_time
+# ).value
+# WIND_TERMINAL_VELOCITY = WIND_VELOCITY.to(CODE_UNITS.code_velocity).value
 RHO_AMBIENT = RHO_0.to(CODE_UNITS.code_density).value
 P_AMBIENT = P_0.to(CODE_UNITS.code_pressure).value
 
@@ -106,13 +130,47 @@ P_AMBIENT = P_0.to(CODE_UNITS.code_pressure).value
 # two wind bubbles have merged into a genuine wind-collision region (not just
 # two independent, not-yet-touching bubbles) while the bow shocks stay
 # comfortably inside the domain (max |x| well below BOX_SIZE / 2).
-T_END = 4e-3
+# T_END = 4e-3
 MACH_MIN = 1.3
 
 # box-centered coordinates (box center at the origin), same convention as
 # helper_data.geometric_centers - box_center; see
 # astronomix._modules._stellar_wind.stellar_wind._wind_source_distances.
 STAR_POSITIONS = jnp.array([[-SEPARATION / 2, 0.0, 0.0], [SEPARATION / 2, 0.0, 0.0]])
+
+mass_loss_rate_1 = 6.5e-7 * u.M_sun / u.yr
+mass_loss_rate_2 = 6.5e-8 * u.M_sun / u.yr
+wind_velocity_1 = 2200 * u.km / u.s
+wind_velocity_2 = 1850 * u.km / u.s
+eccentricity = 0.0
+cos_inclination = 1.0
+turbulence_strength = 0.0
+
+a = SEPARATION
+
+m1 = M1.to(CODE_UNITS.code_mass).value
+m2 = M2.to(CODE_UNITS.code_mass).value
+Period = 2 * np.pi * np.sqrt(a**3 / ((m1 + m2)))
+
+# T_END = (3.5 * u.yr).to(CODE_UNITS.code_time).value
+T_END = Period
+print(f"End time in code units: {T_END}")
+
+m1 = M1.to(CODE_UNITS.code_mass).value
+m2 = M2.to(CODE_UNITS.code_mass).value
+mlr1 = mass_loss_rate_1.to(CODE_UNITS.code_mass / CODE_UNITS.code_time).value
+mlr2 = mass_loss_rate_2.to(CODE_UNITS.code_mass / CODE_UNITS.code_time).value
+v_inf1 = wind_velocity_1.to(CODE_UNITS.code_velocity).value
+v_inf2 = wind_velocity_2.to(CODE_UNITS.code_velocity).value
+inclination_deg = float(jnp.rad2deg(jnp.arccos(cos_inclination)))
+
+masses = jnp.array([m1, m2])
+# initial N-body phase-space state [t, x, y, z, vx, vy, vz] per body,
+# flattened -- seeds astronomix._modules._nbody._nbody's RK4 integrator,
+# advanced jointly with the hydro update every step.
+nbody_state = binary_starting_orbits_at_phase(
+    a, eccentricity, inclination_deg, m1, m2, phi=0.0, true_anom_deg=0.0,
+)
 
 
 def run_cwb(num_cells):
@@ -128,10 +186,13 @@ def run_cwb(num_cells):
     """
     config = SimulationConfig(
         progress_bar=True,
+        first_order_fallback=True,
         geometry=CARTESIAN,
         solver_mode=FINITE_VOLUME,
-        riemann_solver=HLLC,
+        split=SPLIT,
         limiter=MINMOD,
+        time_integrator=MUSCL,
+        differentiation_mode=FORWARDS,
         dimensionality=3,
         box_size=BOX_SIZE,
         num_cells=num_cells,
@@ -139,8 +200,19 @@ def run_cwb(num_cells):
         wind_config=WindConfig(
             stellar_wind=True,
             num_injection_cells=num_cells // 32,
-            wind_injection_scheme=EI,
+            # wind_injection_scheme=EI,
             trace_wind_density=False,
+        ),
+        
+        nbody_config=NBodyConfig(
+            nbody=True,
+            deposit_particles=NGP,
+            central_object_only=False,
+        ),
+        boundary_settings=BoundarySettings(
+            BoundarySettings1D(OPEN_BOUNDARY, OPEN_BOUNDARY),
+            BoundarySettings1D(OPEN_BOUNDARY, OPEN_BOUNDARY),
+            BoundarySettings1D(OPEN_BOUNDARY, OPEN_BOUNDARY),
         ),
         # nbody_config left at its default (nbody=False): the two wind
         # sources stay fixed at STAR_POSITIONS instead of following an
@@ -168,14 +240,18 @@ def run_cwb(num_cells):
         t_end=T_END,
         gamma=GAMMA,
         C_cfl=0.4,
+        nbody_params=NBodyParams(
+            masses=masses,
+            nbody_state=nbody_state,
+        ),
         wind_params=WindParams(
             wind_mass_loss_rates=jnp.array(
-                [WIND_MASS_LOSS_RATE, WIND_MASS_LOSS_RATE]
+                [mlr1, mlr2]
             ),
             wind_final_velocities=jnp.array(
-                [WIND_TERMINAL_VELOCITY, WIND_TERMINAL_VELOCITY]
+                [v_inf1, v_inf2]
             ),
-            wind_injection_positions=STAR_POSITIONS,
+            # wind_injection_positions=STAR_POSITIONS,
         ),
     )
 

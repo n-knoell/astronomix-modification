@@ -77,7 +77,7 @@ from _cwb_setup import (
 FIG_DIR = Path(__file__).resolve().parent / "figures"
 FIG_DIR.mkdir(exist_ok=True)
 
-NUM_CELLS = 128
+NUM_CELLS = 256
 STRONG_SHOCK_RHO_RATIO = (GAMMA + 1.0) / (GAMMA - 1.0)  # = 4 for gamma = 5/3
 # Fraction of surface cells required to respect the single-shock strong-shock
 # bound; see the module docstring's note on compound shocks. Empirically,
