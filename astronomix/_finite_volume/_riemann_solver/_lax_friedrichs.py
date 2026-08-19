@@ -24,6 +24,7 @@ from astronomix.option_classes.simulation_config import STATE_TYPE
 # astronomix containers
 from astronomix.variable_registry.registered_variables import RegisteredVariables
 from astronomix.option_classes.simulation_config import SimulationConfig
+from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
 from astronomix._fluid_equations._fluxes import _euler_flux
@@ -40,6 +41,7 @@ def _lax_friedrichs_solver(
     primitive_state: STATE_TYPE,
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
 ) -> STATE_TYPE:
@@ -54,6 +56,15 @@ def _lax_friedrichs_solver(
             global dissipation coefficient ``alpha``).
         gamma: The adiabatic index.
         config: The simulation configuration.
+        params: The simulation parameters, forwarded to ``_euler_flux``.
+            NOTE: unlike ``_hll_solver``/``_hllc_solver``/``get_wave_speeds``,
+            the dissipation coefficient ``alpha`` below is not yet widened by
+            the CR-grey fast speed when ``registered_variables.
+            cosmic_ray_e_active`` -- Lax-Friedrichs isn't in DESIGN.md's list
+            of CR-aware solvers (it isn't the default `riemann_solver`, see
+            ``SimulationConfig``). Flagged here rather than silently fixed,
+            since picking this solver with CR-grey on would currently
+            under-dissipate the CR subsystem.
         registered_variables: The registered variables.
         flux_direction_index: The state index of the velocity normal to the
             interface (the flux direction).
@@ -97,10 +108,10 @@ def _lax_friedrichs_solver(
     alpha = jnp.max(jnp.abs(u) + c)
 
     fluxes_left = _euler_flux(
-        primitives_left, gamma, config, registered_variables, flux_direction_index
+        primitives_left, gamma, config, params, registered_variables, flux_direction_index
     )
     fluxes_right = _euler_flux(
-        primitives_right, gamma, config, registered_variables, flux_direction_index
+        primitives_right, gamma, config, params, registered_variables, flux_direction_index
     )
     fluxes = 0.5 * (fluxes_left + fluxes_right) - 0.5 * alpha * (
         conserved_right - conserved_left

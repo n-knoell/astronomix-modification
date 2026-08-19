@@ -150,7 +150,7 @@ def _evolve_state_along_axis(
         primitive_state_right = primitive_state
     else:
         primitive_state_left, primitive_state_right = _reconstruct_at_interface_split(
-            primitive_state, dt, gamma, config, helper_data, registered_variables, axis
+            primitive_state, dt, gamma, config, params, helper_data, registered_variables, axis
         )
 
     fluxes = _riemann_solver(
@@ -159,6 +159,7 @@ def _evolve_state_along_axis(
         primitive_state,
         gamma,
         config,
+        params,
         registered_variables,
         axis,
     )
@@ -250,8 +251,20 @@ def _evolve_gas_state_split(
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
 ) -> STATE_TYPE:
+    # _gravity_source_presolve/_apply_gravity_source are the only FV callers
+    # of _time_integrator_sources, which also carries the CR-grey feedback
+    # source calls (-grad(P_cr) momentum, adiabatic work, streaming heating --
+    # see _modules._cosmic_rays_grey.DESIGN.md). Gating this pair on gravity
+    # alone would make CR-grey feedback dead code whenever gravity is off --
+    # which is every Phase A ladder test -- so it's gated on either being
+    # active. The names/variable ("gravity_source") predate CR-grey and are
+    # now a misnomer; not renamed here to keep this fix minimal.
+    apply_operator_split_sources = (
+        config.gravity_config.gravity or registered_variables.cosmic_ray_e_active
+    )
+
     if config.dimensionality == 1:
-        if config.gravity_config.gravity:
+        if apply_operator_split_sources:
             gravity_source = _gravity_source_presolve(
                 primitive_state, dt, gamma, config, params, helper_data, registered_variables
             )
@@ -268,13 +281,13 @@ def _evolve_gas_state_split(
             1,
         )
 
-        if config.gravity_config.gravity:
+        if apply_operator_split_sources:
             primitive_state = _apply_gravity_source(
                 primitive_state, gravity_source, gamma, config, params, registered_variables
             )
 
     elif config.dimensionality == 2:
-        if config.gravity_config.gravity:
+        if apply_operator_split_sources:
             gravity_source = _gravity_source_presolve(
                 primitive_state, dt, gamma, config, params, helper_data, registered_variables
             )
@@ -313,13 +326,13 @@ def _evolve_gas_state_split(
             1,
         )
 
-        if config.gravity_config.gravity:
+        if apply_operator_split_sources:
             primitive_state = _apply_gravity_source(
                 primitive_state, gravity_source, gamma, config, params, registered_variables
             )
 
     elif config.dimensionality == 3:
-        if config.gravity_config.gravity:
+        if apply_operator_split_sources:
             gravity_source = _gravity_source_presolve(
                 primitive_state, dt, gamma, config, params, helper_data, registered_variables
             )
@@ -380,7 +393,7 @@ def _evolve_gas_state_split(
             1,
         )
 
-        if config.gravity_config.gravity:
+        if apply_operator_split_sources:
             primitive_state = _apply_gravity_source(
                 primitive_state, gravity_source, gamma, config, params, registered_variables
             )
@@ -473,6 +486,7 @@ def _evolve_gas_state_unsplit_inner(
             primitive_state,
             gamma,
             config,
+            params,
             registered_variables,
             axis,
         )
@@ -509,7 +523,13 @@ def _evolve_gas_state_unsplit(
     registered_variables: RegisteredVariables,
 ) -> STATE_TYPE:
 
-    if config.gravity_config.gravity:
+    # See _evolve_gas_state_split's identical comment: this pair is gated on
+    # either gravity or CR-grey being active, not gravity alone.
+    apply_operator_split_sources = (
+        config.gravity_config.gravity or registered_variables.cosmic_ray_e_active
+    )
+
+    if apply_operator_split_sources:
         gravity_source = _gravity_source_presolve(
             primitive_state, dt, gamma, config, params, helper_data, registered_variables
         )
@@ -550,7 +570,18 @@ def _evolve_gas_state_unsplit(
             "Only the RK2 SSP time integrator is currently supported for the unsplit scheme."
         )
 
-    if config.gravity_config.gravity and config.time_integrator:
+    # NOTE: this used to read ``... and config.time_integrator`` -- a
+    # pre-existing bug found while wiring up CR-grey feedback here:
+    # RK2_SSP == 0 (see simulation_config.py), so that clause silently
+    # truthy-tested the *enum value* rather than checking anything, and
+    # since this branch is only reached when config.time_integrator ==
+    # RK2_SSP already (see the if/else above), the whole condition was
+    # always False -- i.e. _apply_gravity_source (and now CR-grey feedback)
+    # was silently never applied here. No existing test exercises FV-unsplit
+    # self-gravity (the only gravity pytest, self_gravity/jeans_waves.py,
+    # uses FINITE_DIFFERENCE), so nothing currently passing depended on the
+    # old behavior.
+    if apply_operator_split_sources:
         primitive_state = _apply_gravity_source(
             primitive_state, gravity_source, gamma, config, params, registered_variables
         )

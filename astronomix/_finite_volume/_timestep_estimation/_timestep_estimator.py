@@ -58,6 +58,7 @@ def get_wave_speeds(
     gamma: Union[float, Float[Array, ""]],
     registered_variables: RegisteredVariables,
     config: SimulationConfig,
+    params: SimulationParams,
     flux_direction_index: int,
 ) -> Union[float, Float[Array, ""]]:
     """
@@ -69,6 +70,8 @@ def get_wave_speeds(
         gamma: The adiabatic index.
         registered_variables: The registered variables.
         config: The simulation configuration.
+        params: The simulation parameters, forwarded to
+            :func:`grey_cr_fast_speed` when CR-grey is active.
         flux_direction_index: The state index of the velocity normal to the
             interface (the flux direction).
 
@@ -96,8 +99,8 @@ def get_wave_speeds(
     # Grey two-moment cosmic rays: combine with the CR-grey fast speed as
     # max(., .), not folded in -- see hll.py's identical pattern.
     if registered_variables.cosmic_ray_e_active:
-        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, registered_variables))
-        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, registered_variables))
+        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, params, registered_variables))
+        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, params, registered_variables))
 
     # A simple symmetric estimate of the maximum signal speed on either side of
     # the interface; the |u| + c form is sufficient for the time-step bound.
@@ -142,6 +145,18 @@ def _cfl_time_step(
         rho = primitive_state[registered_variables.density_index]
         p = primitive_state[registered_variables.pressure_index]
         c = speed_of_sound(rho, p, gamma)
+
+        # Grey two-moment cosmic rays: this branch (the default -- UNSPLIT
+        # is config.split's default) previously had zero CR-grey awareness,
+        # unlike the SPLIT branch's get_wave_speeds calls below. Found while
+        # debugging Phase A: without this, dt is set from the gas wave speed
+        # alone, so any reduced_streaming_speed exceeding the gas sound speed
+        # silently violates the CR subsystem's CFL condition and blows up
+        # (NaN) rather than erroring -- see
+        # astronomix._modules._cosmic_rays_grey.PROGRESS.md.
+        if registered_variables.cosmic_ray_e_active:
+            c = jnp.maximum(c, grey_cr_fast_speed(primitive_state, params, registered_variables))
+
         alpha_lax = jnp.zeros((config.dimensionality,))
         for axis in range(1, config.dimensionality + 1):
             u = primitive_state[axis]
@@ -161,6 +176,7 @@ def _cfl_time_step(
                 gamma,
                 registered_variables,
                 config,
+                params,
                 registered_variables.velocity_index.x,
             )
 
@@ -173,6 +189,7 @@ def _cfl_time_step(
                 gamma,
                 registered_variables,
                 config,
+                params,
                 registered_variables.velocity_index.y,
             )
 
@@ -185,6 +202,7 @@ def _cfl_time_step(
                 gamma,
                 registered_variables,
                 config,
+                params,
                 registered_variables.velocity_index.z,
             )
 
@@ -202,6 +220,7 @@ def _cfl_time_step(
                 gamma,
                 registered_variables,
                 config,
+                params,
                 registered_variables.velocity_index.x,
             )
 
@@ -214,6 +233,7 @@ def _cfl_time_step(
                 gamma,
                 registered_variables,
                 config,
+                params,
                 registered_variables.velocity_index.y,
             )
 
@@ -229,6 +249,7 @@ def _cfl_time_step(
                 gamma,
                 registered_variables,
                 config,
+                params,
                 registered_variables.velocity_index,
             )
 

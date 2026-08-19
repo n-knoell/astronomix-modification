@@ -175,7 +175,7 @@ def _weno_flux_x_native(
                 primitive_state_from_conserved(
                     conserved_state, gamma, config, registered_variables
                 ),
-                gamma, config, registered_variables, 1
+                gamma, config, params, registered_variables, 1
             )
     elif config.equation_of_state == ISOTHERMAL:
         if config.mhd:

@@ -69,17 +69,49 @@ Per physical step, both solver modes:
      would enter here identically to FD wind/cooling/viscosity/conduction -- but CR-grey
      **transport** (the flux/eigenspeed part) cannot, yet: see FD limitation below.
 
-## Known scaffold gap: `params` not threaded through the FV hot path
+## Resolved: `params` threaded through the FV hot path
 
-`_euler_flux`, `_hll_solver`/`_hllc_solver`, `_reconstruct_at_interface_split` and
-`get_wave_speeds` do not currently receive `SimulationParams` (this is pre-existing and
-inconsistent already -- e.g. `_reconstruct_at_interface_unsplit` *does* take `params`, its
-split-path sibling doesn't). Rather than force that refactor through performance-critical shared
-code as part of this scaffold, `cr_grey_transport.py`'s `grey_cr_fast_speed`/`grey_cr_flux_terms`
-use module-level constants (`gamma_cr`, `reduced_streaming_speed`), mirroring the exact same
-acknowledged shortcut the old `cr_fluid_equations.py` already takes for its adiabatic indices.
-Moving these into real `CosmicRayGreyParams` lookups requires threading `params` through the
-functions above -- worth doing once, deliberately, rather than as a side effect of this scaffold.
+`_euler_flux`, `_hll_solver`/`_hllc_solver`/`_am_hllc_solver`, `_lax_friedrichs_solver`,
+`_riemann_solver`, `_reconstruct_at_interface_split` and `get_wave_speeds` all now receive
+`SimulationParams` (inserted immediately after `config` in each signature, mirroring the
+pre-existing `_reconstruct_at_interface_unsplit` pattern), and every call site up through
+`evolve_state.py`/`_pallas_evolve.py`/the FV `_timestep_estimator.py`/FD's `_weno.py` was updated
+to pass it. `cr_grey_transport.py`'s `grey_cr_flux_terms`/`grey_cr_fast_speed`/
+`anisotropic_flux_projection` now take `params` too and read `gamma_cr`/`reduced_streaming_speed`
+from real `CosmicRayGreyParams` (`params.cosmic_ray_grey_params`) -- the module-level constants
+this section used to describe are gone. `cr_grey_sources.py` already took full `params` from the
+original scaffold and needed no change. See `PROGRESS.md` for what was verified.
+
+While tracing this, found and fixed an unrelated pre-existing gap in the same hot path:
+`_pallas_evolve.py`'s `_fv_pallas_evolve_supported` only excluded the old `_cosmic_rays` module,
+not `grey_cosmic_rays` -- since the default backend (`OPTIMAL_BACKEND`) resolves to `PALLAS` on
+compute-capability >= 8.0 GPUs, a CR-grey run there would have silently taken the fused Pallas
+kernel (no `e_cr`/`F_cr` awareness) instead of the native path this design assumes. Now gated.
+
+`_lax_friedrichs_solver`'s dissipation coefficient is still gas-only (not widened by the CR-grey
+fast speed, unlike the HLL-family solvers and `get_wave_speeds`) -- a known, deliberately
+un-fixed gap since `LAX_FRIEDRICHS` isn't the default `riemann_solver`; see `PROGRESS.md`.
+
+Two more gaps surfaced while getting ladder item 1 to actually run (both pre-existing, both now
+fixed -- see `PROGRESS.md` for the full writeup): FV's operator-split source application was
+gated on `config.gravity_config.gravity` alone, so the CR-grey feedback calls wired into
+`_time_integrator_sources` were dead code without gravity also on; and the default
+`config.split == UNSPLIT` CFL branch had no CR-grey (or old-model) wave-speed awareness at all,
+so `reduced_streaming_speed` values above the gas sound speed silently violated CFL and blew up.
+
+## Resolved: transport flux and feedback-source formulas (ladder item 1)
+
+`grey_cr_flux_terms`/`grey_cr_fast_speed` implement the isotropic-closure two-moment system
+(Jiang & Oh 2018): `d(e_cr)/dt + d(F_cr)/dx = 0`, `d(F_cr)/dt + d(v_red^2 P_cr)/dx = 0`, with
+`P_cr = (gamma_cr - 1) e_cr` the same pressure used for the gas coupling below --
+`grey_cr_fast_speed` returns the un-scaled `reduced_streaming_speed` as a conservative CFL/Riemann
+bound (the true eigenvalue is the smaller `reduced_streaming_speed * sqrt(gamma_cr - 1)`).
+`cr_pressure_gradient_source` adds `-grad(P_cr)` to momentum *and* the matching `-v.grad(P_cr)`
+work-rate to gas total energy (needed for energy conservation, not explicit in this doc's
+original one-line bullet); `cr_adiabatic_work_source` adds `-P_cr div(v)` to `e_cr`. Together
+these satisfy the local conservation law `d(E_gas + e_cr)/dt + div(flux terms) = 0` exactly (the
+product-rule identity `div(P_cr v) = v.grad(P_cr) + P_cr div(v)`), verified numerically to ~7e-5
+relative. See `PROGRESS.md` for the full derivation and numerical verification.
 
 ## BC handling per scheme
 

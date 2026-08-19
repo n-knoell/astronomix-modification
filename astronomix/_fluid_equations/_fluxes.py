@@ -22,6 +22,7 @@ from astronomix.option_classes.simulation_config import STATE_TYPE, FOURTH_ORDER
 
 # astronomix containers
 from astronomix.option_classes.simulation_config import SimulationConfig
+from astronomix.option_classes.simulation_params import SimulationParams
 from astronomix.variable_registry.registered_variables import AxisInfo, RegisteredVariables
 
 # astronomix functions
@@ -44,6 +45,7 @@ def _euler_flux(
     primitive_state: STATE_TYPE,
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
 ) -> STATE_TYPE:
@@ -53,6 +55,8 @@ def _euler_flux(
         primitive_state: The primitive state of the fluid on all cells.
         gamma: The adiabatic index of the fluid.
         config: The simulation configuration.
+        params: The simulation parameters (threaded through only for the
+            grey two-moment CR flux term below; unused otherwise).
         registered_variables: The registered variables.
         flux_direction_index: The index of the velocity component in the flux direction of interest.
 
@@ -119,7 +123,7 @@ def _euler_flux(
     # from grey_cr_flux_terms. See that module's DESIGN.md.
     if registered_variables.cosmic_ray_e_active:
         cr_flux = grey_cr_flux_terms(
-            primitive_state, gamma, config, registered_variables, flux_direction_index
+            primitive_state, gamma, config, params, registered_variables, flux_direction_index
         )
         flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].set(
             cr_flux[registered_variables.cosmic_ray_e_index]

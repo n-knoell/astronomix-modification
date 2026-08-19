@@ -34,6 +34,7 @@ from astronomix.option_classes.simulation_config import (
 # astronomix containers
 from astronomix.variable_registry.registered_variables import RegisteredVariables
 from astronomix.option_classes.simulation_config import SimulationConfig
+from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
 from astronomix._modules._cosmic_rays.cr_fluid_equations import speed_of_sound_crs
@@ -65,6 +66,7 @@ def _riemann_solver(
     primitive_state: STATE_TYPE_ALTERED,
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
 ) -> STATE_TYPE:
@@ -75,6 +77,7 @@ def _riemann_solver(
             primitives_right,
             gamma,
             config,
+            params,
             registered_variables,
             flux_direction_index,
         )
@@ -84,6 +87,7 @@ def _riemann_solver(
             primitives_right,
             gamma,
             config,
+            params,
             registered_variables,
             flux_direction_index,
         )
@@ -94,6 +98,7 @@ def _riemann_solver(
             primitive_state,
             gamma,
             config,
+            params,
             registered_variables,
             flux_direction_index,
         )
@@ -104,6 +109,7 @@ def _riemann_solver(
             primitive_state,
             gamma,
             config,
+            params,
             registered_variables,
             flux_direction_index,
         )

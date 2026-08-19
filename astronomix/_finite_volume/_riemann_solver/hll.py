@@ -29,6 +29,7 @@ from astronomix.option_classes.simulation_config import (
 # astronomix containers
 from astronomix.variable_registry.registered_variables import RegisteredVariables
 from astronomix.option_classes.simulation_config import SimulationConfig
+from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
 from astronomix._modules._cosmic_rays.cr_fluid_equations import speed_of_sound_crs
@@ -51,6 +52,7 @@ def _hll_solver(
     primitives_right: STATE_TYPE,
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
 ) -> STATE_TYPE:
@@ -61,6 +63,9 @@ def _hll_solver(
         primitives_left: States left of the interfaces.
         primitives_right: States right of the interfaces.
         gamma: The adiabatic index.
+        config: The simulation configuration.
+        params: The simulation parameters (threaded through for the grey CR
+            fast speed and Euler flux; unused otherwise).
 
     Returns:
         The conservative fluxes at the interfaces.
@@ -91,15 +96,15 @@ def _hll_solver(
     # gas/old-CR-model wave speed as max(., .) rather than folded into one
     # effective sound speed -- see cr_grey_transport.py's module docstring.
     if registered_variables.cosmic_ray_e_active:
-        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, registered_variables))
-        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, registered_variables))
+        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, params, registered_variables))
+        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, params, registered_variables))
 
     # get the left and right states and fluxes
     fluxes_left = _euler_flux(
-        primitives_left, gamma, config, registered_variables, flux_direction_index
+        primitives_left, gamma, config, params, registered_variables, flux_direction_index
     )
     fluxes_right = _euler_flux(
-        primitives_right, gamma, config, registered_variables, flux_direction_index
+        primitives_right, gamma, config, params, registered_variables, flux_direction_index
     )
 
     # Estimate the fastest right- and left-running signal speeds and clamp them
@@ -145,6 +150,7 @@ def _hllc_solver(
     primitives_right: STATE_TYPE,
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
     hllc_lm: bool = False,
@@ -158,6 +164,8 @@ def _hllc_solver(
         primitives_right: States right of the interfaces.
         gamma: The adiabatic index.
         config: The simulation configuration.
+        params: The simulation parameters (threaded through for the grey CR
+            fast speed and Euler flux; unused otherwise).
         registered_variables: The registered variables.
         flux_direction_index: The state index of the velocity normal to the
             interface (the flux direction).
@@ -199,15 +207,15 @@ def _hllc_solver(
     # gas/old-CR-model wave speed as max(., .) rather than folded into one
     # effective sound speed -- see cr_grey_transport.py's module docstring.
     if registered_variables.cosmic_ray_e_active:
-        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, registered_variables))
-        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, registered_variables))
+        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, params, registered_variables))
+        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, params, registered_variables))
 
     # get the left and right states and fluxes
     F_L = _euler_flux(
-        primitives_left, gamma, config, registered_variables, flux_direction_index
+        primitives_left, gamma, config, params, registered_variables, flux_direction_index
     )
     F_R = _euler_flux(
-        primitives_right, gamma, config, registered_variables, flux_direction_index
+        primitives_right, gamma, config, params, registered_variables, flux_direction_index
     )
 
     # Roe average of the velocity
@@ -320,6 +328,7 @@ def _am_hllc_solver(
     primitive_state: STATE_TYPE,
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
 ) -> STATE_TYPE:
@@ -344,6 +353,8 @@ def _am_hllc_solver(
             divergence-based shock indicator).
         gamma: The adiabatic index.
         config: The simulation configuration.
+        params: The simulation parameters, forwarded to the inner
+            :func:`_hllc_solver` calls.
         registered_variables: The registered variables.
         flux_direction_index: The state index of the velocity normal to the
             interface (the flux direction).
@@ -382,6 +393,7 @@ def _am_hllc_solver(
         primitives_right,
         gamma,
         config,
+        params,
         registered_variables,
         flux_direction_index,
         low_mach_dissipation_control=low_mach_dissipation_control,
@@ -391,6 +403,7 @@ def _am_hllc_solver(
         primitives_right,
         gamma,
         config,
+        params,
         registered_variables,
         flux_direction_index,
         hllc_lm=True,

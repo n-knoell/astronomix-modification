@@ -10,16 +10,14 @@ self-contained utility with an unambiguous definition (plan Sec. 2:
 "regularize the streaming sign with a tanh to keep the adjoint clean") and
 does not depend on the rest of the still-open transport design.
 
-WARNING: ``gamma_cr`` and ``reduced_streaming_speed`` are fixed here as
-module-level constants rather than read from ``CosmicRayGreyParams``, for the
-same reason the older ``cr_fluid_equations.py`` hardcodes its adiabatic
-indices: none of ``_euler_flux``, ``_hll_solver``/``_hllc_solver``,
-``_reconstruct_at_interface_split`` or ``get_wave_speeds`` currently receive
-``SimulationParams`` (only some of their siblings, e.g.
-``_reconstruct_at_interface_unsplit``, do -- the plumbing is already
-inconsistent across the FV hot path). Threading ``params`` through all of
-them is real, separate follow-up work, not part of this scaffold; until then
-these constants are the values to move into ``CosmicRayGreyParams`` lookups.
+``params`` (``SimulationParams``, carrying ``CosmicRayGreyParams`` at
+``params.cosmic_ray_grey_params``) is threaded through the full FV hot path
+that needs it -- ``_euler_flux``, ``_hll_solver``/``_hllc_solver``/
+``_am_hllc_solver``, ``_reconstruct_at_interface_split`` and
+``get_wave_speeds`` all take ``params`` now -- so ``gamma_cr`` and
+``reduced_streaming_speed`` are read from real, differentiable
+``CosmicRayGreyParams`` values in every function below rather than
+module-level constants (DESIGN.md's former "known scaffold gap", resolved).
 """
 
 # general
@@ -38,15 +36,16 @@ from astronomix.option_classes.simulation_config import STATE_TYPE
 
 # astronomix containers
 from astronomix.option_classes.simulation_config import SimulationConfig
+from astronomix.option_classes.simulation_params import SimulationParams
 from astronomix.variable_registry.registered_variables import RegisteredVariables
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     CosmicRayGreyParams,
 )
 
-# See module WARNING above -- mirror these into CosmicRayGreyParams lookups
-# once params is threaded through the FV hot path.
-gamma_cr = 4.0 / 3.0
-reduced_streaming_speed = 1.0
+# astronomix functions
+from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import (
+    pressure_from_e_cr,
+)
 
 
 @partial(
@@ -56,6 +55,7 @@ def grey_cr_flux_terms(
     primitive_state: STATE_TYPE,
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
 ) -> STATE_TYPE:
@@ -76,22 +76,68 @@ def grey_cr_flux_terms(
         primitive_state: The primitive state of the fluid on all cells.
         gamma: The gas adiabatic index.
         config: The simulation configuration.
+        params: The simulation parameters (carries ``CosmicRayGreyParams`` at
+            ``params.cosmic_ray_grey_params``, e.g. ``gamma_cr``/
+            ``reduced_streaming_speed``).
         registered_variables: The registered variables.
         flux_direction_index: The index of the velocity component in the
             flux direction of interest.
 
     Returns:
         The flux contribution to add onto the ``e_cr``/``F_cr`` rows.
+
+    Implementation note (Jiang & Oh 2018's reduced-speed-of-light two-moment
+    closure, isotropic Eddington tensor ``P_cr = (gamma_cr - 1) * e_cr`` --
+    the same factor used for the gas-momentum coupling in
+    ``cr_grey_sources.cr_pressure_gradient_source``):
+
+        d(e_cr)/dt + d(F_cr)/dx      = 0
+        d(F_cr)/dt + d(v_red^2 P_cr)/dx = 0
+
+    so the ``e_cr`` row's flux along ``flux_direction_index`` is simply the
+    matching component of ``F_cr``, and that same component of the ``F_cr``
+    row's flux is ``v_red^2 * P_cr``. The isotropic closure has no
+    off-diagonal pressure-tensor terms, so the *other* ``F_cr`` components
+    (e.g. ``F_cr,y`` when ``flux_direction_index`` is the x-axis) get zero
+    flux here -- matching how ``_euler_flux`` only adds the pressure term to
+    the flux-direction momentum component, not the others. Caller
+    (``_euler_flux``) reads every ``cosmic_ray_flux_index`` component back
+    out of the returned array regardless of axis, so this function must zero
+    those out explicitly rather than leave them unset.
     """
-    raise NotImplementedError(
-        "Phase A: two-moment e_cr/F_cr flux terms (Jiang & Oh 2018 closure). "
-        "See DESIGN.md."
+    gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+    reduced_streaming_speed = params.cosmic_ray_grey_params.reduced_streaming_speed
+
+    e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
+    p_cr = pressure_from_e_cr(e_cr, gamma_cr)
+
+    if config.dimensionality == 1:
+        f_cr_index_along_flux_direction = registered_variables.cosmic_ray_flux_index
+    else:
+        # cosmic_ray_flux_index is allocated the same way velocity_index is
+        # (consecutive x/y/z rows), and flux_direction_index is itself the
+        # velocity-row index for this axis (1/2/3) -- see e.g. _euler_flux's
+        # ``primitive_state[flux_direction_index]``. So the matching F_cr row
+        # is the same offset into cosmic_ray_flux_index.x.
+        f_cr_index_along_flux_direction = (
+            registered_variables.cosmic_ray_flux_index.x + (flux_direction_index - 1)
+        )
+
+    flux_vector = jnp.zeros_like(primitive_state)
+    flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].set(
+        primitive_state[f_cr_index_along_flux_direction]
     )
+    flux_vector = flux_vector.at[f_cr_index_along_flux_direction].set(
+        reduced_streaming_speed**2 * p_cr
+    )
+
+    return flux_vector
 
 
 @partial(jax.jit, static_argnames=["registered_variables"])
 def grey_cr_fast_speed(
     primitive_state: STATE_TYPE,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
 ) -> Float[Array, "..."]:
     """Maximum signal speed of the two-moment CR subsystem.
@@ -105,14 +151,26 @@ def grey_cr_fast_speed(
 
     Args:
         primitive_state: The primitive state of the fluid on all cells.
+        params: The simulation parameters (carries
+            ``params.cosmic_ray_grey_params.reduced_streaming_speed``).
         registered_variables: The registered variables.
 
     Returns:
         The CR-grey fast/reduced-streaming speed.
+
+    Implementation note: the true characteristic speed of
+    :func:`grey_cr_flux_terms`'s isotropic-closure system is
+    ``reduced_streaming_speed * sqrt(gamma_cr - 1)`` (< ``reduced_streaming_speed``
+    for ``gamma_cr = 4/3``), but every call site here uses this as a safety
+    bound for the Riemann solver's wave-speed clamp / the CFL estimate, not
+    as the exact eigenvalue -- so, matching standard reduced-speed-of-light
+    two-moment practice, this returns the un-scaled ``reduced_streaming_speed``
+    itself as a conservative (never-too-small) bound, independent of the
+    local state.
     """
-    raise NotImplementedError(
-        "Phase A: CR-grey reduced free-streaming speed for the CFL/Riemann "
-        "wave-speed bound. See DESIGN.md."
+    return jnp.full(
+        primitive_state[registered_variables.density_index].shape,
+        params.cosmic_ray_grey_params.reduced_streaming_speed,
     )
 
 
@@ -120,6 +178,7 @@ def grey_cr_fast_speed(
 def anisotropic_flux_projection(
     primitive_state: STATE_TYPE,
     config: SimulationConfig,
+    params: SimulationParams,
     registered_variables: RegisteredVariables,
 ) -> STATE_TYPE:
     """Project the CR flux/diffusion along the local magnetic-field direction.
@@ -132,6 +191,7 @@ def anisotropic_flux_projection(
     Args:
         primitive_state: The primitive state of the fluid on all cells.
         config: The simulation configuration.
+        params: The simulation parameters (carries ``CosmicRayGreyParams``).
         registered_variables: The registered variables.
 
     Returns:

@@ -142,6 +142,15 @@ def _fv_pallas_evolve_supported(state, config: SimulationConfig) -> bool:
         return False
     if config.cosmic_ray_config.cosmic_rays:
         return False
+    if config.cosmic_ray_grey_config.grey_cosmic_rays:
+        # The fused kernel below (_fv_evolve_axis_pallas) has no e_cr/F_cr
+        # awareness -- no CR flux term, no reduced-streaming-speed
+        # contribution to the dissipation/wave speed. Silently routing a
+        # CR-grey run through it would produce wrong physics rather than a
+        # NotImplementedError, so keep CR-grey on the native FV path
+        # (astronomix._modules._cosmic_rays_grey.DESIGN.md) until/unless the
+        # kernel is extended.
+        return False
     if config.diffusion:
         return False
     if config.geometry != 0:  # CARTESIAN == 0
@@ -571,7 +580,7 @@ def _evolve_gas_state_unsplit_pallas(
                 ps, config, helper_data, axis_
             )
             fluxes = _riemann_solver(
-                pl_iface, pr_iface, ps, gamma, config,
+                pl_iface, pr_iface, ps, gamma, config, params,
                 registered_variables, axis_,
             )
             flux_diff = _stencil_add(

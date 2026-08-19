@@ -54,6 +54,7 @@ def _reconstruct_at_interface_split(
     dt: Union[float, Float[Array, ""]],
     gamma: Union[float, Float[Array, ""]],
     config: SimulationConfig,
+    params: SimulationParams,
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
     axis: int,
@@ -79,7 +80,7 @@ def _reconstruct_at_interface_split(
         # Grey two-moment cosmic rays: combine with the CR-grey fast speed as
         # max(., .), not folded in -- see hll.py's identical pattern.
         if registered_variables.cosmic_ray_e_active:
-            c = jnp.maximum(c, grey_cr_fast_speed(primitive_state, registered_variables))
+            c = jnp.maximum(c, grey_cr_fast_speed(primitive_state, params, registered_variables))
 
         # ================ construct A_W, the "primitive Jacabian" (not an actual Jacabian) ================
         # see https://diglib.uibk.ac.at/download/pdf/4422963.pdf, 2.11
