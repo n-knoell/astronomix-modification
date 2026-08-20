@@ -91,25 +91,40 @@ def grey_cr_flux_terms(
     the same factor used for the gas-momentum coupling in
     ``cr_grey_sources.cr_pressure_gradient_source``):
 
-        d(e_cr)/dt + d(F_cr)/dx      = 0
-        d(F_cr)/dt + d(v_red^2 P_cr)/dx = 0
+        d(e_cr)/dt + d(u_n e_cr + F_cr)/dx        = 0
+        d(F_cr)/dt + d(u_n F_cr + v_red^2 P_cr)/dx = 0
 
-    so the ``e_cr`` row's flux along ``flux_direction_index`` is simply the
-    matching component of ``F_cr``, and that same component of the ``F_cr``
-    row's flux is ``v_red^2 * P_cr``. The isotropic closure has no
-    off-diagonal pressure-tensor terms, so the *other* ``F_cr`` components
-    (e.g. ``F_cr,y`` when ``flux_direction_index`` is the x-axis) get zero
-    flux here -- matching how ``_euler_flux`` only adds the pressure term to
-    the flux-direction momentum component, not the others. Caller
-    (``_euler_flux``) reads every ``cosmic_ray_flux_index`` component back
-    out of the returned array regardless of axis, so this function must zero
-    those out explicitly rather than leave them unset.
+    Both rows now carry the same generic ``u_n * q`` bulk-advection piece
+    that ``_euler_flux`` already forms for every *other* row (CRs are
+    carried by the gas, on top of the relative/pressure-like transport) --
+    see ``jnp.zeros_like`` -> ``u_n * primitive_state`` below -- plus an
+    extra term added only to the flux-direction component: ``F_cr`` for the
+    ``e_cr`` row, ``v_red^2 * P_cr`` for the matching ``F_cr`` row. The
+    isotropic closure has no off-diagonal pressure-tensor terms, so the
+    *other* ``F_cr`` components (e.g. ``F_cr,y`` when
+    ``flux_direction_index`` is the x-axis) get only their advective piece,
+    matching how ``_euler_flux`` only adds the pressure term to the
+    flux-direction momentum component, not the others.
+
+    Without the advective piece, a non-uniform ``e_cr`` profile sitting in a
+    uniformly-flowing gas (``div(v) = 0``, so the adiabatic-work source term
+    is silently zero) would never be swept downstream with the flow --
+    breaking wind/SNe-driven CR transport, the Phase C science target. It
+    also mismatches the plan's adiabatic-compression invariant (Sec. 4, test
+    2): a homologous squeeze ``v = H(t) x`` gives
+    ``d(e_cr)/dt = -(e_cr + P_cr) div(v)`` only once the ``u_n e_cr`` piece
+    is present (the ``e_cr`` term supplies the "volume dilution" a
+    conservative advective flux gives for free); without it the source term
+    in ``cr_grey_sources.cr_adiabatic_work_source`` alone integrates to the
+    wrong exponent, ``e_cr ~ rho^(gamma_cr - 1)`` instead of
+    ``rho^gamma_cr``. See ``PROGRESS.md`` for the full derivation.
     """
     gamma_cr = params.cosmic_ray_grey_params.gamma_cr
     reduced_streaming_speed = params.cosmic_ray_grey_params.reduced_streaming_speed
 
     e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
     p_cr = pressure_from_e_cr(e_cr, gamma_cr)
+    u_n = primitive_state[flux_direction_index]
 
     if config.dimensionality == 1:
         f_cr_index_along_flux_direction = registered_variables.cosmic_ray_flux_index
@@ -123,11 +138,15 @@ def grey_cr_flux_terms(
             registered_variables.cosmic_ray_flux_index.x + (flux_direction_index - 1)
         )
 
-    flux_vector = jnp.zeros_like(primitive_state)
-    flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].set(
+    # Generic u_n * q bulk-advection piece for every CR row (e_cr and every
+    # F_cr component) -- only the rows the caller reads back
+    # (cosmic_ray_e_index / cosmic_ray_flux_index.*) matter, so populating
+    # the rest of the array is harmless.
+    flux_vector = u_n * primitive_state
+    flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].add(
         primitive_state[f_cr_index_along_flux_direction]
     )
-    flux_vector = flux_vector.at[f_cr_index_along_flux_direction].set(
+    flux_vector = flux_vector.at[f_cr_index_along_flux_direction].add(
         reduced_streaming_speed**2 * p_cr
     )
 
@@ -159,18 +178,49 @@ def grey_cr_fast_speed(
         The CR-grey fast/reduced-streaming speed.
 
     Implementation note: the true characteristic speed of
-    :func:`grey_cr_flux_terms`'s isotropic-closure system is
+    :func:`grey_cr_flux_terms`'s isotropic-closure system, *relative to the
+    local advecting velocity* ``u_n`` (the CR subsystem now advects with the
+    gas -- see that function's docstring), is
     ``reduced_streaming_speed * sqrt(gamma_cr - 1)`` (< ``reduced_streaming_speed``
     for ``gamma_cr = 4/3``), but every call site here uses this as a safety
     bound for the Riemann solver's wave-speed clamp / the CFL estimate, not
     as the exact eigenvalue -- so, matching standard reduced-speed-of-light
     two-moment practice, this returns the un-scaled ``reduced_streaming_speed``
     itself as a conservative (never-too-small) bound, independent of the
-    local state.
+    local state. Every call site adds this to ``|u_n|`` itself (the same
+    ``jnp.maximum(c, grey_cr_fast_speed(...))`` widening of the *sound-speed*
+    term, before the surrounding ``|u| + c`` combination) rather than here,
+    so this function must NOT add ``u_n`` itself -- doing so would double
+    count it.
+
+    Second contribution -- the CR-pressure momentum coupling (found while
+    building the ladder-item-2 adiabatic-compression test): ``-grad(P_cr)``
+    on gas momentum (``cr_grey_sources.cr_pressure_gradient_source``) and
+    ``-P_cr div(v)`` back onto ``e_cr`` (``cr_adiabatic_work_source``) form a
+    genuine coupled gas+CR acoustic mode, independent of ``F_cr``/
+    ``reduced_streaming_speed`` entirely -- linearizing the coupled
+    continuity/momentum/adiabatic equations around a uniform background
+    gives ``omega^2 = k^2 (c_gas^2 + gamma_cr (gamma_cr - 1) e_cr / rho)``,
+    i.e. a real, stable, *faster*-than-``c_gas`` sound speed, not an
+    instability -- but nothing in the CFL/Riemann wave-speed bound accounted
+    for it before now (only ``reduced_streaming_speed`` was returned here),
+    so any state with ``e_cr`` large enough for this term to matter silently
+    violated CFL and blew up to NaN. `ladder item 1 never exercised this
+    (its CR background was zero, so the momentum coupling was a no-op the
+    whole run). Added as a straightforward sum (not the tighter
+    ``sqrt(a^2+b^2)``, to keep this a simple, easily-conservative widening
+    of an already-"never-too-small" bound, matching this function's existing
+    contract) on top of ``reduced_streaming_speed``.
     """
-    return jnp.full(
-        primitive_state[registered_variables.density_index].shape,
-        params.cosmic_ray_grey_params.reduced_streaming_speed,
+    gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+    rho = primitive_state[registered_variables.density_index]
+    e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
+    cr_pressure_coupling_speed = jnp.sqrt(
+        jnp.maximum(gamma_cr * (gamma_cr - 1.0) * e_cr / rho, 0.0)
+    )
+    return (
+        params.cosmic_ray_grey_params.reduced_streaming_speed
+        + cr_pressure_coupling_speed
     )
 
 

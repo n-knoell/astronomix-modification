@@ -4,7 +4,46 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Where things stand (2026-08-19)
+## Where things stand (2026-08-20)
+
+**Ladder item 2 (adiabatic compression) passes for real**, but getting there required fixing two
+real, pre-existing bugs in the transport layer that ladder item 1 never exercised (its CR
+background was zero, so both the bulk-advection path and the CR-pressure momentum coupling were
+no-ops all session). Both are described in full in `grey_cr_transport.py`'s docstrings and in
+`DESIGN.md`'s "Correction" note; short version:
+
+1. **Missing bulk advection.** `grey_cr_flux_terms` moved `e_cr`/`F_cr` only via the relative
+   flux (`F_cr`), never via the gas velocity `u_n` -- a deliberate, previously-signed-off choice
+   ("e_cr advected by F_cr, not by gas velocity"). Working the adiabatic-compression ladder test
+   by hand (a homologous squeeze, exact Euler solution) showed this gives the wrong exponent
+   (`e_cr ~ rho^(gamma_cr - 1)` instead of the plan's `rho^gamma_cr`) and -- more importantly --
+   means CRs in a uniformly-flowing wind (`div(v) = 0`) are never swept downstream at all,
+   breaking the Phase C wind/SNe science target. Fixed by adding the generic `u_n * q`
+   bulk-advection piece to both CR rows (user confirmed this direction explicitly, over patching
+   only the source term, when asked -- see `DESIGN.md`).
+2. **Missing CR-pressure acoustic mode in the CFL bound.** With bulk advection alone the flux was
+   correct but the *first* real run (nonzero, non-negligible `e_cr` under real momentum coupling)
+   went to NaN. Root cause (isolated via clean-subprocess source-term zeroing -- an in-process
+   monkeypatch attempt gave a false "transport, not sources" answer due to JAX JIT-cache reuse
+   across calls with the same static args, a trap worth remembering): `cr_pressure_gradient_source`
+   (`-grad(P_cr)` on momentum) and `cr_adiabatic_work_source` (`-P_cr div(v)` on `e_cr`) form a
+   genuine coupled gas+CR acoustic mode with speed
+   `sqrt(c_gas^2 + gamma_cr (gamma_cr - 1) e_cr / rho)` (linearized dispersion relation, derived
+   by hand -- a real, stable wave, not a physical instability), and nothing in
+   `grey_cr_fast_speed` ever accounted for it (it only returned `reduced_streaming_speed`, a
+   completely independent quantity). For the test's `e_cr0 = 1.0` this combined speed (~0.68) is
+   ~5x what the old bound (`max(c_gas, v_red) = 0.129`) provided, so CFL was silently violated.
+   Fixed by widening `grey_cr_fast_speed` to `reduced_streaming_speed + sqrt(gamma_cr (gamma_cr -
+   1) e_cr / rho)` (sum, not the tighter `sqrt(a^2+b^2)`, to keep it a simple, easily-conservative
+   widening of an already-"never-too-small" bound). No call-site changes needed -- `e_cr`/`rho`
+   were already available via `primitive_state`.
+
+Both fixes verified not to perturb ladder item 1 (re-ran `cr_advection.py` after each -- passes
+identically, as expected since its CR background is zero) or the existing hydro suite
+(`shock_tube1D.py`, FD + FV Pallas path, still passes). See "Verified (2026-08-20 session)" below
+for the numerical calibration that pinned down `cr_adiabatic_compression.py`'s tolerances.
+
+## Where things stood (2026-08-19)
 
 **Branch:** `feature/cosmic-rays-grey` (off `shock-finder`, which is off `main`).
 **Latest commit:** `789a277` (merge of `main`) as of session start; this session's work
@@ -147,6 +186,48 @@ See "What's done" and "Verified" below for details.
 - All 7 `pytests/cosmic_rays_grey/*.py` skeletons other than `cr_advection.py` still import and
   run to their intended `NotImplementedError` (unaffected by this session's implementation work).
 
+## Verified (2026-08-20 session)
+
+- `pytests/cosmic_rays_grey/cr_adiabatic_compression.py::test_cr_adiabatic_compression` passes.
+  Setup: 512-cell 1D box, open boundaries, homologous squeeze
+  `v(x,0) = -alpha0 (x - x_center)` with `alpha0 = 0.2`, uniform `rho0=1`, `p0=0.01` (gas),
+  `e_cr0=1` (CR, deliberately *not* small relative to gas pressure -- this is what exercises the
+  CR-pressure acoustic mode above), run to `t_end=1`.
+  - The idealized analytic homologous solution (uniform density, pure function of time) breaks
+    down under open BCs: the zero-gradient ghost-cell approximation to the nonzero analytic edge
+    velocity perturbs the density profile across most of the domain by `t_end`, not just a thin
+    edge layer (checked: density varies smoothly but non-trivially, ~1.08 at the edges to ~1.15
+    at the center, not flat). Comparing against the analytic formula directly gave ~8-11% error
+    even in a nominal "interior" window -- not tight enough to be a good test.
+  - The *pointwise* scaling relation `e_cr/e_cr0 ~= (rho/rho0)^gamma_cr`, evaluated using the
+    simulation's own `rho` at each cell, is far more robust (a local thermodynamic identity,
+    independent of the density profile's global shape): max relative error is 0.54% over the
+    *entire* domain including boundary-adjacent cells, and drops to 0.08% with a 30% edge margin.
+    The wrong (pre-advection-fix) exponent `gamma_cr - 1` disagrees with the same data by ~15% --
+    a wide, unambiguous separation. The committed test uses a 10% edge margin and `tol=5e-3`.
+  - Confirmed the fix is necessary, not just sufficient: reverted `grey_cr_flux_terms` to the
+    pre-session (no bulk advection) formula in an isolated script and reran the identical
+    setup -- stable up to `t_end=0.5` (vs. NaN by `t_end~0.09-0.095` for the *buggy pre-CFL-fix*
+    version at the same `e_cr0`), consistent with the old formula lacking the acoustic-mode
+    coupling this test's `e_cr0` triggers in the *new* formula; not re-verified against the wrong
+    exponent numerically beyond the `t_end=1` comparison above, since by that point both the
+    advection and CFL fixes were already in place together.
+- Re-ran `cr_advection.py::test_cr_advection` after each fix (both the advection-flux change and
+  the CFL widening) -- passes identically both times, as expected (its CR background is zero, so
+  neither change is triggered).
+- Re-ran `shock_tube1D.py::test_shock_tube1D` (CR off, FD + FV Pallas path) -- still passes,
+  confirming neither fix perturbs non-CR physics.
+- **JIT-cache trap, worth remembering:** an in-process attempt to isolate "is the instability from
+  the source terms or the transport flux" by monkeypatching `cr_pressure_gradient_source`/
+  `cr_adiabatic_work_source` to return zero *in the same Python process* as an unpatched
+  "baseline" run gave a false negative (still NaN) -- because `_time_integrator_sources`'s jitted
+  caller had already been traced and cached against the *original* functions on the first
+  (baseline) call, and reassigning the module-level name afterward doesn't invalidate that cache
+  entry when the static args (`config`, `registered_variables`) compare equal across calls. Redid
+  the same isolation as two calls in two separate subprocesses -- got the correct (opposite)
+  answer. Any future "patch a function and rerun in the same process" debugging in this codebase
+  should go through a fresh subprocess instead.
+
 ## Known gap carried forward (not fixed this session, flagged deliberately)
 
 - `_lax_friedrichs_solver` (`_lax_friedrichs.py`) now takes `params` (mechanical, needed for the
@@ -166,18 +247,23 @@ See "What's done" and "Verified" below for details.
    user; no changes requested).
 2. ~~Resolve the "known scaffold gap"~~ -- done (params threading, see above).
 3. ~~`cr_advection.py` (ladder item 1)~~ -- done, passes (see "Verified" above).
-4. Continue test-first, in plan-ladder order: `cr_adiabatic_compression.py` (item 2, `e_cr ~
-   rho^gamma_cr` under uniform compression -- exercises `cr_adiabatic_work_source` under nonzero
-   `div(v)`, already implemented) -> `cr_anisotropic_diffusion_oblique.py` (item 3, needs
+4. ~~`cr_adiabatic_compression.py` (ladder item 2)~~ -- done, passes; required fixing two real
+   gaps (missing bulk advection in `grey_cr_flux_terms`, missing CR-pressure acoustic mode in
+   `grey_cr_fast_speed`'s CFL bound) -- see "Where things stand" and "Verified" above.
+5. Continue test-first, in plan-ladder order: `cr_anisotropic_diffusion_oblique.py` (item 3, needs
    `anisotropic_flux_projection` implemented, currently a stub) ->
    `cr_isotropic_diffusion_convergence.py` (item 4) -> `cr_streaming_1d.py` (item 5, needs
    `cr_streaming_heating_source` implemented, currently a stub) -> `cr_shock_tube.py` (item 6,
-   the two-fluid CR-modified shock tube -- the real test of the momentum/energy feedback coupling
-   flagged above). Run `cr_gradient_check.py` (item 16, FD-vs-AD) alongside each as it becomes
-   exercisable. **This is where the next session should pick up.**
-5. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
+   the two-fluid CR-modified shock tube -- the real test of the momentum/energy feedback coupling,
+   now exercisable with real advection + the fixed CFL bound in place). Run `cr_gradient_check.py`
+   (item 16, FD-vs-AD) alongside each as it becomes exercisable. **This is where the next session
+   should pick up.** Note for item 3 (anisotropic/oblique diffusion): now that `grey_cr_flux_terms`
+   advects `e_cr`/`F_cr` with the gas velocity, check whether `anisotropic_flux_projection` needs
+   to project only the *relative* (F_cr) part along B, not the advective part -- not yet reasoned
+   through.
+6. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
    limitation") gets separately scoped -- don't attempt it inside a ladder-item pass.
-6. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with
+7. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with
    the older `astronomix/_modules/_cosmic_rays/` (`n_cr`) model before starting Phase B
    (shock-finder DSA injection needs to target one CR model or the other).
 

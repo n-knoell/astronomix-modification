@@ -102,16 +102,38 @@ so `reduced_streaming_speed` values above the gas sound speed silently violated 
 ## Resolved: transport flux and feedback-source formulas (ladder item 1)
 
 `grey_cr_flux_terms`/`grey_cr_fast_speed` implement the isotropic-closure two-moment system
-(Jiang & Oh 2018): `d(e_cr)/dt + d(F_cr)/dx = 0`, `d(F_cr)/dt + d(v_red^2 P_cr)/dx = 0`, with
-`P_cr = (gamma_cr - 1) e_cr` the same pressure used for the gas coupling below --
-`grey_cr_fast_speed` returns the un-scaled `reduced_streaming_speed` as a conservative CFL/Riemann
-bound (the true eigenvalue is the smaller `reduced_streaming_speed * sqrt(gamma_cr - 1)`).
-`cr_pressure_gradient_source` adds `-grad(P_cr)` to momentum *and* the matching `-v.grad(P_cr)`
-work-rate to gas total energy (needed for energy conservation, not explicit in this doc's
-original one-line bullet); `cr_adiabatic_work_source` adds `-P_cr div(v)` to `e_cr`. Together
-these satisfy the local conservation law `d(E_gas + e_cr)/dt + div(flux terms) = 0` exactly (the
-product-rule identity `div(P_cr v) = v.grad(P_cr) + P_cr div(v)`), verified numerically to ~7e-5
-relative. See `PROGRESS.md` for the full derivation and numerical verification.
+(Jiang & Oh 2018): `d(e_cr)/dt + d(u_n e_cr + F_cr)/dx = 0`,
+`d(F_cr)/dt + d(u_n F_cr + v_red^2 P_cr)/dx = 0`, with `P_cr = (gamma_cr - 1) e_cr` the same
+pressure used for the gas coupling below -- `grey_cr_fast_speed` returns the un-scaled
+`reduced_streaming_speed` as a conservative CFL/Riemann bound *relative to the local advecting
+velocity* `u_n` (the true eigenvalue relative to `u_n` is the smaller
+`reduced_streaming_speed * sqrt(gamma_cr - 1)`); every call site adds `u_n` itself around this
+(see hll.py/reconstruction.py/`_timestep_estimator.py`'s shared `|u| + max(c_gas, v_cr_fast)`
+pattern), so `grey_cr_fast_speed` itself must not. `cr_pressure_gradient_source` adds
+`-grad(P_cr)` to momentum *and* the matching `-v.grad(P_cr)` work-rate to gas total energy
+(needed for energy conservation, not explicit in this doc's original one-line bullet);
+`cr_adiabatic_work_source` adds `-P_cr div(v)` to `e_cr`. Together with the `u_n e_cr` advective
+flux term above (which supplies the "volume dilution" piece, `-e_cr div(v)`, that a conservative
+advective flux gives for free), these satisfy the local conservation law
+`d(E_gas + e_cr)/dt + div(flux terms) = 0` exactly (the product-rule identity
+`div(P_cr v) = v.grad(P_cr) + P_cr div(v)`), verified numerically to ~7e-5 relative, **and** the
+adiabatic-compression invariant `e_cr ~ rho^gamma_cr` (plan Sec. 4, test 2; see `PROGRESS.md`).
+
+**Correction (ladder item 2 session):** `grey_cr_flux_terms` originally had *no* `u_n * e_cr` /
+`u_n * F_cr` advective piece at all -- `e_cr`/`F_cr` moved only via the relative flux terms
+above, deliberately not by the gas velocity (see the now-superseded note in `cr_advection.py`'s
+docstring, "e_cr advected by F_cr, not by the gas velocity"). Working through the
+adiabatic-compression ladder test (a homologous squeeze, exact solution of the Euler equations)
+by hand showed this was wrong on two counts: (1) it makes `cr_adiabatic_work_source`'s
+`-P_cr div(v)` alone integrate to `e_cr ~ rho^(gamma_cr - 1)`, not the plan's `rho^gamma_cr`; (2)
+more importantly, with `div(v) = 0` (e.g. inside a steady wind) the adiabatic-work source term is
+identically zero and `F_cr`'s own dynamics only react to `P_cr` gradients, so a non-uniform CR
+population in a uniformly-flowing wind would never be swept downstream at all -- silently
+breaking the Phase C wind/SNe emission target. Fixed by adding the generic `u_n * q`
+bulk-advection piece each row already gets from `_euler_flux` for every *other* registered
+row, but which the CR rows previously discarded (`_euler_flux` `.set()`s them, not `.add()`s).
+`cr_grey_sources.py`'s source terms were re-verified against this corrected flux and did not need
+to change -- see `PROGRESS.md`.
 
 ## BC handling per scheme
 

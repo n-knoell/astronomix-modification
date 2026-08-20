@@ -41,8 +41,14 @@ autocvd(num_gpus=1)
 # ruff: noqa: E402
 # =======================
 
+# general
+from pathlib import Path
+
 # jax
 import jax.numpy as jnp
+
+# plotting
+import matplotlib.pyplot as plt
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -141,6 +147,34 @@ def test_cr_advection(l2_tol: float = 0.05, peak_retention_tol: float = 0.15):
 
     l2_err = float(jnp.sqrt(jnp.mean((e_cr_final - e_cr_initial) ** 2)) / amp)
     peak_retention_loss = 1.0 - float(jnp.max(e_cr_final) / jnp.max(e_cr_initial))
+
+    # Diagnostic plot: the initial pulse and the state after exactly one
+    # box-crossing period should coincide almost exactly (periodic BCs make
+    # the initial profile the exact answer at t_end -- see module
+    # docstring), so overlaying them directly shows the numerical diffusion
+    # this test's tolerances are calibrated against.
+    fig, (ax_profile, ax_residual) = plt.subplots(1, 2, figsize=(12, 5))
+
+    ax_profile.plot(x, e_cr_initial, label="t = 0 (exact reference)", color="black", lw=1.5)
+    ax_profile.plot(x, e_cr_final, label=f"t = {t_end:.4f} (one period)", color="C0", ls="--")
+    ax_profile.set_xlabel("x")
+    ax_profile.set_ylabel("e_cr")
+    ax_profile.set_title("Pulse shape/amplitude after one box-crossing period")
+    ax_profile.legend()
+
+    ax_residual.plot(x, (e_cr_final - e_cr_initial) / amp, color="C3")
+    ax_residual.axhline(0.0, color="black", lw=0.8)
+    ax_residual.set_xlabel("x")
+    ax_residual.set_ylabel("(e_cr_final - e_cr_initial) / amp")
+    ax_residual.set_title(
+        f"Residual  (L2 rel. err = {l2_err:.4f}, peak loss = {peak_retention_loss:.4f})"
+    )
+
+    fig.tight_layout()
+    pics_dir = Path(__file__).resolve().parent / "pics"
+    pics_dir.mkdir(exist_ok=True)
+    fig.savefig(pics_dir / "cr_advection_test.svg")
+    plt.close(fig)
 
     assert l2_err < l2_tol, (
         f"CR pulse shape not preserved: L2 relative error {l2_err:.4f} "
