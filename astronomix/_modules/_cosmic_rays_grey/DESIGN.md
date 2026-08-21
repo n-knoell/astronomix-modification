@@ -43,9 +43,16 @@ isolation from the gas EOS.
   `max(u_gas + c_gas, v_cr_fast)`, not folded into a single effective sound speed (unlike the
   old model's `speed_of_sound_crs`) -- the two subsystems have genuinely different
   characteristics.
-- Anisotropic transport: when `CosmicRayGreyConfig.anisotropic_transport`, project along the
-  local B direction with a monotonicity-safe (Sharma & Hammett 2007) operator; isotropic
-  otherwise.
+- Anisotropic transport: when `CosmicRayGreyConfig.anisotropic_transport` (requires `config.mhd`),
+  `F_cr` is projected onto the local B direction (`cr_grey_transport.anisotropic_flux_projection`,
+  implemented -- ladder item 3) once per full step, in `_iteration_level_updates` -- **not**
+  inside `grey_cr_flux_terms`, because that function runs inside the FV MHD Strang split's
+  gas-only Riemann solve, where the magnetic-field rows are structurally absent from the state
+  array for that half-step (see "Resolved: anisotropic transport" below). A direct projection,
+  not the full Sharma & Hammett (2007) monotonicity-preserving flux limiter -- see that function's
+  docstring for the scope reasoning (the plan itself expects less limiting machinery to be needed
+  for a hyperbolic, Riemann-solved two-moment system than for the diffusive/parabolic case S&H
+  address). Isotropic (unprojected `F_cr`) otherwise, the default.
 - Streaming sign: regularized with `tanh` (`cr_grey_transport.regularized_streaming_sign`), not
   `min`/`max`/`sign`, to keep the adjoint finite (differentiability plan below).
 
@@ -134,6 +141,48 @@ bulk-advection piece each row already gets from `_euler_flux` for every *other* 
 row, but which the CR rows previously discarded (`_euler_flux` `.set()`s them, not `.add()`s).
 `cr_grey_sources.py`'s source terms were re-verified against this corrected flux and did not need
 to change -- see `PROGRESS.md`.
+
+## Resolved: anisotropic transport, and a general FV+MHD bug it exposed (ladder item 3)
+
+`anisotropic_flux_projection` (`cr_grey_transport.py`) is implemented: given the local B and
+`F_cr`, returns `F_cr_parallel = (F_cr . b_hat) * b_hat`, `b_hat = B / sqrt(|B|^2 +
+b_field_floor^2)` (a smooth, always-defined floor -- `CosmicRayGreyParams.b_field_floor` -- same
+"prefer smooth regularization over min/max" philosophy as `regularized_streaming_sign`). It is
+called from `astronomix._modules._iteration_level_updates` once per full step, before the hydro
+update -- overwriting the `F_cr` state with its B-projected value -- **not** from within
+`grey_cr_flux_terms`, which cannot reach B (see below). `F_cr`'s own pressure-driving term
+(`v_red^2 * P_cr`, in `grey_cr_flux_terms`) stays isotropic, un-projected, each Cartesian
+component driven by its own axis's gradient -- so within a single step the raw `F_cr` state can
+pick up a small (order `dt`), non-accumulating perpendicular-to-B component before the *next*
+step's projection removes it again. Verified (`PROGRESS.md`): a localized `e_cr` bump on a
+30-degree oblique B (2D, MHD) shows a clean expanding ring for the isotropic closure vs. two
+pulses moving along +/-B for the anisotropic one; perpendicular/parallel second-moment growth
+ratio ~1.0 (isotropic) vs. ~0.03 (anisotropic).
+
+**Why not inside `grey_cr_flux_terms`:** that function runs inside the FV MHD Strang split's
+*gas-only* Riemann solve (`evolve_state._evolve_state_fv` splits `primitive_state` into a gas
+sub-array and a magnetic sub-array for each half-step, evolves them separately, then rejoins) --
+the magnetic-field rows are not part of the state array at that call site at all. Confirmed by
+hitting `AttributeError: 'int' object has no attribute 'x'` the first time an anisotropic run
+actually reached that code path (`registered_variables_gas.magnetic_index == -1` there).
+
+**General (non-CR) bug this exposed and fixed:** `_evolve_state_fv` performed that gas/magnetic
+split by hardcoding `primitive_state[-3:, ...]` as "the magnetic field" -- correct only when
+nothing is registered *after* `magnetic_index`. `registered_variables.py`'s FV branch allocates
+`magnetic_index` *before* `cosmic_ray_e_index`/`cosmic_ray_flux_index`, so with both `mhd` and
+`grey_cosmic_rays` active the slice silently grabbed `(B_z, e_cr, F_cr_x)` as "the magnetic
+field" and mislabelled real `B_z` as gas -- CR transport went completely inert under MHD as a
+result (not specific to anisotropic transport -- the *isotropic* closure was equally broken).
+This is a general bug (would equally affect `wind_density` or the old `cosmic_ray_n` model
+combined with MHD), not something to fix inside this module. Fixed in
+`astronomix/_finite_volume/_state_evolution/evolve_state.py` via
+`_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state`, which locate the magnetic rows by
+their actual `registered_variables.magnetic_index` positions and re-index every other registry
+field around them, instead of assuming a fixed trailing position. Verified to be a no-op for
+plain MHD (`pytests/mhd/alfven_wave3D.py` unchanged) and for non-MHD configs (`shock_tube1D.py`
+unchanged). User confirmed this fix direction explicitly (over reordering the registry allocation
+instead, which would have had a much wider blast radius on existing MHD index values) when asked
+-- see `PROGRESS.md`.
 
 ## BC handling per scheme
 

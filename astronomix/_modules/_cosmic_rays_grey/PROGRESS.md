@@ -4,7 +4,65 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Where things stand (2026-08-20)
+## Where things stand (2026-08-20, ladder item 3)
+
+**Ladder item 3 (oblique anisotropic diffusion) passes for real**, and `anisotropic_flux_projection`
+is implemented (was a dangling, uncalled stub). This required first fixing a real, pre-existing,
+CR-unrelated bug in the FV MHD Strang split, found because ladder item 3 is the first test in this
+module to combine `mhd=True` with `grey_cosmic_rays=True` at all.
+
+1. **`evolve_state.py`'s magnetic-field split assumed B is always the trailing 3 state rows.**
+   `_evolve_state_fv` hardcoded `primitive_state[-3:, ...]` as "the magnetic field" (with an
+   explicit `# WARNING` comment saying so) to split gas and B for the Strang-split magnetic
+   update. `registered_variables.py`'s FV branch allocates `magnetic_index` *before*
+   `cosmic_ray_e_index`/`cosmic_ray_flux_index`, so with both `mhd` and `grey_cosmic_rays` on, B is
+   no longer last -- the slice grabbed `(B_z, e_cr, F_cr_x)` as "the magnetic field" and
+   mislabelled real `B_z` as gas, corrupting both halves of the split. Symptom: CR transport went
+   completely inert with `mhd=True` (`e_cr` frozen to 6 significant figures, `F_cr` stuck at
+   ~1e-9 instead of the ~1e-4 a matching `mhd=False` run reached) -- diagnosed by comparing
+   otherwise-identical `mhd=True`/`mhd=False` runs and noticing wall-clock time was comparable
+   (ruling out a CFL/dt collapse) while the state was essentially unchanged (ruling out "just
+   slow", pointing at a flux/indexing bug instead). This is a **general bug, not CR-specific** --
+   it would equally corrupt `wind_density` or the old `cosmic_ray_n` model combined with MHD, just
+   never triggered before since no prior test combined MHD with anything registered after
+   `magnetic_index`.
+
+   User's explicit direction (asked, since the fix could go two ways with different blast radius):
+   fix `evolve_state.py` to locate the magnetic rows by their actual registered indices, not
+   reorder the registry to keep the old slice valid. Implemented as
+   `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` (new helpers in `evolve_state.py`,
+   general-purpose, not under `_cosmic_rays_grey/`) -- gather the real `magnetic_index.x/.y/.z`
+   rows into `magnetic_field`, gather everything else (order-preserving) into `gas_state`, and
+   re-index every other `RegisteredVariables` field (density/velocity/momentum/pressure/energy/
+   wind_density/cosmic_ray_n/cosmic_ray_e/cosmic_ray_flux/interface_magnetic_field) past however
+   many removed B-rows sit before each one, via `_shift_index_past_removed_rows`/
+   `_shift_field_past_removed_rows`. Verified: plain 3D MHD (`pytests/mhd/alfven_wave3D.py`, no
+   CR) still passes with identical L1 errors (FV native and FD Pallas paths); with the fix, a
+   `mhd=True` + `grey_cosmic_rays=True` isotropic run now matches a `mhd=False` run to 6
+   significant figures (`max e_cr` at `t=0.3`: `1.054278e-04` vs `1.054263e-04`) -- strong
+   confirmation, since the isotropic CR closure doesn't depend on B at all and the two runs should
+   (and now do) agree almost exactly.
+
+2. **`anisotropic_flux_projection` cannot be called from `grey_cr_flux_terms`.** Original design
+   (see the now-superseded note in a prior revision of that function's docstring) assumed it would
+   hook into the per-interface flux computation, projecting F_cr onto B right where the isotropic
+   closure reads it. But `grey_cr_flux_terms` runs inside the FV MHD Strang split's *gas-only*
+   Riemann solve -- exactly where fix #1 above deliberately strips the magnetic rows out of the
+   state array for that half-step. B is therefore structurally unavailable at that call site;
+   confirmed by hitting `AttributeError: 'int' object has no attribute 'x'` (`registered_variables_gas.magnetic_index`
+   is `-1` there) the first time the anisotropic run actually reached that code path. Fixed by
+   moving the projection to `astronomix._modules._iteration_level_updates` (alongside the existing
+   `e_cr` positivity floor) -- it runs once per full step, before the hydro update, on the full
+   (unsplit) primitive state where B is genuinely present, overwriting `F_cr` with its B-projected
+   value. `grey_cr_flux_terms` itself needed no anisotropy-aware branch at all once this was in
+   place: by the time it reads `F_cr` mid-step, `F_cr` is already B-aligned if
+   `anisotropic_transport` is on.
+
+See "Verified (2026-08-20, ladder item 3)" below for the numerical result (isotropic run: an
+expanding ring, perp/parallel variance-growth ratio ~1.0; anisotropic run: two pulses along ±B,
+ratio ~0.03) and the plot.
+
+## Where things stood (2026-08-20, ladder item 2)
 
 **Ladder item 2 (adiabatic compression) passes for real**, but getting there required fixing two
 real, pre-existing bugs in the transport layer that ladder item 1 never exercised (its CR
@@ -186,6 +244,43 @@ See "What's done" and "Verified" below for details.
 - All 7 `pytests/cosmic_rays_grey/*.py` skeletons other than `cr_advection.py` still import and
   run to their intended `NotImplementedError` (unaffected by this session's implementation work).
 
+## Verified (2026-08-20, ladder item 3)
+
+- `pytests/cosmic_rays_grey/cr_anisotropic_diffusion_oblique.py::test_cr_anisotropic_diffusion_oblique`
+  passes. Setup: 128x128 2D box, `mhd=True`, uniform B at 30 degrees to the grid, periodic BCs,
+  localized `e_cr` Gaussian bump (`amp=1e-3`, `sigma=0.03`) on a uniform gas at rest, `F_cr=0`
+  initial, `reduced_streaming_speed=1`, run to `t_end=0.3`; isotropic and anisotropic closures run
+  on the identical IC for direct contrast.
+  - With no bulk flow and no relaxation/damping term in the two-moment system (pure hyperbolic
+    wave, not diffusive), an at-rest localized bump does not diffuse smoothly -- it propagates as
+    a genuine wave. Isotropic closure: the bump expands as a clean ring (matches the standard
+    even-dimension wave-equation fundamental solution). Anisotropic (B-projected) closure: the
+    bump splits into exactly two pulses moving along +/-B -- both clearly visible in the
+    committed plot (`pics/cr_anisotropic_diffusion_oblique_test.svg`).
+  - Diagnostic: `e_cr`-weighted second moment of the distribution, resolved parallel/perpendicular
+    to B, tracked as *growth* relative to the initial (isotropic Gaussian) moment to normalize out
+    the pulse's own width. Isotropic run: perp/parallel growth ratio ~1.00 (spreads equally in
+    both directions, as expected). Anisotropic run: ratio ~0.03 (parallel growth statistically
+    identical to the isotropic run -- confirms along-B transport isn't suppressed -- while
+    perpendicular growth is ~30x smaller). Committed test asserts the anisotropic ratio
+    `< 0.1`, comfortable margin above the observed ~0.03 and far below the isotropic ~1.0.
+  - Getting a working `mhd=True` + `grey_cosmic_rays=True` config at all required the
+    `evolve_state.py` fix above first -- initial attempts (before that fix) showed CR transport
+    completely inert under MHD, diagnosed by comparing wall-clock time (comparable between
+    `mhd=True`/`False`, ruling out a CFL/dt collapse) against the frozen state (ruling out "just
+    slow").
+- Re-ran `cr_advection.py` and `cr_adiabatic_compression.py` after the `evolve_state.py` and
+  `_iteration_level_updates.py` changes -- both still pass (neither uses `mhd` or
+  `anisotropic_transport`, so unaffected in principle; re-run anyway since `evolve_state.py`
+  fix #1 touches the shared FV evolution path).
+- Re-ran `pytests/mhd/alfven_wave3D.py::test_alfven_wave_convergence` (plain 3D MHD, no CR) --
+  passes with identical L1 errors (FV native-JAX and FD Pallas paths) to before the
+  `evolve_state.py` fix, confirming the re-indexed split/join is a no-op when nothing is
+  registered after `magnetic_index` (the common case today).
+- Re-ran `shock_tube1D.py::test_shock_tube1D` (non-MHD) -- still passes, confirming the new
+  `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` helpers (only reachable when
+  `config.mhd` and `dimensionality > 1`) are a no-op for non-MHD configs.
+
 ## Verified (2026-08-20 session)
 
 - `pytests/cosmic_rays_grey/cr_adiabatic_compression.py::test_cr_adiabatic_compression` passes.
@@ -250,22 +345,28 @@ See "What's done" and "Verified" below for details.
 4. ~~`cr_adiabatic_compression.py` (ladder item 2)~~ -- done, passes; required fixing two real
    gaps (missing bulk advection in `grey_cr_flux_terms`, missing CR-pressure acoustic mode in
    `grey_cr_fast_speed`'s CFL bound) -- see "Where things stand" and "Verified" above.
-5. Continue test-first, in plan-ladder order: `cr_anisotropic_diffusion_oblique.py` (item 3, needs
-   `anisotropic_flux_projection` implemented, currently a stub) ->
-   `cr_isotropic_diffusion_convergence.py` (item 4) -> `cr_streaming_1d.py` (item 5, needs
-   `cr_streaming_heating_source` implemented, currently a stub) -> `cr_shock_tube.py` (item 6,
-   the two-fluid CR-modified shock tube -- the real test of the momentum/energy feedback coupling,
-   now exercisable with real advection + the fixed CFL bound in place). Run `cr_gradient_check.py`
-   (item 16, FD-vs-AD) alongside each as it becomes exercisable. **This is where the next session
-   should pick up.** Note for item 3 (anisotropic/oblique diffusion): now that `grey_cr_flux_terms`
-   advects `e_cr`/`F_cr` with the gas velocity, check whether `anisotropic_flux_projection` needs
-   to project only the *relative* (F_cr) part along B, not the advective part -- not yet reasoned
-   through.
-6. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
+5. ~~`cr_anisotropic_diffusion_oblique.py` (item 3)~~ -- done, passes; required implementing
+   `anisotropic_flux_projection` (was a dangling stub), plus a general (non-CR-specific) fix to
+   the FV MHD Strang split in `evolve_state.py` -- see "Where things stand" and "Verified" above.
+   The projection is applied once per step in `_iteration_level_updates`, not inside
+   `grey_cr_flux_terms` -- B is structurally unavailable at that call site (see point 2 above).
+6. Continue test-first, in plan-ladder order: `cr_isotropic_diffusion_convergence.py` (item 4) ->
+   `cr_streaming_1d.py` (item 5, needs `cr_streaming_heating_source` implemented, currently a
+   stub) -> `cr_shock_tube.py` (item 6, the two-fluid CR-modified shock tube -- the real test of
+   the momentum/energy feedback coupling, now exercisable with real advection + the fixed CFL
+   bound in place). Run `cr_gradient_check.py` (item 16, FD-vs-AD) alongside each as it becomes
+   exercisable. **This is where the next session should pick up.** Note: item 4 (isotropic
+   diffusion convergence) doesn't need MHD at all -- should be a more contained test than item 3
+   turned out to be.
+7. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
    limitation") gets separately scoped -- don't attempt it inside a ladder-item pass.
-7. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with
+8. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with
    the older `astronomix/_modules/_cosmic_rays/` (`n_cr`) model before starting Phase B
    (shock-finder DSA injection needs to target one CR model or the other).
+9. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
+   not CR-specific) is worth a heads-up to whoever owns the MHD module / other in-flight MHD work,
+   since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
+   with `wind_density` or the old `cosmic_ray_n` model too, not just grey CR.
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 

@@ -48,3 +48,10 @@ class CosmicRayGreyParams(NamedTuple):
     #: units of the streaming speed. Smaller is closer to sign(), but less
     #: adjoint-friendly.
     streaming_sign_regularization: float = 1e-2
+
+    #: smooth floor on |B|, in the same units as the magnetic-field primitive
+    #: variable, used by anisotropic_flux_projection's b_hat = B / sqrt(|B|^2
+    #: + b_field_floor^2) -- keeps the unit vector well-defined and
+    #: differentiable at B=0 instead of a hard jnp.maximum/where floor.
+    #: Should be well below any physically relevant |B| for the problem.
+    b_field_floor: float = 1e-10

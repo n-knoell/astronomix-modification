@@ -142,6 +142,18 @@ def grey_cr_flux_terms(
     # F_cr component) -- only the rows the caller reads back
     # (cosmic_ray_e_index / cosmic_ray_flux_index.*) matter, so populating
     # the rest of the array is harmless.
+    #
+    # Anisotropic transport (plan Sec. 2) is NOT applied here: this function
+    # runs deep inside the FV MHD Strang split's gas-only Riemann solve
+    # (_evolve_state_fv -> _evolve_gas_state_*), where the magnetic-field
+    # rows have already been split off into a separate array
+    # (evolve_state._split_gas_and_magnetic_state) and are not part of
+    # ``primitive_state`` here -- so this function structurally cannot read
+    # B. Projecting F_cr onto B instead happens once per full step, before
+    # the hydro update, in _iteration_level_updates (see that module and
+    # anisotropic_flux_projection's docstring) -- by the time this function
+    # runs, F_cr is already B-aligned if anisotropic_transport is on, so the
+    # isotropic-looking flux below is correct either way.
     flux_vector = u_n * primitive_state
     flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].add(
         primitive_state[f_cr_index_along_flux_direction]
@@ -231,25 +243,86 @@ def anisotropic_flux_projection(
     params: SimulationParams,
     registered_variables: RegisteredVariables,
 ) -> STATE_TYPE:
-    """Project the CR flux/diffusion along the local magnetic-field direction.
+    """Project the CR flux onto the local magnetic-field direction.
 
-    Monotonicity-safe operator (Sharma & Hammett 2007): heat/CR energy stays
-    along B, no cross-field leak. Only meaningful when
-    ``config.cosmic_ray_grey_config.anisotropic_transport`` is set; the
-    isotropic closure is the default.
+    Returns ``F_cr_parallel = (F_cr . b_hat) * b_hat``, ``b_hat = B / |B|``,
+    i.e. the component of ``F_cr`` along the local field, with the
+    perpendicular component discarded. Only meaningful when
+    ``config.mhd`` and ``config.cosmic_ray_grey_config.anisotropic_transport``
+    are both set (requires an actual field to project onto); the isotropic
+    closure (raw, unprojected ``F_cr``) is the default.
 
     Args:
         primitive_state: The primitive state of the fluid on all cells.
         config: The simulation configuration.
-        params: The simulation parameters (carries ``CosmicRayGreyParams``).
+        params: The simulation parameters (carries ``CosmicRayGreyParams``,
+            in particular ``b_field_floor``).
         registered_variables: The registered variables.
 
     Returns:
-        The B-projected CR flux.
+        A ``STATE_TYPE``-shaped array with the ``cosmic_ray_flux_index``
+        row(s) set to the B-projected flux; other rows are zero and unused
+        by the caller.
+
+    Where this is called from, and why (not from :func:`grey_cr_flux_terms`):
+    the FV MHD Strang split (``evolve_state._evolve_state_fv``) splits
+    ``primitive_state`` into a gas-only sub-array and a separate magnetic
+    sub-array for each half-step (``evolve_state._split_gas_and_magnetic_state``)
+    -- the magnetic-field rows are structurally unavailable inside the
+    gas-only Riemann solve where :func:`grey_cr_flux_terms` runs, so this
+    function cannot be called from there. Instead it's applied once per full
+    step, as a primitive-state correction in
+    ``astronomix._modules._iteration_level_updates`` (alongside the ``e_cr``
+    positivity floor), overwriting ``F_cr`` with its B-projected value
+    *before* the hydro update runs -- so by the time
+    :func:`grey_cr_flux_terms` reads ``F_cr`` mid-step, it is already
+    B-aligned if ``anisotropic_transport`` is on. Consequence: within a
+    single step, the isotropic per-axis ``v_red^2 * P_cr`` driving term
+    (unchanged, not projected -- see :func:`grey_cr_flux_terms`) can still
+    push a small (order ``dt``) perpendicular component into ``F_cr`` before
+    the *next* step's correction removes it again -- a per-step residual,
+    not a steady-state leak. Scope note (plan Sec. 2: "the flux limiter is
+    largely avoided [in two-moment form]... keep the S&H-style guard only
+    where needed"): this is a direct projection, not the full Sharma &
+    Hammett (2007) monotonicity-preserving flux-limiting scheme (which
+    exists for *diffusive/parabolic* oblique discretizations; this system is
+    hyperbolic/Riemann-solved, and the plan itself expects less limiting
+    machinery to be needed here). See PROGRESS.md for the numerical
+    verification of how small the residual leak actually is.
     """
-    raise NotImplementedError(
-        "Phase A: Sharma & Hammett (2007) anisotropic projection. See DESIGN.md."
-    )
+    b_index = registered_variables.magnetic_index
+    f_cr_index = registered_variables.cosmic_ray_flux_index
+
+    b_x = primitive_state[b_index.x]
+    b_y = primitive_state[b_index.y]
+    f_x = primitive_state[f_cr_index.x]
+    f_y = primitive_state[f_cr_index.y]
+    if config.dimensionality == 3:
+        b_z = primitive_state[b_index.z]
+        f_z = primitive_state[f_cr_index.z]
+    else:
+        b_z = jnp.zeros_like(b_x)
+        f_z = jnp.zeros_like(f_x)
+
+    # Smooth (always-positive, differentiable) floor on |B| -- same "prefer
+    # smooth regularization over min/max" philosophy as
+    # regularized_streaming_sign (plan Sec. 2) -- instead of jnp.maximum,
+    # which would have a non-smooth gradient at the floor.
+    b_field_floor = params.cosmic_ray_grey_params.b_field_floor
+    b_mag = jnp.sqrt(b_x**2 + b_y**2 + b_z**2 + b_field_floor**2)
+    b_hat_x = b_x / b_mag
+    b_hat_y = b_y / b_mag
+    b_hat_z = b_z / b_mag
+
+    f_dot_b = f_x * b_hat_x + f_y * b_hat_y + f_z * b_hat_z
+
+    flux_vector = jnp.zeros_like(primitive_state)
+    flux_vector = flux_vector.at[f_cr_index.x].set(f_dot_b * b_hat_x)
+    flux_vector = flux_vector.at[f_cr_index.y].set(f_dot_b * b_hat_y)
+    if config.dimensionality == 3:
+        flux_vector = flux_vector.at[f_cr_index.z].set(f_dot_b * b_hat_z)
+
+    return flux_vector
 
 
 @jax.jit

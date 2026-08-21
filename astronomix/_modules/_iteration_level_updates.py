@@ -39,6 +39,9 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 from astronomix._modules._cnn_mhd_corrector._cnn_mhd_corrector import _cnn_mhd_corrector
 from astronomix._modules._cooling._cooling import update_pressure_by_cooling
 from astronomix._modules._cosmic_rays.cr_injection import inject_crs_at_strongest_shock
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    anisotropic_flux_projection,
+)
 from astronomix._modules._frame_tracking._frame_tracking import _frame_tracking
 from astronomix._modules._neural_net_force._neural_net_force import _neural_net_force
 from astronomix._modules._stellar_wind.stellar_wind import _wind_injection
@@ -215,6 +218,31 @@ def _iteration_level_updates(
             registered_variables,
             helper_data,
         )
+
+    # Grey two-moment CR anisotropic transport: project F_cr onto the local
+    # B direction once per full step, before the hydro update. Applied here
+    # (not inside grey_cr_flux_terms) because the FV MHD Strang split
+    # temporarily removes the magnetic-field rows from the state array
+    # during the gas-only Riemann solve, where B is structurally
+    # unavailable -- see anisotropic_flux_projection's docstring.
+    if (
+        registered_variables.cosmic_ray_e_active
+        and config.cosmic_ray_grey_config.anisotropic_transport
+    ):
+        f_cr_index = registered_variables.cosmic_ray_flux_index
+        projected_f_cr = anisotropic_flux_projection(
+            primitive_state, config, params, registered_variables
+        )
+        primitive_state = primitive_state.at[f_cr_index.x].set(
+            projected_f_cr[f_cr_index.x]
+        )
+        primitive_state = primitive_state.at[f_cr_index.y].set(
+            projected_f_cr[f_cr_index.y]
+        )
+        if config.dimensionality == 3:
+            primitive_state = primitive_state.at[f_cr_index.z].set(
+                projected_f_cr[f_cr_index.z]
+            )
 
     # Per-step positivity on the primitive state.
     #   - HARD_FLOOR clamps density (and pressure, for an ideal gas) to its

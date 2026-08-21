@@ -26,6 +26,7 @@ from astronomix.option_classes.simulation_config import (
     RK2_SSP,
     SPHERICAL,
     STATE_TYPE,
+    StaticIntVector,
     UNSPLIT,
     VAN_ALBADA_PP,
 )
@@ -593,6 +594,132 @@ def _evolve_gas_state_unsplit(
 # -------------------------------------------------------------
 
 
+def _shift_index_past_removed_rows(index: int, removed_rows_sorted: tuple) -> int:
+    """Re-index a single state-array row after ``removed_rows_sorted`` (a
+    sorted tuple of row numbers) have been deleted from the array.
+
+    Args:
+        index: The original row index, or ``-1`` for "not allocated".
+        removed_rows_sorted: The removed row numbers, sorted ascending.
+
+    Returns:
+        ``-1`` unchanged if ``index`` is ``-1``; otherwise ``index`` shifted
+        down by however many removed rows sit before it.
+    """
+    if index < 0:
+        return index
+    return index - sum(1 for r in removed_rows_sorted if r < index)
+
+
+def _shift_field_past_removed_rows(field, removed_rows_sorted: tuple):
+    """:func:`_shift_index_past_removed_rows`, applied to a
+    ``RegisteredVariables`` field that may be a plain ``int`` or a
+    ``StaticIntVector`` (x/y/z)."""
+    if isinstance(field, StaticIntVector):
+        return StaticIntVector(
+            _shift_index_past_removed_rows(field.x, removed_rows_sorted),
+            _shift_index_past_removed_rows(field.y, removed_rows_sorted),
+            _shift_index_past_removed_rows(field.z, removed_rows_sorted),
+        )
+    return _shift_index_past_removed_rows(field, removed_rows_sorted)
+
+
+def _split_gas_and_magnetic_state(
+    primitive_state: STATE_TYPE, registered_variables: RegisteredVariables
+):
+    """Split ``primitive_state`` into a magnetic-field sub-array and a
+    gas-only sub-array (with a matching re-indexed ``RegisteredVariables``),
+    by the *actual* ``magnetic_index`` row positions -- not by assuming the
+    magnetic field occupies the trailing 3 rows.
+
+    That assumption (this function replaces) breaks whenever any module
+    registers rows *after* the magnetic field -- e.g. grey two-moment cosmic
+    rays (``cosmic_ray_e_index``/``cosmic_ray_flux_index``, allocated after
+    ``magnetic_index`` in ``registered_variables.py``'s FV branch) or
+    ``wind_density``/the old ``cosmic_ray_n`` model, combined with
+    ``config.mhd``. Found while building the grey-CR anisotropic-diffusion
+    ladder test (Phase A item 3): with both ``mhd`` and ``grey_cosmic_rays``
+    on, the old ``primitive_state[-3:, ...]`` slice silently grabbed
+    ``(B_z, e_cr, F_cr_x)`` as "the magnetic field" and mislabelled real
+    ``B_z`` as gas, corrupting both halves of the Strang split. General fix,
+    not CR-specific -- see PROGRESS.md for the full writeup.
+
+    Args:
+        primitive_state: The full primitive state, including the magnetic
+            field rows.
+        registered_variables: The registered variables for the full state.
+
+    Returns:
+        ``(gas_state, magnetic_field, registered_variables_gas,
+        gas_rows, magnetic_rows)`` -- the last two (row-index arrays, in the
+        order used to build ``gas_state``/``magnetic_field``) are what
+        :func:`_join_gas_and_magnetic_state` needs to reassemble the result.
+    """
+    b_index = registered_variables.magnetic_index
+    magnetic_rows = jnp.array([b_index.x, b_index.y, b_index.z])
+    removed_rows_sorted = tuple(sorted((b_index.x, b_index.y, b_index.z)))
+
+    gas_rows = jnp.array(
+        [i for i in range(registered_variables.num_vars) if i not in removed_rows_sorted]
+    )
+
+    gas_state = primitive_state[gas_rows, ...]
+    magnetic_field = primitive_state[magnetic_rows, ...]
+
+    registered_variables_gas = registered_variables._replace(
+        num_vars=registered_variables.num_vars - 3,
+        density_index=_shift_field_past_removed_rows(
+            registered_variables.density_index, removed_rows_sorted
+        ),
+        velocity_index=_shift_field_past_removed_rows(
+            registered_variables.velocity_index, removed_rows_sorted
+        ),
+        momentum_index=_shift_field_past_removed_rows(
+            registered_variables.momentum_index, removed_rows_sorted
+        ),
+        magnetic_index=-1,
+        interface_magnetic_field_index=_shift_field_past_removed_rows(
+            registered_variables.interface_magnetic_field_index, removed_rows_sorted
+        ),
+        pressure_index=_shift_field_past_removed_rows(
+            registered_variables.pressure_index, removed_rows_sorted
+        ),
+        energy_index=_shift_field_past_removed_rows(
+            registered_variables.energy_index, removed_rows_sorted
+        ),
+        wind_density_index=_shift_field_past_removed_rows(
+            registered_variables.wind_density_index, removed_rows_sorted
+        ),
+        cosmic_ray_n_index=_shift_field_past_removed_rows(
+            registered_variables.cosmic_ray_n_index, removed_rows_sorted
+        ),
+        cosmic_ray_e_index=_shift_field_past_removed_rows(
+            registered_variables.cosmic_ray_e_index, removed_rows_sorted
+        ),
+        cosmic_ray_flux_index=_shift_field_past_removed_rows(
+            registered_variables.cosmic_ray_flux_index, removed_rows_sorted
+        ),
+    )
+
+    return gas_state, magnetic_field, registered_variables_gas, gas_rows, magnetic_rows
+
+
+def _join_gas_and_magnetic_state(
+    evolved_gas: STATE_TYPE,
+    magnetic_field: STATE_TYPE,
+    gas_rows: Array,
+    magnetic_rows: Array,
+    num_vars: int,
+) -> STATE_TYPE:
+    """Inverse of :func:`_split_gas_and_magnetic_state`: scatter the
+    evolved gas and magnetic sub-arrays back to their original row
+    positions."""
+    full_state = jnp.zeros((num_vars,) + evolved_gas.shape[1:], dtype=evolved_gas.dtype)
+    full_state = full_state.at[gas_rows, ...].set(evolved_gas)
+    full_state = full_state.at[magnetic_rows, ...].set(magnetic_field)
+    return full_state
+
+
 # @jaxtyped(typechecker=typechecker)
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
 def _evolve_state_fv(
@@ -607,15 +734,13 @@ def _evolve_state_fv(
     if config.mhd:
         if config.dimensionality > 1:
 
-            # WARNING: this relies on the last three state indices being the
-            # magnetic-field components, so that stripping them off yields the
-            # pure gas sub-state and a matching gas variable registry.
-            registered_variables_gas = registered_variables._replace(
-                num_vars=registered_variables.num_vars - 3
-            )
-
-            gas_state = primitive_state[:-3, ...]
-            magnetic_field = primitive_state[-3:, ...]
+            (
+                gas_state,
+                magnetic_field,
+                registered_variables_gas,
+                gas_rows,
+                magnetic_rows,
+            ) = _split_gas_and_magnetic_state(primitive_state, registered_variables)
 
             if config.split == UNSPLIT:
                 evolved_gas = _evolve_gas_state_unsplit(
@@ -669,7 +794,13 @@ def _evolve_state_fv(
                     registered_variables_gas,
                 )
 
-            return jnp.concatenate((evolved_gas, magnetic_field), axis=0)
+            return _join_gas_and_magnetic_state(
+                evolved_gas,
+                magnetic_field,
+                gas_rows,
+                magnetic_rows,
+                registered_variables.num_vars,
+            )
         else:
             raise ValueError("MHD currently not supported in 1D.")
 
