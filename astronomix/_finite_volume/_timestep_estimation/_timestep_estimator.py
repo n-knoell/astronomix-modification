@@ -278,6 +278,23 @@ def _cfl_time_step(
         dt_visc = C_CFL * grid_spacing**2 / (2.0 * config.dimensionality * nu_max)
         dt = jnp.minimum(dt, dt_visc)
 
+    # CR-grey F_cr relaxation constraint: cr_flux_relaxation_source damps
+    # F_cr explicitly at rate reduced_streaming_speed^2 / diffusion_coefficient
+    # (see that function's docstring) -- a genuine parabolic-like stiffness,
+    # same category as the viscous dt_visc constraint above. Forward-Euler
+    # stability of dF/dt = -nu*F requires dt < 2/nu; mirror dt_visc's
+    # conservative C_CFL-scaled convention.
+    if (
+        registered_variables.cosmic_ray_e_active
+        and config.cosmic_ray_grey_config.diffusive_relaxation
+    ):
+        relaxation_rate = (
+            params.cosmic_ray_grey_params.reduced_streaming_speed**2
+            / params.cosmic_ray_grey_params.diffusion_coefficient
+        )
+        dt_relax = C_CFL / relaxation_rate
+        dt = jnp.minimum(dt, dt_relax)
+
     return dt
 
 

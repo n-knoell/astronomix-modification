@@ -184,6 +184,69 @@ unchanged). User confirmed this fix direction explicitly (over reordering the re
 instead, which would have had a much wider blast radius on existing MHD index values) when asked
 -- see `PROGRESS.md`.
 
+## Resolved: F_cr relaxation term and the diffusion limit (ladder item 4)
+
+As implemented for ladder items 1-3, `grey_cr_flux_terms` is a **purely
+hyperbolic, undamped** two-moment system -- confirmed by ladder item 3's own
+observation that a localized `e_cr` bump at rest propagates rigidly as a
+wave, it does not spread. There is therefore no diffusion limit to converge
+to as-is, contradicting this doc's closure section ("`F_cr` relaxes toward
+the local CR pressure gradient") and the plan's "recovers anisotropic
+diffusion + streaming in the appropriate limit". Added
+`cr_grey_sources.cr_flux_relaxation_source` (Jiang & Oh 2018's scattering
+term): `d(F_cr)/dt |_relax = -nu * F_cr`, `nu = reduced_streaming_speed^2 /
+diffusion_coefficient` (`diffusion_coefficient`, a new `CosmicRayGreyParams`
+field, is the physical CR diffusivity `kappa`). At a quasi-steady balance
+against `grey_cr_flux_terms`'s pressure-driving flux term, this relaxes
+`F_cr ~= -kappa * grad(P_cr)`, i.e. Fick's law with diffusion coefficient
+`kappa * (gamma_cr - 1)` for `e_cr` itself.
+
+Applied as a plain additive rate via the same explicit `source_term * dt`
+composition as every other CR-grey source (no implicit/exact-exponential
+treatment) -- gated behind a new `CosmicRayGreyConfig.diffusive_relaxation`
+flag, **off by default**, so ladder items 1-3's already-verified undamped-wave
+behavior is unchanged unless a config opts in. This reintroduces a genuine
+parabolic-like CFL constraint (forward-Euler stability of `dF/dt = -nu*F`
+needs `dt < 2/nu`), handled in `_cfl_time_step`
+(`_finite_volume/_timestep_estimation/_timestep_estimator.py`) the same way
+the existing `config.diffusion` viscous `dt_visc` constraint is -- a
+`jnp.minimum(dt, C_CFL / nu)` branch gated on `diffusive_relaxation`.
+
+Verified (`cr_isotropic_diffusion_convergence.py`): a narrow `e_cr` Gaussian
+on a static uniform gas, run to a fixed `t_end`, matches the analytic 1D
+diffusion Green's function with L2 relative error shrinking monotonically
+(0.0089 -> 0.0010 across N = 128 -> 1024) and total `e_cr` conserved to 6
+significant figures at every resolution; convergence order ~1.0-1.1
+(capped near first order by the sources' explicit-Euler operator splitting,
+not by spatial truncation). See `PROGRESS.md` for the parameter-choice
+reasoning (`reduced_streaming_speed`, `diffusion_coefficient` picked so the
+relaxation rate is deep enough in the quasi-steady regime that the
+telegrapher-vs-diffusion model bias is negligible at the tested resolutions).
+
+**A second, unrelated pre-existing bug surfaced while building the
+FD-vs-AD gradient check (`cr_gradient_check.py`, plan item 16) alongside
+this:** `grey_cr_fast_speed`'s `sqrt(jnp.maximum(x, 0.0))` (the CR-pressure
+acoustic-mode contribution, added in ladder item 2) has an infinite gradient
+exactly at `x = 0` -- which is the case in every cell of a CR-free background
+(`e_cr = 0` outside a localized pulse, the setup every ladder-item test so
+far deliberately uses for items 1/3/4). `sqrt(0)`'s derivative is `+inf`,
+and JAX's `0 * inf = NaN` rule turned this into a `NaN` gradient through the
+whole `time_integration` call the first time reverse-mode AD was actually
+run through the FV/CR-grey path (no prior test in this repo differentiates
+through FV -- `pytests/differentiability/sensitivity.py` only covers FD).
+Fixed with a smooth floor added in quadrature under the sqrt, not a
+`jnp.maximum` on the result (`CosmicRayGreyParams.cr_pressure_speed_floor`,
+same "prefer smooth regularization" philosophy as `b_field_floor`):
+`sqrt(max(x, 0) + speed_floor**2)`. Confirmed: `cr_gradient_check.py`'s AD
+vs. central-finite-difference gradient of `sum(e_cr_final**2)` w.r.t.
+`reduced_streaming_speed` now agree to ~0.1% (`rel_err ~ 9.5e-4`); NaN
+before the fix, finite (and wrong) FD-only reference before the fix
+confirmed it was AD-side, not a shared bug. This also required
+`differentiation_mode = BACKWARDS` (the checkpointed adaptive-loop backend --
+see `time_integration.py`'s dispatch) since plain reverse-mode AD does not
+work through `jax.lax.while_loop`'s adaptive-dt trip count at all, forward
+or CR-related.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)
@@ -223,6 +286,11 @@ open BCs).
 - **Reduced free-streaming speed**: `CosmicRayGreyParams.reduced_streaming_speed` currently
   defaults to a placeholder (`1.0`); pick the largest value that leaves wind/emission properties
   unchanged via a convergence study before Phase B/C.
+- **Diffusion coefficient**: `CosmicRayGreyParams.diffusion_coefficient` (added ladder item 4)
+  currently defaults to a placeholder (`1.0`) and `diffusive_relaxation` itself defaults to
+  `False`; pick a physically-motivated value (and decide whether it should default on) once a
+  real transport-coefficient target exists (Phase B/C), same open-question category as
+  `reduced_streaming_speed` above -- the two jointly set the relaxation rate `nu`.
 - **Electron treatment**: fixed `K_ep` post-processing vs. separately-evolved grey electrons --
   decide before Phase C emission work; out of scope here.
 - **FD open boundaries**: implement now (unblocks wind/SNe on FD) or defer -- see FD limitation

@@ -225,10 +225,14 @@ def grey_cr_fast_speed(
     contract) on top of ``reduced_streaming_speed``.
     """
     gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+    speed_floor = params.cosmic_ray_grey_params.cr_pressure_speed_floor
     rho = primitive_state[registered_variables.density_index]
     e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
+    # Floor added in quadrature under the sqrt (not jnp.maximum on the
+    # result) so the gradient stays finite at e_cr = 0 -- see
+    # CosmicRayGreyParams.cr_pressure_speed_floor's docstring.
     cr_pressure_coupling_speed = jnp.sqrt(
-        jnp.maximum(gamma_cr * (gamma_cr - 1.0) * e_cr / rho, 0.0)
+        jnp.maximum(gamma_cr * (gamma_cr - 1.0) * e_cr / rho, 0.0) + speed_floor**2
     )
     return (
         params.cosmic_ray_grey_params.reduced_streaming_speed

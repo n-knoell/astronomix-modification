@@ -27,6 +27,14 @@ class CosmicRayGreyConfig(NamedTuple):
     #: streaming heating of the gas.
     streaming: bool = False
 
+    #: turn on the F_cr scattering/relaxation term (Jiang & Oh 2018) that
+    #: damps F_cr toward -diffusion_coefficient * grad(P_cr), recovering
+    #: Fick's-law diffusion in the appropriate limit (ladder item 4). Off by
+    #: default: without it, the two-moment system is a pure undamped wave
+    #: equation (verified in ladder items 1-3) -- this flag exists so that
+    #: behavior is unchanged for configs/tests that don't ask for it.
+    diffusive_relaxation: bool = False
+
 
 class CosmicRayGreyParams(NamedTuple):
 
@@ -55,3 +63,21 @@ class CosmicRayGreyParams(NamedTuple):
     #: differentiable at B=0 instead of a hard jnp.maximum/where floor.
     #: Should be well below any physically relevant |B| for the problem.
     b_field_floor: float = 1e-10
+
+    #: smooth floor on the CR-pressure-coupling contribution to
+    #: grey_cr_fast_speed (sqrt(gamma_cr (gamma_cr - 1) e_cr / rho)) -- added
+    #: in quadrature under the sqrt, same "prefer smooth regularization"
+    #: philosophy as b_field_floor. Without it, sqrt(x) has an infinite
+    #: gradient at x = 0, which is exactly the CR-free-background case
+    #: (e_cr = 0 outside a localized pulse) -- confirmed to NaN reverse-mode
+    #: AD through time_integration otherwise (see cr_gradient_check.py).
+    cr_pressure_speed_floor: float = 1e-10
+
+    #: physical CR diffusion coefficient kappa (length^2 / time), only used
+    #: when CosmicRayGreyConfig.diffusive_relaxation is set. Sets the F_cr
+    #: relaxation rate nu = reduced_streaming_speed^2 / diffusion_coefficient
+    #: in cr_grey_sources.cr_flux_relaxation_source; at steady state this
+    #: relaxes F_cr toward -diffusion_coefficient * grad(P_cr), so the
+    #: resulting diffusion coefficient for e_cr itself is
+    #: diffusion_coefficient * (gamma_cr - 1).
+    diffusion_coefficient: float = 1.0

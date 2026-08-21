@@ -4,6 +4,76 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-08-21, ladder item 4 + gradient check)
+
+**Ladder item 4 (isotropic diffusion convergence) passes for real**, and
+`cr_gradient_check.py` (plan item 16, run alongside per DESIGN.md's "next
+steps") passes too. Both required real fixes, not just filling in a stub:
+
+1. **No diffusion limit existed to test against.** `grey_cr_flux_terms` (as
+   built for items 1-3) is a pure undamped wave equation -- a localized
+   `e_cr` bump propagates rigidly, confirmed explicitly in item 3's own note
+   below. Added `cr_grey_sources.cr_flux_relaxation_source` (Jiang & Oh
+   2018's scattering term): `-nu * F_cr`, `nu = reduced_streaming_speed^2 /
+   diffusion_coefficient` (`diffusion_coefficient` = new
+   `CosmicRayGreyParams` field `kappa`). At quasi-steady balance this relaxes
+   `F_cr ~= -kappa * grad(P_cr)`, recovering Fick's law with diffusion
+   coefficient `kappa * (gamma_cr - 1)` for `e_cr`. Gated behind a new
+   `CosmicRayGreyConfig.diffusive_relaxation` flag, **off by default** -- items
+   1-3 use no flag changes and are unaffected. Wired into
+   `_time_integrator_sources.py` (same pattern as `streaming`'s gate) and
+   into `_cfl_time_step` (`_finite_volume/_timestep_estimation/
+   _timestep_estimator.py`) as a new `dt < C_CFL / nu` branch, mirroring the
+   existing `config.diffusion` viscous `dt_visc` constraint -- this is a
+   real, deliberate re-introduction of a parabolic-like explicit CFL
+   constraint (the plan's "no stiff *implicit/global* solve" goal is
+   preserved; this stays fully explicit, just with its own stability bound).
+   User confirmed this direction (add the physical relaxation term, over
+   redefining the test as a numerical-diffusion check or deferring item 4)
+   when asked, since it's a real physics/API decision, not a bug fix.
+   Parameters (`reduced_streaming_speed=8`, `diffusion_coefficient=0.06`)
+   were picked via an ad hoc calibration script (not committed) to put the
+   relaxation rate deep enough in the quasi-steady regime
+   (`nu ~= 1067 >> 1/(D/sigma0^2) ~= 50`) that the telegrapher-vs-diffusion
+   model bias is negligible at the tested resolutions. Verified: L2 error vs.
+   the analytic Gaussian Green's function shrinks monotonically (0.0089 ->
+   0.0042 -> 0.0020 -> 0.0010 for N = 128/256/512/1024), total `e_cr`
+   conserved to 6 significant figures at every resolution, convergence order
+   ~1.0-1.1 (a least-squares fit across all 4 points; capped near first order
+   by the sources' explicit-Euler operator splitting, not spatial
+   truncation -- not a red flag). Test asserts `order >= 0.7`, comfortable
+   margin below the observed ~1.0-1.1.
+2. **`grey_cr_fast_speed` had an infinite-gradient singularity at `e_cr = 0`,**
+   found while building `cr_gradient_check.py` (not by the diffusion work
+   directly). Its CR-pressure acoustic-mode term (added ladder item 2) was
+   `sqrt(jnp.maximum(x, 0.0))`; `sqrt`'s derivative is `+inf` at `x = 0`,
+   and every ladder-item test so far (1, 3, 4) deliberately uses a CR-free
+   background (`e_cr = 0` outside a localized pulse) for exactly the reasons
+   documented in `cr_advection.py` -- so this singularity sits at almost
+   every grid cell in every test run once you differentiate through it. JAX's
+   `0 * inf = NaN` rule turned this into a `NaN` gradient the first time
+   reverse-mode AD was actually run through the FV/CR-grey path at all (no
+   prior test in this repo differentiates through FV --
+   `pytests/differentiability/sensitivity.py` only covers FD). Fixed with a
+   floor added in quadrature under the sqrt (not a `jnp.maximum` on the
+   result), new `CosmicRayGreyParams.cr_pressure_speed_floor` (default
+   `1e-10`), same "prefer smooth regularization" convention as
+   `b_field_floor`. Verified: AD gradient of `sum(e_cr_final**2)` w.r.t.
+   `reduced_streaming_speed` now matches a central finite difference to
+   `rel_err ~= 9.5e-4` (was `NaN` before the fix). Also needed
+   `differentiation_mode = BACKWARDS` in the test config -- plain
+   reverse-mode AD does not work through `time_integration`'s adaptive-dt
+   `jax.lax.while_loop` at all (forward or CR-related; this repo's
+   checkpointed-adaptive-loop backend, dispatched on `differentiation_mode`,
+   is what makes it work) -- unrelated to CR-grey specifically but necessary
+   plumbing to get `cr_gradient_check.py` running.
+
+Re-ran ladder items 1-3 after both fixes (the `_time_integrator_sources.py`/
+`_cfl_time_step` wiring and the `grey_cr_fast_speed` floor both touch shared
+CR-grey code paths) -- all three still pass identically (`diffusive_relaxation`
+defaults off, and the speed-floor change is a sub-`1e-10`-scale perturbation
+to an already-conservative CFL bound).
+
 ## Where things stand (2026-08-20, ladder item 3)
 
 **Ladder item 3 (oblique anisotropic diffusion) passes for real**, and `anisotropic_flux_projection`
@@ -350,23 +420,37 @@ See "What's done" and "Verified" below for details.
    the FV MHD Strang split in `evolve_state.py` -- see "Where things stand" and "Verified" above.
    The projection is applied once per step in `_iteration_level_updates`, not inside
    `grey_cr_flux_terms` -- B is structurally unavailable at that call site (see point 2 above).
-6. Continue test-first, in plan-ladder order: `cr_isotropic_diffusion_convergence.py` (item 4) ->
-   `cr_streaming_1d.py` (item 5, needs `cr_streaming_heating_source` implemented, currently a
-   stub) -> `cr_shock_tube.py` (item 6, the two-fluid CR-modified shock tube -- the real test of
-   the momentum/energy feedback coupling, now exercisable with real advection + the fixed CFL
-   bound in place). Run `cr_gradient_check.py` (item 16, FD-vs-AD) alongside each as it becomes
-   exercisable. **This is where the next session should pick up.** Note: item 4 (isotropic
-   diffusion convergence) doesn't need MHD at all -- should be a more contained test than item 3
-   turned out to be.
-7. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
+6. ~~`cr_isotropic_diffusion_convergence.py` (item 4)~~ -- done, passes; required adding the
+   previously-missing `F_cr` relaxation term (`cr_grey_sources.cr_flux_relaxation_source`, gated
+   behind new `diffusive_relaxation` config flag, off by default) since the two-moment system as
+   built for items 1-3 has no diffusion limit at all -- see "Where things stand (2026-08-21)"
+   above. User confirmed this direction explicitly when asked (real physics/API decision).
+7. ~~`cr_gradient_check.py` (item 16, FD-vs-AD)~~ -- done, passes; required fixing a real
+   infinite-gradient singularity in `grey_cr_fast_speed` at `e_cr = 0` (new
+   `cr_pressure_speed_floor` param) -- see "Where things stand (2026-08-21)" above. This is the
+   first time any test in this repo has differentiated through the FV solver path at all (prior
+   differentiability coverage, `pytests/differentiability/sensitivity.py`, is FD-only), so this
+   fix likely matters beyond CR-grey too -- worth a heads-up to whoever next tries `jax.grad`
+   through an FV run for any reason, CR or not, since `differentiation_mode = BACKWARDS` is also
+   required for FV/CR-grey reverse-mode AD to work at all (adaptive-dt `while_loop`, unrelated to
+   CR specifically -- see that item's note above).
+8. Continue test-first, in plan-ladder order: `cr_streaming_1d.py` (item 5, needs
+   `cr_streaming_heating_source` implemented, currently a stub) -> `cr_shock_tube.py` (item 6, the
+   two-fluid CR-modified shock tube -- the real test of the momentum/energy feedback coupling).
+   **This is where the next session should pick up.** Streaming's own relaxation-like structure
+   (CR bulk transport at the streaming speed along B) may interact with or partially duplicate
+   `cr_flux_relaxation_source`'s new scattering term -- worth checking Jiang & Oh (2018)'s
+   combined streaming+scattering formulation before implementing item 5, rather than assuming
+   they're fully independent.
+9. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
    limitation") gets separately scoped -- don't attempt it inside a ladder-item pass.
-8. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with
-   the older `astronomix/_modules/_cosmic_rays/` (`n_cr`) model before starting Phase B
-   (shock-finder DSA injection needs to target one CR model or the other).
-9. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
-   not CR-specific) is worth a heads-up to whoever owns the MHD module / other in-flight MHD work,
-   since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
-   with `wind_density` or the old `cosmic_ray_n` model too, not just grey CR.
+10. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with
+    the older `astronomix/_modules/_cosmic_rays/` (`n_cr`) model before starting Phase B
+    (shock-finder DSA injection needs to target one CR model or the other).
+11. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
+    not CR-specific) is worth a heads-up to whoever owns the MHD module / other in-flight MHD work,
+    since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
+    with `wind_density` or the old `cosmic_ray_n` model too, not just grey CR.
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 

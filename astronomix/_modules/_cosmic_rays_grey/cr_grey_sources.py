@@ -149,6 +149,67 @@ def cr_adiabatic_work_source(
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
+def cr_flux_relaxation_source(
+    primitive_state: STATE_TYPE,
+    config: SimulationConfig,
+    registered_variables: RegisteredVariables,
+    params: SimulationParams,
+) -> STATE_TYPE:
+    """``F_cr`` scattering/relaxation term (Jiang & Oh 2018), ``-nu * F_cr``
+    with ``nu = reduced_streaming_speed^2 / diffusion_coefficient``. Only
+    active when ``config.cosmic_ray_grey_config.diffusive_relaxation``.
+
+    Args:
+        primitive_state: The primitive state of the fluid on all cells.
+        config: The simulation configuration.
+        registered_variables: The registered variables.
+        params: The simulation parameters (carries
+            ``params.cosmic_ray_grey_params.diffusion_coefficient``).
+
+    Returns:
+        The ``F_cr``-row source-term rate.
+
+    Without this term, ``grey_cr_flux_terms``'s two-moment system is a pure
+    undamped wave equation (verified in ladder items 1-3: a localized e_cr
+    bump propagates rigidly, it does not spread). This term damps ``F_cr``
+    at rate ``nu`` toward its flux-gradient forcing
+    (``-v_red^2 * grad(P_cr)``, from ``grey_cr_flux_terms``'s pressure-driving
+    term); at a quasi-steady balance (``d(F_cr)/dt ~ 0`` on timescales long
+    compared to ``1/nu``, ignoring bulk advection) this gives
+    ``F_cr ~= -diffusion_coefficient * grad(P_cr)``, i.e. Fick's law with
+    diffusion coefficient ``diffusion_coefficient * (gamma_cr - 1)`` for
+    ``e_cr`` itself (``P_cr = (gamma_cr - 1) * e_cr``) -- see
+    ``cr_isotropic_diffusion_convergence.py`` (ladder item 4).
+
+    Applied as a plain additive rate via the same explicit
+    ``source_term * dt`` composition as every other CR-grey source in
+    ``_time_integrator_sources`` (no special implicit/exact-exponential
+    treatment) -- this reintroduces a genuine parabolic-like CFL constraint
+    (``dt <~ diffusion_coefficient / reduced_streaming_speed^2``), handled the
+    same way the existing viscosity module's ``dt_visc`` constrains
+    ``_cfl_time_step`` (see that function's ``diffusive_relaxation`` branch).
+    Deliberately opt-in (``diffusive_relaxation`` defaults to False) so
+    ladder items 1-3's already-verified undamped-wave behavior is unchanged.
+    """
+    diffusion_coefficient = params.cosmic_ray_grey_params.diffusion_coefficient
+    reduced_streaming_speed = params.cosmic_ray_grey_params.reduced_streaming_speed
+    relaxation_rate = reduced_streaming_speed**2 / diffusion_coefficient
+
+    f_cr_index = registered_variables.cosmic_ray_flux_index
+    source_term = jnp.zeros_like(primitive_state)
+    for axis_index in (
+        (f_cr_index,)
+        if config.dimensionality == 1
+        else (f_cr_index.x, f_cr_index.y, f_cr_index.z)[: config.dimensionality]
+    ):
+        source_term = source_term.at[axis_index].set(
+            -relaxation_rate * primitive_state[axis_index]
+        )
+
+    return source_term
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables"])
 def cr_streaming_heating_source(
     primitive_state: STATE_TYPE,
     config: SimulationConfig,

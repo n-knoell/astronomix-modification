@@ -51,6 +51,7 @@ from astronomix._modules._cooling._simple_mixing_cooling import (
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_adiabatic_work_source,
+    cr_flux_relaxation_source,
     cr_pressure_gradient_source,
     cr_streaming_heating_source,
 )
@@ -244,6 +245,13 @@ def _time_integrator_sources(
         if config.cosmic_ray_grey_config.streaming:
             source_term += (
                 cr_streaming_heating_source(
+                    cr_primitive_state, config, registered_variables, params
+                )
+                * dt
+            )
+        if config.cosmic_ray_grey_config.diffusive_relaxation:
+            source_term += (
+                cr_flux_relaxation_source(
                     cr_primitive_state, config, registered_variables, params
                 )
                 * dt
