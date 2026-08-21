@@ -4,6 +4,71 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-08-21, ladder item 6 -- Phase A ladder complete)
+
+**Ladder item 6 (two-fluid CR-modified shock tube) passes for real, and
+this closes out Phase A's core ladder (items 1-6).** Scope decision made
+with the user up front: build a real Pfrommer et al. (2006)-style
+semi-analytic two-fluid Riemann solver (not a same-code high-resolution
+self-consistency check), since the composite (two-adiabatic-index) EOS has
+no closed-form rarefaction integral and no existing reference in this repo.
+
+- New `astronomix/test_setups/reference_solutions/pfrommer_riemann_solver.py`
+  (plain numpy/scipy, not JAX -- one-shot reference generator, not hot
+  path): generalizes the existing single-gamma exact Riemann solver
+  (`riemann_solver.py`) to `P(rho) = P_th,ref*(rho/rho_ref)^gamma_th +
+  P_cr,ref*(rho/rho_ref)^gamma_cr`. Shock jump solved via a general-EOS
+  Hugoniot (energy-jump) relation with the CR component staying on its own
+  adiabat through the shock (collisionless, doesn't thermalize) while the
+  thermal component absorbs the RH-consistent remainder; rarefaction-fan
+  velocity via numerically-integrated Riemann invariant (no closed form for
+  a composite EOS). Both nested inside the usual outer star-region-pressure
+  bisection.
+- **Validated the new solver independently before trusting it**, since
+  there's no existing CR-composite-EOS reference in this repo to check
+  against: with CR pressure zeroed on both sides it must reduce to the
+  ordinary single-gamma problem, checked against the trusted
+  `_exact_riemann_ideal_gas` across the *entire* sampled profile (not just
+  star-region p*/u*) for three cases (classic Sod gamma=1.4, Sod at
+  gamma=5/3, and a reversed-Sod case exercising the left-shock branch
+  instead of the more common left-rarefaction) -- matched to ~2e-7. A
+  second check with `gamma_cr=gamma_th` (nonzero, unequal CR pressure each
+  side; composite EOS degenerates to one power law in the *combined*
+  pressure) also matched to ~2e-7, and confirmed the CR pressure fraction
+  per side stays constant through shock and rarefaction as physically
+  expected when both components share an adiabatic index. This cross-check
+  caught two real sign-error bugs during development (rarefaction-fan
+  left/right family signs swapped; shock-speed sampling formula's signed
+  mass-flux convention backwards) -- neither would have been obvious from
+  inspection alone; both are exactly the kind of bug an independent
+  numerical check like this is for.
+- **Test design: `reduced_streaming_speed = 0`, not "small enough".**
+  Pfrommer's solution assumes CRs move exactly with the gas (tightly
+  coupled, no independent flux). `v_red=0` makes `grey_cr_flux_terms`'s
+  `F_cr` equation collapse to homogeneous advection of zero initial data --
+  `F_cr` stays *exactly* 0 for the whole run (verified: `max|F_cr|=0.0`),
+  realizing Pfrommer's assumption exactly rather than approximately. This
+  is a genuine physics insight specific to the two-moment closure's
+  structure, not a workaround -- it only works because `F_cr`'s pressure-
+  driving term is proportional to `v_red^2` while the momentum/energy
+  feedback sources (`cr_pressure_gradient_source`/`cr_adiabatic_work_source`)
+  are `v_red`-independent, so setting `v_red=0` removes exactly the piece
+  of physics Pfrommer's model doesn't have, and nothing else.
+- Result on the real (non-degenerate) case: `gamma_th=5/3`, `gamma_cr=4/3`,
+  40% CR pressure fraction both sides (`P_th=0.6/0.06`, `P_cr=0.4/0.04`,
+  otherwise classic Sod `rho`/positions), 400 cells, `t_end=0.2` -- mean
+  absolute errors ~0.001-0.003 across density/velocity/pressure/`e_cr`,
+  comfortably under `tol=1e-2` and comparable to the plain hydro
+  `shock_tube1D.py` test's own HLL/minmod numerical-diffusion level. This
+  specific left/right split is this session's own reasonable choice in
+  Pfrommer's spirit, not a literal reproduction of a table from their
+  paper -- only the *method* was independently validated (above).
+
+Re-ran `cr_advection.py` and `cr_streaming_1d.py` as a regression spot
+check (this item added no changes to the simulation code itself, only new
+test-setup/reference-solver files, so full regression risk was low) --
+both still pass.
+
 ## Where things stand (2026-08-21, ladder item 5)
 
 **Ladder item 5 (1D streaming) passes for real.** Implemented both
@@ -486,13 +551,15 @@ See "What's done" and "Verified" below for details.
 8. ~~`cr_streaming_1d.py` (item 5)~~ -- done, passes; required implementing both
    `streaming_flux_target` (new, `cr_grey_transport.py`) and `cr_streaming_heating_source`
    (`cr_grey_sources.py`) -- see "Where things stand (2026-08-21, ladder item 5)" above.
-   `cr_shock_tube.py` (item 6, the two-fluid CR-modified shock tube -- the real test of the
-   momentum/energy feedback coupling) is next. **This is where the next session should pick up.**
    Note: streaming's interaction with `cr_flux_relaxation_source` (item 4's diffusive relaxation)
    was not directly exercised -- both are independent, additively-gated terms (different config
    flags), which is physically reasonable (bulk streaming + residual scattering/diffusion is the
-   standard combined picture) but untested in combination; flag if item 6 or later work turns both
-   on at once.
+   standard combined picture) but untested in combination.
+9. ~~`cr_shock_tube.py` (item 6)~~ -- done, passes; required building a new semi-analytic
+   two-fluid Riemann solver (`astronomix/test_setups/reference_solutions/
+   pfrommer_riemann_solver.py`) since no composite-EOS reference existed in this repo -- see
+   "Where things stand (2026-08-21, ladder item 6)" above. **Phase A's core ladder (items 1-6) is
+   now complete.** This is where the next session should pick up on remaining Phase A items.
 9. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
    limitation") gets separately scoped -- don't attempt it inside a ladder-item pass.
 10. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with

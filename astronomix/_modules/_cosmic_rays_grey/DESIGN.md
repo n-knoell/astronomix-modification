@@ -303,6 +303,56 @@ keep the zero-crossing's spatial width (set by
 `|d(dP_cr/dx)/dx| / streaming_sign_regularization`) resolved by several grid
 cells, or widen `streaming_sign_regularization` to match the grid.
 
+## Resolved: two-fluid CR-modified shock tube (ladder item 6)
+
+`pytests/cosmic_rays_grey/cr_shock_tube.py` passes against a new
+semi-analytic two-fluid Riemann solver
+(`astronomix/test_setups/reference_solutions/pfrommer_riemann_solver.py`,
+Pfrommer, Enßlin & Jubelgas 2006) built for this item -- no existing code
+covered a composite (gas + CR, two different adiabatic indices) equation of
+state, so the repo's existing single-gamma exact Riemann solver
+(`riemann_solver.py`) doesn't apply. Implemented in plain numpy/scipy
+(root-finding + quadrature), not JAX, since it's a one-shot reference
+generator, not part of the simulation hot path.
+
+**Key test-design choice: `reduced_streaming_speed = 0`.** Pfrommer's
+solution assumes CRs are tightly coupled to the gas (advected with it,
+compressing adiabatically even through a shock, no independent flux).
+Setting `reduced_streaming_speed = 0` makes this *exact*, not approximate:
+`grey_cr_flux_terms`'s `F_cr` equation collapses to homogeneous advection of
+zero initial data, so `F_cr` stays exactly `0` for the whole run (verified:
+`max|F_cr| = 0.0`), leaving `e_cr` transported purely by bulk advection plus
+the (v_red-independent) momentum/energy feedback sources -- precisely
+Pfrommer's assumption, with no free "how small is small enough" tuning
+parameter. This is a much cleaner test design than picking some small but
+nonzero `v_red` and hoping the residual error stays below tolerance.
+
+**Validation of the new solver** (ad hoc scripts, not committed): with CR
+pressure zeroed on both sides, it reduces to the plain single-gamma problem
+and was checked against `riemann_solver._exact_riemann_ideal_gas` across the
+full profile for three cases (classic Sod gamma=1.4, Sod at gamma=5/3, and a
+reversed-Sod case exercising the less-common left-shock branch) -- matched to
+~2e-7. A second check set `gamma_cr = gamma_th` with nonzero, unequal CR
+pressure per side (composite EOS degenerates to one power law in the summed
+pressure) -- also matched to ~2e-7, and the per-side CR pressure fraction
+stayed constant through both the shock and rarefaction as expected. Two real
+sign-error bugs were caught by this cross-check during development (not
+issues with the underlying method): the rarefaction-fan velocity integral
+had left/right family signs swapped, and the shock-speed sampling formula
+used the wrong sign convention for the signed mass flux. See
+`cr_shock_tube.py`'s module docstring and the solver's own docstrings for
+the corrected derivations.
+
+**Result on the real (non-degenerate) two-fluid case** (`gamma_th=5/3`,
+`gamma_cr=4/3`, 40% CR pressure fraction on both sides of an otherwise
+classic Sod problem, 400 cells): mean absolute errors of ~0.001-0.003 across
+density/velocity/pressure/`e_cr` (well under the `tol=1e-2` default,
+comparable in magnitude to the plain hydro `shock_tube1D.py` test's own HLL/
+minmod numerical-diffusion errors at similar resolution) -- no separate
+literature table was reproduced (only the method was validated, via the
+degenerate-limit checks above), so this is a genuine, independently-checked
+comparison rather than a tuned-to-pass one.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)
