@@ -247,6 +247,62 @@ see `time_integration.py`'s dispatch) since plain reverse-mode AD does not
 work through `jax.lax.while_loop`'s adaptive-dt trip count at all, forward
 or CR-related.
 
+## Resolved: streaming transport and streaming heating (ladder item 5)
+
+`streaming_flux_target` (`cr_grey_transport.py`) and `cr_streaming_heating_source`
+(`cr_grey_sources.py`) are implemented (both were `NotImplementedError` stubs).
+Physical picture (Wiener et al. 2017; the "streaming-dominated,
+always-at-equilibrium" limit): self-confined CRs stream down their own
+pressure gradient at the reduced free-streaming speed, so `F_cr` is pinned
+per axis to `F_cr,axis = -sign(dP_cr/dx_axis) * reduced_streaming_speed *
+e_cr` (regularized sign via `regularized_streaming_sign`, already
+implemented). Applied once per full step in `_iteration_level_updates` as a
+discrete correction that **overwrites** `F_cr` -- the same "instantaneous
+relaxation" pattern `anisotropic_flux_projection` (item 3) already uses, not
+a new stiff relaxation-rate source term. Isotropic per-axis, **does not
+require `config.mhd`** (unlike anisotropic transport) -- matches the plan's
+own "1D streaming" staging for this item. When both `streaming` and
+`anisotropic_transport` are enabled, `_iteration_level_updates` applies the
+streaming target first and the B-projection second; this combination is a
+documented, plausible, but **not separately verified** approximation (no
+ladder item tests it).
+
+The complementary, genuinely non-conservative loss (streaming does work
+against the pressure gradient, converting `e_cr` into gas heat) is
+`Gamma = reduced_streaming_speed * |dP_cr/dx|` (regularized-sign version),
+subtracted in full from `e_cr` and added to gas thermal energy scaled by
+`streaming_heating_efficiency` (`< 1` represents loss into channels this
+grey model doesn't track, e.g. higher-frequency wave turbulence) --
+distinct from, and additive to, `streaming_flux_target`'s conservative
+spatial redistribution of `e_cr` (which alone moves energy around without
+creating or destroying it).
+
+Verified (`cr_streaming_1d.py`): a linear, open-boundary `e_cr` ramp
+(constant-sign gradient, so `regularized_streaming_sign` stays saturated
+everywhere -- see below for why a sign-changing profile was rejected)
+reproduces both `F_cr ~= streaming_flux_target` (bulk rel. err ~2e-4) and
+the analytic gas-heating rate `dP/dt = (gamma - 1) * efficiency * Gamma`
+(bulk rel. err ~7e-5; the `(gamma - 1)` factor converts the
+conserved-energy-row rate `cr_streaming_heating_source` adds into the
+primitive-pressure rate actually measured).
+
+**Rejected IC, worth remembering:** an initial calibration attempt used a
+periodic cosine `e_cr` profile (sign-changing gradient, to exercise both
+streaming directions in one test). `regularized_streaming_sign`'s `tanh`
+transition width in *gradient* space, mapped back to *position* space near
+a gradient zero-crossing, was narrower than one grid cell for that
+profile's curvature at the tested resolution -- an unresolved,
+effectively-discontinuous sign flip right at the pressure extrema, which
+produced large (`~200%`), unphysical `F_cr` deviations from the target. Not
+a code bug -- confirmed by isolating `streaming_flux_target`'s output at
+`t=0` (matched the analytic formula exactly) and checking a single-timestep
+run (deviations appeared immediately, from the correction itself hitting
+the under-resolved transition, not from accumulated integration error).
+Any future streaming IC with a sign-changing CR pressure gradient should
+keep the zero-crossing's spatial width (set by
+`|d(dP_cr/dx)/dx| / streaming_sign_regularization`) resolved by several grid
+cells, or widen `streaming_sign_regularization` to match the grid.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

@@ -41,6 +41,7 @@ from astronomix._modules._cooling._cooling import update_pressure_by_cooling
 from astronomix._modules._cosmic_rays.cr_injection import inject_crs_at_strongest_shock
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     anisotropic_flux_projection,
+    streaming_flux_target,
 )
 from astronomix._modules._frame_tracking._frame_tracking import _frame_tracking
 from astronomix._modules._neural_net_force._neural_net_force import _neural_net_force
@@ -218,6 +219,37 @@ def _iteration_level_updates(
             registered_variables,
             helper_data,
         )
+
+    # Grey two-moment CR streaming: overwrite F_cr with its per-axis
+    # streaming-flux target once per full step (ladder item 5) -- the same
+    # "instantaneous relaxation" discrete-correction pattern as the
+    # anisotropic-transport projection below, applied first so that, if both
+    # are enabled, the B-projection below acts on the streaming target
+    # rather than the other way around (see streaming_flux_target's
+    # docstring for why this combination isn't separately verified).
+    if (
+        registered_variables.cosmic_ray_e_active
+        and config.cosmic_ray_grey_config.streaming
+    ):
+        f_cr_index = registered_variables.cosmic_ray_flux_index
+        streaming_target = streaming_flux_target(
+            primitive_state, config, params, registered_variables
+        )
+        if config.dimensionality == 1:
+            primitive_state = primitive_state.at[f_cr_index].set(
+                streaming_target[f_cr_index]
+            )
+        else:
+            primitive_state = primitive_state.at[f_cr_index.x].set(
+                streaming_target[f_cr_index.x]
+            )
+            primitive_state = primitive_state.at[f_cr_index.y].set(
+                streaming_target[f_cr_index.y]
+            )
+            if config.dimensionality == 3:
+                primitive_state = primitive_state.at[f_cr_index.z].set(
+                    streaming_target[f_cr_index.z]
+                )
 
     # Grey two-moment CR anisotropic transport: project F_cr onto the local
     # B direction once per full step, before the hydro update. Applied here

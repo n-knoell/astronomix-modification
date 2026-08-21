@@ -46,6 +46,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import (
     pressure_from_e_cr,
 )
+from astronomix._stencil_operations._stencil_operations import _stencil_add
 
 
 @partial(
@@ -325,6 +326,84 @@ def anisotropic_flux_projection(
     flux_vector = flux_vector.at[f_cr_index.y].set(f_dot_b * b_hat_y)
     if config.dimensionality == 3:
         flux_vector = flux_vector.at[f_cr_index.z].set(f_dot_b * b_hat_z)
+
+    return flux_vector
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables"])
+def streaming_flux_target(
+    primitive_state: STATE_TYPE,
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+) -> STATE_TYPE:
+    """Per-axis CR streaming-flux target (plan Sec. 2, ladder item 5).
+
+    Physical picture (Wiener et al. 2017; the "streaming-dominated,
+    always-at-equilibrium" limit): self-confined CRs stream down their own
+    pressure gradient at the reduced free-streaming speed, so in this limit
+    ``F_cr`` isn't an independently evolving quantity any more -- it's
+    pinned to ``F_cr,axis = -sign(dP_cr/dx_axis) * reduced_streaming_speed *
+    e_cr`` (regularized via :func:`regularized_streaming_sign` instead of a
+    hard ``sign``, for the same adjoint reason as everywhere else in this
+    module). Applied once per full step in
+    ``astronomix._modules._iteration_level_updates`` as a discrete
+    correction that **overwrites** ``F_cr`` -- the same "instantaneous
+    relaxation" pattern :func:`anisotropic_flux_projection` already uses for
+    item 3 (see that function's docstring), not a new stiff relaxation-rate
+    source term.
+
+    Isotropic per-axis, not projected along a true magnetic-field direction
+    -- this does not require ``config.mhd`` (matches the plan's own "1D
+    streaming" staging for this ladder item). If both ``streaming`` and
+    ``anisotropic_transport`` are enabled, ``_iteration_level_updates``
+    applies this correction first and the B-projection second, so the
+    combination is "isotropic streaming target, then projected onto B" --
+    a reasonable but **not separately verified** approximation (no ladder
+    item tests the combination); flagged here rather than assumed correct.
+
+    The complementary energy loss this transport implies (streaming does
+    work against the pressure gradient, converting some ``e_cr`` into gas
+    heat) is computed separately by
+    :func:`astronomix._modules._cosmic_rays_grey.cr_grey_sources.cr_streaming_heating_source`
+    from the same gradient/sign -- this function only returns the
+    conservative flux target, no energy is created or destroyed by it alone.
+
+    Args:
+        primitive_state: The primitive state of the fluid on all cells.
+        config: The simulation configuration.
+        params: The simulation parameters (carries
+            ``params.cosmic_ray_grey_params.reduced_streaming_speed`` and
+            the streaming-sign regularization scale).
+        registered_variables: The registered variables.
+
+    Returns:
+        A ``STATE_TYPE``-shaped array with the ``cosmic_ray_flux_index``
+        row(s) set to the streaming-flux target; other rows are zero and
+        unused by the caller.
+    """
+    gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+    reduced_streaming_speed = params.cosmic_ray_grey_params.reduced_streaming_speed
+    e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
+    p_cr = pressure_from_e_cr(e_cr, gamma_cr)
+
+    f_cr_index = registered_variables.cosmic_ray_flux_index
+    flux_vector = jnp.zeros_like(primitive_state)
+    for axis in range(1, config.dimensionality + 1):
+        grad_p_cr_axis = _stencil_add(
+            p_cr, indices=(1, -1), factors=(1.0, -1.0), axis=axis - 1
+        ) / (2 * config.grid_spacing)
+        sign = regularized_streaming_sign(
+            grad_p_cr_axis, params.cosmic_ray_grey_params
+        )
+        axis_index = (
+            f_cr_index
+            if config.dimensionality == 1
+            else (f_cr_index.x, f_cr_index.y, f_cr_index.z)[axis - 1]
+        )
+        flux_vector = flux_vector.at[axis_index].set(
+            -sign * reduced_streaming_speed * e_cr
+        )
 
     return flux_vector
 

@@ -4,6 +4,55 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-08-21, ladder item 5)
+
+**Ladder item 5 (1D streaming) passes for real.** Implemented both
+previously-stubbed pieces:
+
+1. **`streaming_flux_target` (`cr_grey_transport.py`, new function).** Per
+   axis: `F_cr,axis = -sign(dP_cr/dx_axis) * reduced_streaming_speed *
+   e_cr`, using the already-implemented `regularized_streaming_sign`.
+   Applied once per full step in `_iteration_level_updates` as a discrete
+   correction that overwrites `F_cr` -- the same pattern
+   `anisotropic_flux_projection` (item 3) already established, not a new
+   stiff relaxation-rate source. Deliberately does **not** require
+   `config.mhd` (isotropic per-axis, direction from the local `∇P_cr`
+   directly) -- matches the plan's "1D streaming" staging; combining with
+   `anisotropic_transport` is documented as untested (streaming applied
+   first, B-projection second) rather than assumed correct.
+2. **`cr_streaming_heating_source` (`cr_grey_sources.py`, filled in).**
+   `Gamma = reduced_streaming_speed * |dP_cr/dx|` (regularized-sign
+   version), subtracted in full from `e_cr`, added to gas thermal scaled by
+   `streaming_heating_efficiency`. Distinct from and additive to the flux
+   target above (one is a conservative spatial redistribution, this is a
+   genuine non-conservative CR-to-gas energy transfer).
+
+**A calibration false alarm, worth recording so it isn't re-debugged:** the
+first attempt used a periodic cosine `e_cr` profile (to exercise both
+streaming directions in one test) and saw huge (~200%) `F_cr` errors and
+sign flips. Root cause: `regularized_streaming_sign`'s `tanh` transition,
+which is narrow in *gradient* space, mapped to an even narrower region in
+*position* space near that profile's gradient zero-crossings (curvature
+there is what sets the map) -- under one grid cell wide at the tested
+resolution, i.e. an effectively-discontinuous, unresolved sign flip right at
+the pressure extrema. Confirmed not a code bug by checking
+`streaming_flux_target` in isolation at `t=0` (matched the analytic formula
+exactly, per-cell) and after a single timestep (the large deviation was
+already present, not something that accumulated over many steps). Fixed the
+*test*, not the code: switched to a linear, open-boundary ramp (constant-sign
+gradient everywhere, `regularized_streaming_sign` stays saturated), which
+matches the plan's own "linear e_cr gradient" suggestion anyway. Verified:
+`F_cr` vs. `streaming_flux_target` bulk rel. err ~2e-4; measured gas-heating
+rate vs. the analytic `dP/dt = (gamma - 1) * efficiency * Gamma` bulk rel.
+err ~7e-5 (the `(gamma - 1)` factor converts the conserved-energy-row rate
+the source function adds into the primitive-pressure rate actually
+measured -- tripped me up during calibration before I accounted for it).
+
+Re-ran ladder items 1-4 and `cr_gradient_check.py` after wiring
+`streaming_flux_target` into `_iteration_level_updates.py` (a shared file) --
+all still pass identically (`config.cosmic_ray_grey_config.streaming`
+defaults `False`, and none of items 1-4/the gradient check turn it on).
+
 ## Where things stand (2026-08-21, ladder item 4 + gradient check)
 
 **Ladder item 4 (isotropic diffusion convergence) passes for real**, and
@@ -434,14 +483,16 @@ See "What's done" and "Verified" below for details.
    through an FV run for any reason, CR or not, since `differentiation_mode = BACKWARDS` is also
    required for FV/CR-grey reverse-mode AD to work at all (adaptive-dt `while_loop`, unrelated to
    CR specifically -- see that item's note above).
-8. Continue test-first, in plan-ladder order: `cr_streaming_1d.py` (item 5, needs
-   `cr_streaming_heating_source` implemented, currently a stub) -> `cr_shock_tube.py` (item 6, the
-   two-fluid CR-modified shock tube -- the real test of the momentum/energy feedback coupling).
-   **This is where the next session should pick up.** Streaming's own relaxation-like structure
-   (CR bulk transport at the streaming speed along B) may interact with or partially duplicate
-   `cr_flux_relaxation_source`'s new scattering term -- worth checking Jiang & Oh (2018)'s
-   combined streaming+scattering formulation before implementing item 5, rather than assuming
-   they're fully independent.
+8. ~~`cr_streaming_1d.py` (item 5)~~ -- done, passes; required implementing both
+   `streaming_flux_target` (new, `cr_grey_transport.py`) and `cr_streaming_heating_source`
+   (`cr_grey_sources.py`) -- see "Where things stand (2026-08-21, ladder item 5)" above.
+   `cr_shock_tube.py` (item 6, the two-fluid CR-modified shock tube -- the real test of the
+   momentum/energy feedback coupling) is next. **This is where the next session should pick up.**
+   Note: streaming's interaction with `cr_flux_relaxation_source` (item 4's diffusive relaxation)
+   was not directly exercised -- both are independent, additively-gated terms (different config
+   flags), which is physically reasonable (bulk streaming + residual scattering/diffusion is the
+   standard combined picture) but untested in combination; flag if item 6 or later work turns both
+   on at once.
 9. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
    limitation") gets separately scoped -- don't attempt it inside a ladder-item pass.
 10. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with

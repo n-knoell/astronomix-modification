@@ -32,6 +32,9 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import (
     pressure_from_e_cr,
 )
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    regularized_streaming_sign,
+)
 from astronomix._stencil_operations._stencil_operations import _stencil_add
 
 
@@ -230,7 +233,48 @@ def cr_streaming_heating_source(
 
     Returns:
         The combined ``e_cr``/gas-thermal source-term rate.
+
+    Implementation note: the streaming velocity that
+    ``cr_grey_transport.streaming_flux_target`` pins ``F_cr`` to
+    (``v_st,axis = -sign(dP_cr/dx_axis) * reduced_streaming_speed``, i.e.
+    always directed down the local CR pressure gradient) does work against
+    that gradient as it streams -- the standard CR-streaming heating picture
+    (Wiener et al. 2017): the streaming instability that self-confines the
+    CRs damps into gas heat at rate ``Gamma = -v_st . grad(P_cr) =
+    reduced_streaming_speed * |grad(P_cr)|`` (per axis, regularized-sign
+    version below), always ``>= 0``. This is a genuine, non-conservative
+    loss from ``e_cr`` -- distinct from ``streaming_flux_target``'s
+    conservative spatial redistribution of ``e_cr`` (that alone moves
+    energy around without creating or destroying it). ``e_cr`` always loses
+    the full rate ``Gamma``; only the ``streaming_heating_efficiency``
+    fraction reappears as gas-thermal heating (the rest represents energy
+    escaping into channels this grey model doesn't track, e.g. into
+    higher-frequency wave turbulence) -- so this term is exactly conservative
+    only when ``streaming_heating_efficiency == 1`` (the default).
     """
-    raise NotImplementedError(
-        "Phase A: CR streaming heating into gas thermal energy. See DESIGN.md."
+    gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+    reduced_streaming_speed = params.cosmic_ray_grey_params.reduced_streaming_speed
+    efficiency = params.cosmic_ray_grey_params.streaming_heating_efficiency
+    e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
+    p_cr = pressure_from_e_cr(e_cr, gamma_cr)
+
+    heating_rate = jnp.zeros_like(p_cr)
+    for axis in range(1, config.dimensionality + 1):
+        grad_p_cr_axis = _stencil_add(
+            p_cr, indices=(1, -1), factors=(1.0, -1.0), axis=axis - 1
+        ) / (2 * config.grid_spacing)
+        sign = regularized_streaming_sign(
+            grad_p_cr_axis, params.cosmic_ray_grey_params
+        )
+        # sign(x) * x -> |x| away from the tanh regularization scale.
+        heating_rate = heating_rate + reduced_streaming_speed * sign * grad_p_cr_axis
+
+    source_term = jnp.zeros_like(primitive_state)
+    source_term = source_term.at[registered_variables.cosmic_ray_e_index].add(
+        -heating_rate
     )
+    source_term = source_term.at[registered_variables.pressure_index].add(
+        efficiency * heating_rate
+    )
+
+    return source_term
