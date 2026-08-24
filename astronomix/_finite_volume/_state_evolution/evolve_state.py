@@ -636,9 +636,9 @@ def _split_gas_and_magnetic_state(
     registers rows *after* the magnetic field -- e.g. grey two-moment cosmic
     rays (``cosmic_ray_e_index``/``cosmic_ray_flux_index``, allocated after
     ``magnetic_index`` in ``registered_variables.py``'s FV branch) or
-    ``wind_density``/the old ``cosmic_ray_n`` model, combined with
-    ``config.mhd``. Found while building the grey-CR anisotropic-diffusion
-    ladder test (Phase A item 3): with both ``mhd`` and ``grey_cosmic_rays``
+    ``wind_density``, combined with ``config.mhd``. Found while building the
+    grey-CR anisotropic-diffusion ladder test (Phase A item 3): with both
+    ``mhd`` and ``grey_cosmic_rays``
     on, the old ``primitive_state[-3:, ...]`` slice silently grabbed
     ``(B_z, e_cr, F_cr_x)`` as "the magnetic field" and mislabelled real
     ``B_z`` as gas, corrupting both halves of the Strang split. General fix,
@@ -689,9 +689,6 @@ def _split_gas_and_magnetic_state(
         ),
         wind_density_index=_shift_field_past_removed_rows(
             registered_variables.wind_density_index, removed_rows_sorted
-        ),
-        cosmic_ray_n_index=_shift_field_past_removed_rows(
-            registered_variables.cosmic_ray_n_index, removed_rows_sorted
         ),
         cosmic_ray_e_index=_shift_field_past_removed_rows(
             registered_variables.cosmic_ray_e_index, removed_rows_sorted

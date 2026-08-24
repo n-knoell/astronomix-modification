@@ -36,7 +36,6 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
-from astronomix._modules._cosmic_rays.cr_fluid_equations import speed_of_sound_crs
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
 from astronomix._modules._gravity._poisson_solver import (
     _compute_gravitational_potential,
@@ -72,10 +71,7 @@ def _reconstruct_at_interface_split(
 
     if config.time_integrator == MUSCL:
         # calculate the sound speed
-        if not config.cosmic_ray_config.cosmic_rays:
-            c = speed_of_sound(rho, p, gamma)
-        else:
-            c = speed_of_sound_crs(primitive_state, registered_variables)
+        c = speed_of_sound(rho, p, gamma)
 
         # Grey two-moment cosmic rays: combine with the CR-grey fast speed as
         # max(., .), not folded in -- see hll.py's identical pattern.

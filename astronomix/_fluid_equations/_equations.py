@@ -27,12 +27,6 @@ from astronomix.option_classes.simulation_config import SimulationConfig
 from astronomix.variable_registry.registered_variables import RegisteredVariables
 from astronomix.option_classes.simulation_params import SimulationParams
 
-# astronomix functions
-from astronomix._modules._cosmic_rays.cr_fluid_equations import (
-    total_energy_from_primitives_with_crs,
-    total_pressure_from_conserved_with_crs,
-)
-
 # @jaxtyped(typechecker=typechecker)
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
 def primitive_state_from_conserved(
@@ -72,20 +66,12 @@ def primitive_state_from_conserved(
 
     p = pressure_from_energy(E, rho, u, gamma)
 
-    if registered_variables.cosmic_ray_n_active:
-        p = total_pressure_from_conserved_with_crs(
-            conserved_state, registered_variables
-        )
-    else:
-        p = pressure_from_energy(E, rho, u, gamma)
-
-    # NOTE: no analogous branch for the grey two-moment CR model
-    # (registered_variables.cosmic_ray_e_active). That model tracks e_cr/F_cr
-    # as independent state rather than folding a CR pressure into this
-    # (gas-only) pressure/energy slot, so primitive <-> conserved recovery of
-    # the gas state is unaffected by it -- e_cr/F_cr fall through untouched,
-    # like any other independent registered row (see the "All other
-    # variables..." comment below, and cr_grey_fluid_equations.py's
+    # The grey two-moment CR model (registered_variables.cosmic_ray_e_active)
+    # tracks e_cr/F_cr as independent state rather than folding a CR pressure
+    # into this (gas-only) pressure/energy slot, so primitive <-> conserved
+    # recovery of the gas state is unaffected by it -- e_cr/F_cr fall through
+    # untouched, like any other independent registered row (see the "All
+    # other variables..." comment below, and cr_grey_fluid_equations.py's
     # docstring).
 
     # Write the recovered pressure and velocities into the primitive state.
@@ -144,13 +130,10 @@ def conserved_state_from_primitive(
     u = get_absolute_velocity(primitive_state, config, registered_variables)
     p = primitive_state[registered_variables.pressure_index]
 
-    if registered_variables.cosmic_ray_n_active:
-        E = total_energy_from_primitives_with_crs(primitive_state, registered_variables)
-    else:
-        E = total_energy_from_primitives(rho, u, p, gamma)
+    E = total_energy_from_primitives(rho, u, p, gamma)
 
-    # NOTE: no analogous branch for the grey two-moment CR model here either
-    # -- see the matching NOTE in primitive_state_from_conserved above.
+    # No analogous branch for the grey two-moment CR model here either --
+    # see the matching note in primitive_state_from_conserved above.
 
     conserved_state = primitive_state.at[registered_variables.pressure_index].set(E)
 

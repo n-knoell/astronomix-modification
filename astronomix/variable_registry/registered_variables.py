@@ -110,18 +110,9 @@ class RegisteredVariables(NamedTuple):
     wind_density_index: int = -1
     wind_density_active: bool = False
 
-    #: simplified cosmic rays
-    # in the simplest CR model witout CR diffusion,
-    # streaming and no explicitly modeled magnetic field
-    # n_CR = P_CR^(1/gamma_CR) is a conserved quantity.
-    # This is the cosmic_ray_n, the index below points to.
-    cosmic_ray_n_index: int = -1
-    cosmic_ray_n_active: bool = False
-
-    #: grey two-moment cosmic rays (astronomix._modules._cosmic_rays_grey), a
-    #: separate model from the simplified cosmic_ray_n above: e_cr and F_cr
-    #: are evolved as independent state rather than folded into the total
-    #: gas pressure. FV only for now -- see that module's DESIGN.md.
+    #: grey two-moment cosmic rays (astronomix._modules._cosmic_rays_grey):
+    #: e_cr and F_cr are evolved as independent state rather than folded into
+    #: the total gas pressure. FV only for now -- see that module's DESIGN.md.
     cosmic_ray_e_index: int = -1
     cosmic_ray_e_active: bool = False
     cosmic_ray_flux_index: Union[int, StaticIntVector] = -1
@@ -211,16 +202,6 @@ def get_registered_variables(config: SimulationConfig) -> RegisteredVariables:
                 num_vars=registered_variables.num_vars + 1
             )
             registered_variables = registered_variables._replace(wind_density_active=True)
-
-        # NOTE: CURRENTLY ONLY IMPLEMENTED FOR FINITE VOLUME MODE
-        if config.cosmic_ray_config.cosmic_rays:
-            registered_variables = registered_variables._replace(
-                cosmic_ray_n_index=registered_variables.num_vars
-            )
-            registered_variables = registered_variables._replace(
-                num_vars=registered_variables.num_vars + 1
-            )
-            registered_variables = registered_variables._replace(cosmic_ray_n_active=True)
 
         # NOTE: CURRENTLY ONLY IMPLEMENTED FOR FINITE VOLUME MODE. e_cr is a
         # scalar; F_cr has one component per spatial dimension, allocated the

@@ -4,6 +4,54 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-08-24, old `_cosmic_rays` (`n_cr`) model retired)
+
+**Resolved the consolidation open question (PROGRESS's own "next step" from the last session)
+in favor of retiring the old model**, not keeping both. Grounds: the old `n_cr` model was
+1D-only (explicit `NOTE`s in its own source), had **zero test coverage** anywhere in the repo
+(no pytest ever turned on `cosmic_rays=True`/`diffusive_shock_acceleration=True`), and its DSA
+injection (`inject_crs_at_strongest_shock`) called a legacy 1D-only shock finder
+(`astronomix/shock_finder/shock_finder.py::find_shock_zone`) that is a *different, superseded*
+module from the actual PR #4 finder the plan's ladder item 8 means
+(`astronomix/shock_finder3D/pfrommer_shock_finder.py::find_shocks_pfrommer` -- genuinely N-D,
+independently tested against Sedov/CWB setups). So "already wired up" was true only against a
+shock finder Phase B was never going to use anyway. The registry also allowed both
+`cosmic_ray_n_active` and `cosmic_ray_e_active` to be enabled simultaneously with no guard,
+which would have double-counted CR pressure (old model folds `P_cr` into the shared
+`pressure_index`; grey model tracks it as independent state). User confirmed this direction
+explicitly (real design decision, not a bug fix) -- see DESIGN.md's "Consolidating with the old
+`_cosmic_rays` model" note for the full writeup.
+
+**Removed:** `astronomix/_modules/_cosmic_rays/` (whole module: `cosmic_ray_options.py`,
+`cr_fluid_equations.py`, `cr_injection.py`) and `astronomix/shock_finder/` (the legacy 1D finder
+-- its only consumer was the old model's injection code). Un-wired everywhere it touched shared
+FV code: `CosmicRayConfig`/`CosmicRayParams` and their fields on
+`SimulationConfig`/`SimulationParams`; `cosmic_ray_n_index`/`cosmic_ray_n_active` on
+`RegisteredVariables` (and the matching re-index line in `evolve_state.py`'s
+`_split_gas_and_magnetic_state`); the `*_with_crs` branches in `_fluid_equations/_equations.py`
+(`primitive_state_from_conserved`/`conserved_state_from_primitive`), `_fluxes.py` (`_euler_flux`)
+and `total_quantities.py` (`calculate_internal_energy`/the total-energy diagnostic);
+`speed_of_sound_crs` branches in `reconstruction.py`, `hll.py` (both solver functions) and
+`_timestep_estimator.py` (`get_wave_speeds`); the DSA-injection block (and its `shock_criteria`
+import) in `_iteration_level_updates.py`; the `diffusive_shock_acceleration` gate in
+`simulation_helper_data.py`; the Pallas-gate exclusion in `_pallas_evolve.py`; and the
+`cosmic_ray_pressure` parameter on `construct_primitive_state`/`_assemble_primitive_state`
+(never called from outside the module being removed).
+
+**Verified clean:** `import astronomix` succeeds; repo-wide grep confirms no remaining
+references to `CosmicRayConfig`/`CosmicRayParams`/`cosmic_ray_n_index`/`cosmic_ray_n_active`/
+`inject_crs_at_strongest_shock`/`speed_of_sound_crs`/`gas_pressure_from_primitives_with_crs`/
+`total_energy_from_primitives_with_crs`/`total_pressure_from_conserved_with_crs`/
+`astronomix.shock_finder` (the legacy one) anywhere in `astronomix/` or `pytests/`. Full
+regression: all 7 `pytests/cosmic_rays_grey/*.py` ladder-item scripts (items 1-6 +
+`cr_gradient_check.py`) still pass identically; `pytests/hydrodynamics/shock_tube1D.py` (FD +
+FV Pallas paths) still passes; `pytests/mhd/alfven_wave3D.py` (plain 3D MHD, exercises the
+`evolve_state.py` split/join helpers this change touched) still passes.
+
+**Next: Phase B's DSA injection (ladder item 8) should be built fresh against `e_cr`/`F_cr`,
+targeting `find_shocks_pfrommer` from the start** -- there is no old-model code left to adapt,
+and there shouldn't have been (see above).
+
 ## Where things stand (2026-08-21, ladder item 6 -- Phase A ladder complete)
 
 **Ladder item 6 (two-fluid CR-modified shock tube) passes for real, and
@@ -562,13 +610,17 @@ See "What's done" and "Verified" below for details.
    now complete.** This is where the next session should pick up on remaining Phase A items.
 9. FD transport is out of scope until the WENO-eigensystem extension (see DESIGN.md's "FD
    limitation") gets separately scoped -- don't attempt it inside a ladder-item pass.
-10. Once Phase A's tests pass for real, revisit `DESIGN.md`'s open question on consolidating with
-    the older `astronomix/_modules/_cosmic_rays/` (`n_cr`) model before starting Phase B
-    (shock-finder DSA injection needs to target one CR model or the other).
+10. ~~Revisit `DESIGN.md`'s open question on consolidating with the older
+    `astronomix/_modules/_cosmic_rays/` (`n_cr`) model~~ -- done (2026-08-24): retired the old
+    model rather than keeping both -- see "Where things stand (2026-08-24, old `_cosmic_rays`
+    (`n_cr`) model retired)" above for the full rationale and what was removed. **This is where
+    the next session should pick up: Phase B's DSA injection (ladder item 8), built fresh
+    against `e_cr`/`F_cr` and `find_shocks_pfrommer` (no old-model code left to adapt).**
 11. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
     not CR-specific) is worth a heads-up to whoever owns the MHD module / other in-flight MHD work,
     since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
-    with `wind_density` or the old `cosmic_ray_n` model too, not just grey CR.
+    with `wind_density`, not just grey CR (the old `cosmic_ray_n` model this originally also
+    applied to has since been retired -- see item 10 above).
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 

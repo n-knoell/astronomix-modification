@@ -140,8 +140,6 @@ def _fv_pallas_evolve_supported(state, config: SimulationConfig) -> bool:
         # The MUSCL-based reconstruction in the split path is paired with
         # several gravity variants; we keep the native path on for now.
         return False
-    if config.cosmic_ray_config.cosmic_rays:
-        return False
     if config.cosmic_ray_grey_config.grey_cosmic_rays:
         # The fused kernel below (_fv_evolve_axis_pallas) has no e_cr/F_cr
         # awareness -- no CR flux term, no reduced-streaming-speed

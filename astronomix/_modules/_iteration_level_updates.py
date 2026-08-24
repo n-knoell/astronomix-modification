@@ -2,9 +2,9 @@
 Iteration-level updates applied once before each hydro step.
 
 These are the physics modules that run as a discrete update on the primitive
-state at the start of every time step — stellar wind, cosmic-ray injection,
-cooling, the neural-net / CNN correctors, viscosity, turbulent forcing, frame
-tracking and the per-step positivity floor. Their counterpart is
+state at the start of every time step — stellar wind, cooling, the
+neural-net / CNN correctors, viscosity, turbulent forcing, frame tracking and
+the per-step positivity floor. Their counterpart is
 ``_time_integrator_sources``, which instead enters the hydro integrator as a
 right-hand-side source term.
 """
@@ -38,7 +38,6 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 # astronomix functions
 from astronomix._modules._cnn_mhd_corrector._cnn_mhd_corrector import _cnn_mhd_corrector
 from astronomix._modules._cooling._cooling import update_pressure_by_cooling
-from astronomix._modules._cosmic_rays.cr_injection import inject_crs_at_strongest_shock
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     anisotropic_flux_projection,
     streaming_flux_target,
@@ -52,7 +51,6 @@ from astronomix._modules._turbulent_forcing._turbulent_forcing import (
     _vacuum_protection,
 )
 from astronomix._modules._viscosity._viscosity import fv_viscosity_update
-from astronomix.shock_finder.shock_finder import shock_criteria
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
@@ -101,40 +99,6 @@ def _iteration_level_updates(
             params,
             helper_data,
             registered_variables,
-        )
-
-    # Cosmic-ray injection at the strongest shock.
-    if config.cosmic_ray_config.diffusive_shock_acceleration:
-        shock_present = shock_criteria(
-            primitive_state,
-            config,
-            registered_variables,
-            helper_data,
-        )
-
-        # Injecting cosmic rays only after a certain amount of time is an
-        # ad-hoc fix for the problems that arise when a shock has not yet
-        # properly formed.
-        diffusive_shock_acceleration_started = (
-            current_time
-            >= params.cosmic_ray_params.diffusive_shock_acceleration_start_time
-        )
-        primitive_state = jax.lax.cond(
-            jnp.logical_and(
-                diffusive_shock_acceleration_started,
-                jnp.any(shock_present),
-            ),
-            lambda primitive_state: inject_crs_at_strongest_shock(
-                primitive_state,
-                params.gamma,
-                helper_data,
-                params.cosmic_ray_params,
-                config,
-                registered_variables,
-                dt,
-            ),
-            lambda primitive_state: primitive_state,
-            primitive_state,
         )
 
     # Cooling.

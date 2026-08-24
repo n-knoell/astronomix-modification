@@ -36,10 +36,6 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 from astronomix._modules._stellar_wind.stellar_wind import _wind_injection
 from astronomix._fluid_equations._fluxes import _euler_flux
 from astronomix._fluid_equations._equations import speed_of_sound
-from astronomix._modules._cosmic_rays.cr_fluid_equations import (
-    gas_pressure_from_primitives_with_crs,
-    speed_of_sound_crs,
-)
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
 
 
@@ -89,12 +85,8 @@ def get_wave_speeds(
     p_R = primitives_right[registered_variables.pressure_index]
 
     # calculate the sound speeds
-    if not config.cosmic_ray_config.cosmic_rays:
-        c_L = speed_of_sound(rho_L, p_L, gamma)
-        c_R = speed_of_sound(rho_R, p_R, gamma)
-    else:
-        c_L = speed_of_sound_crs(primitives_left, registered_variables)
-        c_R = speed_of_sound_crs(primitives_right, registered_variables)
+    c_L = speed_of_sound(rho_L, p_L, gamma)
+    c_R = speed_of_sound(rho_R, p_R, gamma)
 
     # Grey two-moment cosmic rays: combine with the CR-grey fast speed as
     # max(., .), not folded in -- see hll.py's identical pattern.

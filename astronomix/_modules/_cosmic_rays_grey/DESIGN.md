@@ -4,10 +4,12 @@ Phase A of `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`. Draft 
 before the physics bodies get filled in (the plan's own kickoff prompt: "stop and show it to
 me before implementing").
 
-This module (`astronomix/_modules/_cosmic_rays_grey/`) is a **new, separate** model from the
-existing `astronomix/_modules/_cosmic_rays/` (single advected scalar `n_cr`, polytropic closure
-`P_cr = n_cr**gamma_cr`, folded into the total gas pressure/energy, with DSA shock injection
-already wired up). The two coexist; consolidating them is a later decision, not Phase A.
+This module (`astronomix/_modules/_cosmic_rays_grey/`) was originally built as a **new,
+separate** model alongside `astronomix/_modules/_cosmic_rays/` (single advected scalar `n_cr`,
+polytropic closure `P_cr = n_cr**gamma_cr`, folded into the total gas pressure/energy). As of
+2026-08-24, that older model has been **retired** -- see "Consolidating with the old
+`_cosmic_rays` model" below -- and this grey two-moment model is now the only cosmic-ray model
+in astronomix.
 
 ## State variables
 
@@ -403,6 +405,22 @@ open BCs).
   above; currently deferred.
 - **Spectral-interface contract** (Girichidis collaboration, Phase E): agree the `spectrum`
   object API early so Phase E is a swap, not a rewrite; not touched in Phase A.
-- **Consolidating with the old `_cosmic_rays` model**: not decided. Candidates once both exist:
-  keep both (different physics fidelity/cost tradeoff), or retire the old model once Phase B's
-  DSA injection is re-targeted at `e_cr`/`F_cr`.
+- **Consolidating with the old `_cosmic_rays` model**: resolved 2026-08-24 -- **retired**. The
+  old `n_cr` model was 1D-only, had no test coverage anywhere in the repo (no pytest ever set
+  `cosmic_rays=True`/`diffusive_shock_acceleration=True`), and its DSA injection
+  (`inject_crs_at_strongest_shock`) targeted a legacy 1D-only shock finder
+  (`astronomix/shock_finder/shock_finder.py::find_shock_zone`) that predates and is unrelated to
+  the actual PR #4 finder the plan means (`astronomix/shock_finder3D/
+  pfrommer_shock_finder.py::find_shocks_pfrommer`, genuinely N-D, independently tested against
+  Sedov/CWB setups in `pytests/shock_finder3D/`). Keeping both would also have meant no guard
+  against `cosmic_ray_n_active` and `cosmic_ray_e_active` both being on at once (double-counted
+  CR pressure, since the old model folds `P_cr` into the shared `pressure_index`). Removed:
+  `astronomix/_modules/_cosmic_rays/` (whole module), `astronomix/shock_finder/` (the legacy 1D
+  finder, only consumer was the old model's injection code), `CosmicRayConfig`/`CosmicRayParams`
+  and their fields on `SimulationConfig`/`SimulationParams`, `cosmic_ray_n_index`/
+  `cosmic_ray_n_active` on `RegisteredVariables`, the `*_with_crs` branches in
+  `_fluid_equations/_equations.py`/`_fluxes.py`/`total_quantities.py`, `speed_of_sound_crs` calls
+  in `reconstruction.py`/`hll.py`/`_timestep_estimator.py`, the DSA-injection call in
+  `_iteration_level_updates.py`, and the `cosmic_ray_pressure` param on
+  `construct_primitive_state`. Phase B's DSA injection (ladder item 8) should target `e_cr`/`F_cr`
+  using `find_shocks_pfrommer` fresh, not adapt the retired code.

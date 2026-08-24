@@ -1,14 +1,16 @@
 """
 Grey cosmic-ray equation of state.
 
-Unlike the older single-scalar model (``_modules._cosmic_rays.cr_fluid_equations``),
-the grey two-moment model tracks ``e_cr`` as its own independent state
+The grey two-moment model tracks ``e_cr`` as its own independent state
 variable rather than folding a CR pressure into the total gas pressure/energy
 slot -- CR and gas-thermal energy are tracked separately (plan Sec. 2), and
 the coupling between them is the explicit feedback source terms in
 ``cr_grey_sources.py``, not a change to the primitive/conserved recovery of
 the gas state. So there is no ``*_with_crs`` counterpart to
-``total_energy_from_primitives``/``total_pressure_from_conserved`` here.
+``total_energy_from_primitives``/``total_pressure_from_conserved`` here (an
+earlier single-scalar polytropic CR model had one, folding CR pressure into
+the shared pressure/energy slot -- that model was retired, see this module's
+``__init__.py``).
 """
 
 # jax

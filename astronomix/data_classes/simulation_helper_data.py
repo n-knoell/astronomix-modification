@@ -148,11 +148,6 @@ def _helper_data_requirements(config: SimulationConfig) -> HelperDataRequirement
             needs_geometric_centers = True
             needs_r = True
 
-    # Cosmic-ray diffusive shock acceleration.
-    if config.cosmic_ray_config.diffusive_shock_acceleration:
-        needs_geometric_centers = True
-        needs_cell_volumes = True
-
     # Neural-network body force / cnn corrector positions.
     if config.neural_net_force_config.neural_net_force:
         needs_geometric_centers = True

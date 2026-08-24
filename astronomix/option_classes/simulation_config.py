@@ -26,7 +26,6 @@ from astronomix._modules._cnn_mhd_corrector._cnn_mhd_corrector_options import (
     CNNMHDconfig,
 )
 from astronomix._modules._cooling.cooling_options import CoolingConfig
-from astronomix._modules._cosmic_rays.cosmic_ray_options import CosmicRayConfig
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     CosmicRayGreyConfig,
 )
@@ -634,10 +633,7 @@ class SimulationConfig(NamedTuple):
     #: The configuration for the stellar wind module.
     wind_config: WindConfig = WindConfig()
 
-    #: Cosmic rays
-    cosmic_ray_config: CosmicRayConfig = CosmicRayConfig()
-
-    #: Grey two-moment cosmic rays (separate model, see
+    #: Grey two-moment cosmic rays (see
     #: astronomix/_modules/_cosmic_rays_grey/DESIGN.md).
     cosmic_ray_grey_config: CosmicRayGreyConfig = CosmicRayGreyConfig()
 
