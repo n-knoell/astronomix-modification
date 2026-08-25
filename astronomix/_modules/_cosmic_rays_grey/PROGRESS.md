@@ -4,6 +4,66 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-08-24, ladder item 7 -- CR-DSA Sedov-Taylor blast)
+
+**Ladder item 7 (CR Sedov-Taylor blast: thermal/CR/kinetic energy partition) passes for
+real**, the first Phase B ladder item. Built fresh against `e_cr`/`F_cr` and the real PR #4
+finder, per the consolidation decision below -- there was no old-model code to adapt.
+
+- New `astronomix/_modules/_cosmic_rays_grey/cr_grey_injection.py`
+  (`inject_crs_at_shocks`): runs `astronomix.shock_finder3D.pfrommer_shock_finder.
+  find_shocks_pfrommer` every step, diverts `dsa_efficiency` of each shock-surface cell's
+  `thermal_energy_flux` (already zero everywhere except those cells) from gas thermal pressure
+  into `e_cr`. Injects at **every** detected shock-surface cell, not just "the strongest
+  shock" the retired old model's 1D-only injection was limited to -- the N-D finder already
+  returns a full per-cell boolean surface array, so no reduction to a single shock is needed.
+  Cartesian/uniform-grid only (`area/volume = 1/grid_spacing`), matching every grey-CR ladder
+  test to date. Energy-conserving by construction: `e_cr` gains exactly what gas pressure
+  loses (`delta_e_cr * (gamma_gas - 1)`), density/velocity untouched.
+- New config/params: `CosmicRayGreyConfig.diffusive_shock_acceleration` (off by default),
+  `CosmicRayGreyParams.dsa_efficiency` (0.1 default, matches the retired old model's
+  identical default), `dsa_start_time` (0.0, ad-hoc guard against spurious pre-shock
+  detections, same purpose as the old model's identical knob), `dsa_mach_min` (1.3, matches
+  `find_shocks_pfrommer`'s own default).
+- Wired into `_iteration_level_updates.py` as a discrete once-per-step correction (same
+  pattern as `streaming_flux_target`/`anisotropic_flux_projection`/the retired old model's
+  injection), gated on `registered_variables.cosmic_ray_e_active and
+  config.cosmic_ray_grey_config.diffusive_shock_acceleration`. No `_time_integrator_sources.py`
+  changes -- DSA injection is a discrete detection+deposit operation, not a continuous PDE
+  source term.
+- **Test design** (`pytests/cosmic_rays_grey/cr_sedov_taylor.py`): a 3D Cartesian point
+  explosion (N=48, `t_end=0.07`, matches `pytests/shock_finder3D/_sedov_setup.py`'s physical
+  setup), run twice -- `dsa_efficiency=0` (control, DSA code path live but injecting nothing)
+  and `dsa_efficiency=0.1`. Rather than compare to an analytic self-similar Sedov profile
+  (this module's `cr_adiabatic_compression.py` already found that kind of global-profile
+  comparison unreliable near open boundaries), the test checks a *differential* identity:
+  since injection is energy-conserving by construction, `(E_thermal + E_kinetic)` lost by the
+  DSA run relative to the control run must equal the DSA run's `E_cr` gained. Calibrated:
+  this identity holds to ~2.1e-5 relative error (`tol=1e-2`, >450x margin); each run's own
+  total-energy conservation (initial ambient + `E_EXPLOSION` vs. final
+  thermal+kinetic+CR) independently holds to ~1.7e-5 (`tol=1e-3`); `E_cr` is ~5.3% of the
+  total energy budget at `dsa_efficiency=0.1` (asserted in `[0.01, 0.3]`); the control run's
+  `E_cr` is exactly `0.0` (confirms `dsa_efficiency` is a genuine off switch, not just "code
+  path never called"); the shock front stays at `r~=0.455` vs. domain half-width `0.5`
+  (asserted `< 0.47`, so the energy-budget checks aren't silently passing because energy
+  already left through the open boundaries). `NUM_CELLS=48` was picked after confirming
+  runtime cost empirically (~34s including JIT compile at N=48; ~24s at N=24) -- continuous
+  per-step shock-finding turned out to be cheap enough that a true 3D setup (matching the
+  plan's literal "Sedov-Taylor" wording) was affordable without needing a cheaper 2D
+  substitute.
+- Smoke-tested the mechanism standalone before committing to the full test (N=24 and N=48,
+  `dsa_efficiency=0.1`): no NaNs, `e_cr` becomes nonzero and physically plausible in magnitude,
+  `p_gas` floors correctly at the ambient value away from the shock.
+
+Full regression: all 7 pre-existing `pytests/cosmic_rays_grey/*.py` scripts (ladder items 1-6
++ `cr_gradient_check.py`) still pass; `pytests/hydrodynamics/shock_tube1D.py` (FD + FV Pallas)
+still passes; `import astronomix` clean.
+
+**Next: ladder item 8** (DSA efficiency vs. Kang & Ryu 2013 / Caprioli & Spitkovsky 2014 as a
+function of Mach number) only needs to replace `cr_grey_injection.py`'s scalar
+`dsa_efficiency` with a function of `sf_result.mach_numbers` -- the injection mechanics built
+here don't need to change.
+
 ## Where things stand (2026-08-24, old `_cosmic_rays` (`n_cr`) model retired)
 
 **Resolved the consolidation open question (PROGRESS's own "next step" from the last session)
@@ -613,10 +673,15 @@ See "What's done" and "Verified" below for details.
 10. ~~Revisit `DESIGN.md`'s open question on consolidating with the older
     `astronomix/_modules/_cosmic_rays/` (`n_cr`) model~~ -- done (2026-08-24): retired the old
     model rather than keeping both -- see "Where things stand (2026-08-24, old `_cosmic_rays`
-    (`n_cr`) model retired)" above for the full rationale and what was removed. **This is where
-    the next session should pick up: Phase B's DSA injection (ladder item 8), built fresh
-    against `e_cr`/`F_cr` and `find_shocks_pfrommer` (no old-model code left to adapt).**
-11. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
+    (`n_cr`) model retired)" above for the full rationale and what was removed.
+11. ~~`cr_sedov_taylor.py` (item 7, Phase B)~~ -- done (2026-08-24), passes; required building
+    `cr_grey_injection.py`'s `inject_crs_at_shocks` fresh against `find_shocks_pfrommer` -- see
+    "Where things stand (2026-08-24, ladder item 7)" above. **This is where the next session
+    should pick up: ladder item 8** (DSA efficiency vs. Kang & Ryu 2013 / Caprioli & Spitkovsky
+    2014 as a function of Mach number) -- swap `cr_grey_injection.py`'s scalar
+    `dsa_efficiency` for a function of `sf_result.mach_numbers`; the injection mechanics don't
+    need to change.
+12. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
     not CR-specific) is worth a heads-up to whoever owns the MHD module / other in-flight MHD work,
     since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
     with `wind_density`, not just grey CR (the old `cosmic_ray_n` model this originally also

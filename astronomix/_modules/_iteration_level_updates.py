@@ -2,11 +2,11 @@
 Iteration-level updates applied once before each hydro step.
 
 These are the physics modules that run as a discrete update on the primitive
-state at the start of every time step — stellar wind, cooling, the
-neural-net / CNN correctors, viscosity, turbulent forcing, frame tracking and
-the per-step positivity floor. Their counterpart is
-``_time_integrator_sources``, which instead enters the hydro integrator as a
-right-hand-side source term.
+state at the start of every time step — stellar wind, grey-CR shock
+injection, cooling, the neural-net / CNN correctors, viscosity, turbulent
+forcing, frame tracking and the per-step positivity floor. Their counterpart
+is ``_time_integrator_sources``, which instead enters the hydro integrator
+as a right-hand-side source term.
 """
 
 # general
@@ -38,6 +38,7 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 # astronomix functions
 from astronomix._modules._cnn_mhd_corrector._cnn_mhd_corrector import _cnn_mhd_corrector
 from astronomix._modules._cooling._cooling import update_pressure_by_cooling
+from astronomix._modules._cosmic_rays_grey.cr_grey_injection import inject_crs_at_shocks
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     anisotropic_flux_projection,
     streaming_flux_target,
@@ -239,6 +240,24 @@ def _iteration_level_updates(
             primitive_state = primitive_state.at[f_cr_index.z].set(
                 projected_f_cr[f_cr_index.z]
             )
+
+    # Grey two-moment CR diffusive shock acceleration: detect shocks with the
+    # N-D Pfrommer finder and divert a fraction of each shock's dissipated
+    # energy flux into e_cr (ladder items 7-8). See cr_grey_injection.py's
+    # docstring for the energy-accounting and Cartesian-only caveat.
+    if (
+        registered_variables.cosmic_ray_e_active
+        and config.cosmic_ray_grey_config.diffusive_shock_acceleration
+    ):
+        primitive_state = inject_crs_at_shocks(
+            primitive_state,
+            config,
+            params,
+            registered_variables,
+            helper_data,
+            current_time,
+            dt,
+        )
 
     # Per-step positivity on the primitive state.
     #   - HARD_FLOOR clamps density (and pressure, for an ideal gas) to its

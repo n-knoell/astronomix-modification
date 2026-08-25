@@ -355,6 +355,66 @@ literature table was reproduced (only the method was validated, via the
 degenerate-limit checks above), so this is a genuine, independently-checked
 comparison rather than a tuned-to-pass one.
 
+## Resolved: DSA shock injection (ladder item 7, Phase B)
+
+`pytests/cosmic_rays_grey/cr_sedov_taylor.py` passes. `cr_grey_injection.py`'s
+`inject_crs_at_shocks` is the Phase B counterpart of the Phase A transport/
+feedback functions above: it detects shocks every step with the real PR #4
+finder (`astronomix.shock_finder3D.pfrommer_shock_finder.find_shocks_pfrommer`)
+and diverts a `dsa_efficiency` fraction of each shock-surface cell's
+Rankine-Hugoniot-predicted dissipated kinetic-energy flux from gas thermal
+pressure into `e_cr`. See "Consolidating with the old `_cosmic_rays` model"
+below for why this was built fresh rather than adapting the retired old
+model's injection code (wrong shock finder, single-shock-only, no test
+coverage).
+
+Design choices, and why they weren't open questions worth asking about:
+
+- **Injects at every detected shock-surface cell, not "the strongest
+  shock".** The retired old model's 1D-only injection picked a single
+  strongest shock because its legacy finder only supported 1D. The N-D
+  `find_shocks_pfrommer` already returns a full per-cell boolean surface
+  array covering every simultaneous shock in the domain -- restricting to
+  one would require *adding* a reduction, not removing one, so using all
+  detected cells is both the more general choice and the smaller diff.
+- **Deposits directly into `e_cr` at the single-cell-thick `shock_surface`,
+  not spread across the broader (3-4 cell) `shock_zones`.** The retired old
+  model's own comments flagged its zone-spreading as a source of "effective
+  over-injection" (`P_cr * div(v)` forces acting on CR pressure injected
+  into cells that are still converging); depositing at the literal cell
+  `thermal_energy_flux` is computed for avoids that failure mode entirely
+  and needed no extra design decision.
+- **`F_cr` is left untouched at injection** -- only `e_cr` and gas thermal
+  pressure change. `F_cr` develops its own flux from the `e_cr` gradient
+  injection creates via the existing (already-verified) two-moment
+  transport equations; no other CR-grey source term (`cr_pressure_gradient_
+  source`, `cr_adiabatic_work_source`) touches `F_cr` directly either, so
+  this matches the established pattern rather than introducing a new one.
+- **Placed in `_iteration_level_updates.py`, not `_time_integrator_sources.py`.**
+  DSA injection is a discrete detect-and-deposit operation (the shock finder
+  is a discrete algorithm, not a smooth field), the same category as
+  `streaming_flux_target`/`anisotropic_flux_projection`/the retired old
+  model's injection -- not a continuous RK-integrated PDE source term.
+- **Cartesian, uniform-grid only** (`area / volume = 1 / grid_spacing`,
+  mirroring the retired old model's identical non-spherical-branch formula).
+  Matches every grey-CR ladder test's geometry to date; extend if a future
+  item needs curvilinear/spherical support.
+
+**Test design** (`cr_sedov_taylor.py`): a 3D Cartesian point explosion
+(N=48, `t_end=0.07`), run at `dsa_efficiency=0` (control) and `0.1`. Checks
+a *differential* energy-partition identity between the two runs (thermal+
+kinetic energy the DSA run loses relative to the control run must equal the
+CR energy it gained) rather than comparing to an analytic self-similar Sedov
+profile -- `cr_adiabatic_compression.py` (ladder item 2) already found that
+kind of global-profile comparison unreliable near open boundaries, and the
+plan's own wording ("thermal/CR/kinetic energy partition") is naturally an
+energy-budget check, not a spatial-profile one. Calibrated: the identity
+holds to ~2.1e-5 relative error; each run's own total-energy conservation
+holds independently to ~1.7e-5; `E_cr` is ~5.3% of the total energy budget.
+Continuous per-step shock-finding turned out to be cheap enough (~34s
+including JIT compile at N=48) that a true 3D setup was affordable without
+needing a cheaper 2D substitute.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

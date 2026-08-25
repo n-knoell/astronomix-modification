@@ -35,6 +35,11 @@ class CosmicRayGreyConfig(NamedTuple):
     #: behavior is unchanged for configs/tests that don't ask for it.
     diffusive_relaxation: bool = False
 
+    #: turn on diffusive shock acceleration: inject cosmic-ray energy into
+    #: e_cr at shocks detected by the Pfrommer shock finder (PR #4,
+    #: find_shocks_pfrommer), see cr_grey_injection.py (ladder items 7-8).
+    diffusive_shock_acceleration: bool = False
+
 
 class CosmicRayGreyParams(NamedTuple):
 
@@ -81,3 +86,26 @@ class CosmicRayGreyParams(NamedTuple):
     #: resulting diffusion coefficient for e_cr itself is
     #: diffusion_coefficient * (gamma_cr - 1).
     diffusion_coefficient: float = 1.0
+
+    #: fraction of each shock's dissipated kinetic-energy flux
+    #: (find_shocks_pfrommer's thermal_energy_flux) diverted into e_cr
+    #: instead of gas thermal energy, when
+    #: CosmicRayGreyConfig.diffusive_shock_acceleration is set. Fixed
+    #: (Mach-independent) for ladder item 7; item 8 adds a Mach-dependent
+    #: efficiency model (Kang & Ryu 2013; Caprioli & Spitkovsky 2014) on top.
+    #: Mirrors the retired old model's identical
+    #: diffusive_shock_acceleration_efficiency default.
+    dsa_efficiency: float = 0.1
+
+    #: simulation time before which diffusive_shock_acceleration injects
+    #: nothing -- an ad-hoc guard against spurious shock detections before a
+    #: real discontinuity has formed (mirrors the retired old model's
+    #: identical diffusive_shock_acceleration_start_time). 0.0 (default): no
+    #: delay.
+    dsa_start_time: float = 0.0
+
+    #: minimum Rankine-Hugoniot Mach number find_shocks_pfrommer requires to
+    #: flag a cell as a shock surface, passed through to
+    #: cr_grey_injection.inject_crs_at_shocks. Matches
+    #: find_shocks_pfrommer's own default.
+    dsa_mach_min: float = 1.3
