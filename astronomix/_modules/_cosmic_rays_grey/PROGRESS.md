@@ -4,6 +4,100 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-08-26, ladder item 8 -- Mach-dependent DSA efficiency)
+
+**Implementation done, smoke-verified; a dedicated calibrated pytest (matching
+item 7's `cr_sedov_taylor.py` rigor) is not yet written** -- that's the actual
+next step, not a fresh ladder item.
+
+- New `dsa_efficiency_kang_ryu_2013` in `cr_grey_injection.py`: a piecewise
+  fit (weak/intermediate/strong-shock pieces, `Ms<2 -> 0`, plateau `0.211` for
+  `Ms>15`) to Kang & Ryu (2013)'s kinetic DSA simulation results, in the form
+  standard across the cluster-shock CR literature (Vazza et al. 2016;
+  CRESCENDO, Girichidis et al. 2022) -- KR13 itself only publishes
+  tables/figures, not a closed-form fit. Verified by hand: continuous across
+  both piece boundaries (~2% at Ms=5, <1% at Ms=15) and consistent with KR13's
+  own stated asymptote (eta -> ~0.2 for Ms gtrsim 10). Caprioli & Spitkovsky
+  (2014) has no independent fit either; implemented as the literature-standard
+  approximation, half of KR13 (`dsa_efficiency_mach_scale=0.5`), rather than a
+  separate function.
+- New `CosmicRayGreyConfig.dsa_efficiency_model` (`DSA_EFFICIENCY_CONSTANT`
+  default | `DSA_EFFICIENCY_KANG_RYU_2013`) and
+  `CosmicRayGreyParams.dsa_efficiency_mach_scale` (default 1.0). Added as an
+  opt-in mode specifically so item 7's calibrated `cr_sedov_taylor.py` and its
+  tolerances are untouched -- user confirmed this design (both "which
+  model(s)" and "how to wire it in") when asked, since it's a genuine
+  API/physics decision with more than one defensible answer.
+- Differentiability guard: the intermediate piece divides by `Ms**4`; a naive
+  implementation is NaN-safe forward (masked by `jnp.where`) but NaN-*unsafe*
+  backward (jnp.where differentiates every branch; an unselected `1/0**4` at
+  `Ms=0`, the common "no shock here" value, has infinite local gradient,
+  contaminating the total via `0 * inf = nan`) -- same category of bug this
+  module has hit before (`cr_pressure_speed_floor`). Fixed by flooring the
+  Mach number used *inside* the discardable branches (`ms_safe =
+  jnp.maximum(ms, 1.0)`) rather than the one driving branch selection.
+  Verified directly: `jax.grad` through the function at `Ms=0` gives exactly
+  `0.0`, not NaN.
+- Smoke-tested standalone (N=32 Sedov setup, not the calibrated N=48 test):
+  no NaN; KR13 gives `E_cr ~= 2.7%` of total energy (vs. item 7's flat-10%
+  model's ~5.3% -- lower is expected, since KR13's efficiency only nears 10%
+  around Ms~5 and this blast's shock weakens over time); the CS14-like
+  scale=0.5 run gives almost exactly half that (`~1.3%`), confirming the
+  scale wiring.
+- Full regression: all 7 pre-existing ladder pytests + `cr_sedov_taylor.py`
+  (item 7) still pass.
+
+**Found and fixed an unrelated but real regression while verifying this**:
+item 7's `cr_sedov_taylor.py` started going to all-NaN, traced to a shock-finder
+change from an unrelated CWB debugging session earlier the same day (the
+"walk to shock-zone edge" fix to `get_post_pre_shock_values` /
+`_shock_mach.py` / `pfrommer_shock_finder.py` -- `find_shocks_pfrommer` is
+shared infrastructure between the CWB and CR-grey work). That fix had only
+ever been verified against synthetic profiles, never a real run. Bisected and
+reverted it (back to `HEAD`); see
+`pytests/shock_finder3D/FIXES_TODO.md` item 1a for the full account. Not a
+CR-grey bug, but worth knowing this module's tests can be broken by changes
+elsewhere that touch the shock finder.
+
+**Ladder item 8 is now fully done**, including the dedicated pytest
+(`pytests/cosmic_rays_grey/cr_dsa_mach_dependence.py`), written same-day
+(2026-08-26). Two independent layers, per the design question above:
+
+1. `test_dsa_efficiency_kang_ryu_2013_shape` -- pure-function checks on the
+   fit itself (zero below Ms=2, continuous at both piece boundaries,
+   monotonic, asymptotes to 0.211). No simulation; exercises the whole Mach
+   range a real blast can't guarantee sampling.
+2. `test_cr_dsa_mach_dependence` -- reuses `cr_sedov_taylor.py`'s exact
+   physical setup with three configs (control/KR13/CS14-like): no NaN,
+   energy conservation, `E_cr` bounded and nonzero (calibrated ~4.8% KR13 /
+   ~2.4% CS14-like at NUM_CELLS=48 -- comparable to, modestly below, item
+   7's flat-10% model's ~5.3%; the control run's shock-surface cells span
+   Ms~3-29, mean~11 at t=0.07, so most sit well above KR13's Ms~5
+   "reaches 10%" point -- the total is dominated by the shock's whole,
+   Mach-decreasing-over-time history, not this final snapshot, so no tight
+   a priori match to the flat model is expected), the CS14-like/KR13 `E_cr` ratio close to 0.5
+   (calibrated ~1.9% deviation -- **not** near-machine-precision, since
+   these are two independent nonlinear time integrations: diverting
+   different amounts of thermal energy into CRs feeds back into the gas
+   pressure and hence the shock's subsequent trajectory), and an **exact**
+   formula cross-check (the main check): call `find_shocks_pfrommer` and
+   `dsa_efficiency_kang_ryu_2013` directly on the control run's final state,
+   independently compute the expected `delta_e_cr`, and compare against
+   `inject_crs_at_shocks`'s actual output on the same state -- matches to
+   ~8e-8 (float32 precision), proving the injection code genuinely uses the
+   documented formula rather than something else.
+
+Two tolerance-calibration mistakes worth remembering if this test is ever
+revisited: initially assumed the CS14/KR13 ratio would hold near machine
+precision (wrong -- see the feedback explanation above; fixed by loosening
+to 5%) and assumed the formula cross-check would hold to 1e-9 (wrong for
+float32; fixed to 1e-5, still >100x margin over the observed ~8e-8). Neither
+was a real bug, both were the test's own expectations being initially too
+strict.
+
+Full regression (all 7 pre-existing ladder pytests + `cr_sedov_taylor.py` +
+this new test) passes.
+
 ## Where things stand (2026-08-24, ladder item 7 -- CR-DSA Sedov-Taylor blast)
 
 **Ladder item 7 (CR Sedov-Taylor blast: thermal/CR/kinetic energy partition) passes for
@@ -676,12 +770,16 @@ See "What's done" and "Verified" below for details.
     (`n_cr`) model retired)" above for the full rationale and what was removed.
 11. ~~`cr_sedov_taylor.py` (item 7, Phase B)~~ -- done (2026-08-24), passes; required building
     `cr_grey_injection.py`'s `inject_crs_at_shocks` fresh against `find_shocks_pfrommer` -- see
-    "Where things stand (2026-08-24, ladder item 7)" above. **This is where the next session
-    should pick up: ladder item 8** (DSA efficiency vs. Kang & Ryu 2013 / Caprioli & Spitkovsky
-    2014 as a function of Mach number) -- swap `cr_grey_injection.py`'s scalar
-    `dsa_efficiency` for a function of `sf_result.mach_numbers`; the injection mechanics don't
-    need to change.
-12. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
+    "Where things stand (2026-08-24, ladder item 7)" above.
+12. ~~Ladder item 8 (Mach-dependent DSA efficiency)~~ -- done (2026-08-26), including the
+    dedicated `pytests/cosmic_rays_grey/cr_dsa_mach_dependence.py`: `dsa_efficiency_kang_ryu_2013`
+    + `dsa_efficiency_model` / `dsa_efficiency_mach_scale` config, see "Where things stand
+    (2026-08-26, ladder item 8)" above for the full test design and the two tolerance-calibration
+    lessons. **Phase B's scaffold-correctness items (7-8) are now both done. This is where the
+    next session should pick up: ladder item 9** (1D steady CR-driven flow / CR-modified shock
+    structure, plan Sec. 4's "Integration / physical" tier -- a step up from items 1-8's
+    scaffold-correctness checks toward genuinely physical validation).
+13. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
     not CR-specific) is worth a heads-up to whoever owns the MHD module / other in-flight MHD work,
     since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
     with `wind_density`, not just grey CR (the old `cosmic_ray_n` model this originally also

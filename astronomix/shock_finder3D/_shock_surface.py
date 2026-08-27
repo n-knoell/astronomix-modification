@@ -106,9 +106,13 @@ def _find_shock_surface_1d(
     for i in range(start, stop):
         val = body_fn(i, val)
     """
+    # segment labels run 1..max_segment_id inclusive (label_scan increments
+    # starting from 0 on the first zone entry) -- stop must be
+    # max_segment_id + 1, else range(1, max_segment_id) silently drops the
+    # last (and, when there is only one segment, the only) label.
     shock_surface = jax.lax.fori_loop(
         1,
-        max_segment_id,
+        max_segment_id + 1,
         lambda segment_id, surf: find_segment_surface(jnp.int32(segment_id), surf),
         shock_surface_init,
     )
@@ -214,34 +218,43 @@ def _find_shock_surface_2d(
         # walk up to max(nx, ny) steps along the ray
         max_steps = int(max(nx, ny))
 
-        # we get all cells satisfy (along the ray) + (ahead it or itself)
-        # then we check if any cell (along the ray + ahead it) has smaller div_v
-        def ray_step(carry, _):
-            ci, cj, found_smaller = carry
-            ni = jnp.clip(ci + sx, 0, nx - 1)
-            nj = jnp.clip(cj + sy, 0, ny - 1)
+        # walk from (i, j) in direction (dx, dy) and report whether any cell
+        # along that walk (staying inside the zone) has a smaller div_v than
+        # my_div. Called once ahead and once behind so a candidate is only
+        # kept if it is the true argmin over the whole contiguous segment,
+        # not just the argmin of the "ahead" half -- a one-sided walk lets
+        # every cell downstream of the true peak (nothing smaller *ahead* of
+        # it) get spuriously tagged too.
+        def walk_finds_smaller(dx, dy):
+            def ray_step(carry, _):
+                ci, cj, found_smaller = carry
+                ni = jnp.clip(ci + dx, 0, nx - 1)
+                nj = jnp.clip(cj + dy, 0, ny - 1)
 
-            # stop if we left the shock zone or hit a boundary (same cell after clip)
-            still_in_zone = shock_zones[ni, nj]
-            hit_boundary = (ni != ci) | (nj != cj)
-            active = still_in_zone & hit_boundary
+                # stop if we left the shock zone or hit a boundary (same cell after clip)
+                still_in_zone = shock_zones[ni, nj]
+                hit_boundary = (ni != ci) | (nj != cj)
+                active = still_in_zone & hit_boundary
 
-            neighbor_div = jnp.where(active, div_v[ni, nj], jnp.inf)
-            found_smaller = found_smaller | (neighbor_div < my_div)
+                neighbor_div = jnp.where(active, div_v[ni, nj], jnp.inf)
+                found_smaller = found_smaller | (neighbor_div < my_div)
 
-            next_i = jnp.where(active, ni, ci)
-            next_j = jnp.where(active, nj, cj)
-            return (next_i, next_j, found_smaller), None
+                next_i = jnp.where(active, ni, ci)
+                next_j = jnp.where(active, nj, cj)
+                return (next_i, next_j, found_smaller), None
 
-        # while loop to walk along the ray to calculate found_smaller for all cells along the ray ahead of (i, j)
-        (_, _, found_smaller), _ = jax.lax.scan(
-            ray_step,
-            (i, j, jnp.bool_(False)),
-            None,
-            length=max_steps,   # ← static Python int, fine
-        )
+            (_, _, found_smaller), _ = jax.lax.scan(
+                ray_step,
+                (i, j, jnp.bool_(False)),
+                None,
+                length=max_steps,   # ← static Python int, fine
+            )
+            return found_smaller
 
-        # if found_smaller is False after walking through the ray -> (i, j) is the smallest
+        found_smaller = walk_finds_smaller(sx, sy) | walk_finds_smaller(-sx, -sy)
+
+        # if found_smaller is False after walking both directions along the
+        # ray -> (i, j) is the true segment minimum
         return shock_zones[i, j] & ~found_smaller
 
     # calculate is_surface_cell for all cells loop by 2 nested vmap for dim 2
@@ -298,30 +311,37 @@ def _find_shock_surface_3d(
 
         max_steps = int(max(nx, ny, nz))
 
-        def ray_step(carry, _):
-            ci, cj, ck, found_smaller = carry
-            ni = jnp.clip(ci + sx, 0, nx - 1)
-            nj = jnp.clip(cj + sy, 0, ny - 1)
-            nk = jnp.clip(ck + sz, 0, nz - 1)
+        # See the 2D version's comment: walked both ahead and behind so a
+        # candidate is only kept if it is the true argmin over the whole
+        # contiguous segment, not just the "ahead" half.
+        def walk_finds_smaller(dx, dy, dz):
+            def ray_step(carry, _):
+                ci, cj, ck, found_smaller = carry
+                ni = jnp.clip(ci + dx, 0, nx - 1)
+                nj = jnp.clip(cj + dy, 0, ny - 1)
+                nk = jnp.clip(ck + dz, 0, nz - 1)
 
-            still_in_zone = shock_zones[ni, nj, nk]
-            moved = (ni != ci) | (nj != cj) | (nk != ck)
-            active = still_in_zone & moved
+                still_in_zone = shock_zones[ni, nj, nk]
+                moved = (ni != ci) | (nj != cj) | (nk != ck)
+                active = still_in_zone & moved
 
-            neighbor_div = jnp.where(active, div_v[ni, nj, nk], jnp.inf)
-            found_smaller = found_smaller | (neighbor_div < my_div)
+                neighbor_div = jnp.where(active, div_v[ni, nj, nk], jnp.inf)
+                found_smaller = found_smaller | (neighbor_div < my_div)
 
-            next_i = jnp.where(active, ni, ci)
-            next_j = jnp.where(active, nj, cj)
-            next_k = jnp.where(active, nk, ck)
-            return (next_i, next_j, next_k, found_smaller), None
+                next_i = jnp.where(active, ni, ci)
+                next_j = jnp.where(active, nj, cj)
+                next_k = jnp.where(active, nk, ck)
+                return (next_i, next_j, next_k, found_smaller), None
 
-        (_, _, _, found_smaller), _ = jax.lax.scan(
-            ray_step,
-            (i, j, k, jnp.bool_(False)),
-            None,
-            length=max_steps,
-        )
+            (_, _, _, found_smaller), _ = jax.lax.scan(
+                ray_step,
+                (i, j, k, jnp.bool_(False)),
+                None,
+                length=max_steps,
+            )
+            return found_smaller
+
+        found_smaller = walk_finds_smaller(sx, sy, sz) | walk_finds_smaller(-sx, -sy, -sz)
 
         return shock_zones[i, j, k] & ~found_smaller
 

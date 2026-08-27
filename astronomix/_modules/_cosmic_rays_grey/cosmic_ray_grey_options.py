@@ -12,6 +12,25 @@ Mirrors the split used by the older ``cosmic_ray_options.py``.
 from typing import NamedTuple
 
 
+#: diffusive_shock_acceleration efficiency models (CosmicRayGreyConfig.
+#: dsa_efficiency_model), see cr_grey_injection.py.
+
+#: fixed, Mach-independent efficiency (CosmicRayGreyParams.dsa_efficiency).
+#: Ladder item 7's model; still the default so existing configs/tests (e.g.
+#: cr_sedov_taylor.py, whose energy-conservation tolerances are calibrated
+#: against a fixed 0.1 efficiency) are unaffected.
+DSA_EFFICIENCY_CONSTANT = 0
+
+#: Kang & Ryu (2013) Mach-number-dependent efficiency (ladder item 8), scaled
+#: by CosmicRayGreyParams.dsa_efficiency_mach_scale -- see
+#: cr_grey_injection.dsa_efficiency_kang_ryu_2013 for the fit and sources.
+#: Caprioli & Spitkovsky (2014) is the same functional shape at half the
+#: efficiency (dsa_efficiency_mach_scale=0.5), per the literature's standard
+#: implementation of CS14 as a rescaled KR13 (no independent closed-form fit
+#: exists for CS14 itself) -- not a separate constant.
+DSA_EFFICIENCY_KANG_RYU_2013 = 1
+
+
 class CosmicRayGreyConfig(NamedTuple):
 
     #: main switch for the grey two-moment cosmic-ray model. Currently
@@ -39,6 +58,12 @@ class CosmicRayGreyConfig(NamedTuple):
     #: e_cr at shocks detected by the Pfrommer shock finder (PR #4,
     #: find_shocks_pfrommer), see cr_grey_injection.py (ladder items 7-8).
     diffusive_shock_acceleration: bool = False
+
+    #: which DSA efficiency model inject_crs_at_shocks uses -- one of
+    #: DSA_EFFICIENCY_CONSTANT (default, CosmicRayGreyParams.dsa_efficiency)
+    #: or DSA_EFFICIENCY_KANG_RYU_2013 (Mach-dependent, ladder item 8; see
+    #: cr_grey_injection.dsa_efficiency_kang_ryu_2013).
+    dsa_efficiency_model: int = DSA_EFFICIENCY_CONSTANT
 
 
 class CosmicRayGreyParams(NamedTuple):
@@ -90,12 +115,25 @@ class CosmicRayGreyParams(NamedTuple):
     #: fraction of each shock's dissipated kinetic-energy flux
     #: (find_shocks_pfrommer's thermal_energy_flux) diverted into e_cr
     #: instead of gas thermal energy, when
-    #: CosmicRayGreyConfig.diffusive_shock_acceleration is set. Fixed
-    #: (Mach-independent) for ladder item 7; item 8 adds a Mach-dependent
-    #: efficiency model (Kang & Ryu 2013; Caprioli & Spitkovsky 2014) on top.
-    #: Mirrors the retired old model's identical
+    #: CosmicRayGreyConfig.diffusive_shock_acceleration is set and
+    #: dsa_efficiency_model == DSA_EFFICIENCY_CONSTANT (the default). Ignored
+    #: under DSA_EFFICIENCY_KANG_RYU_2013, which uses dsa_efficiency_mach_scale
+    #: instead. Mirrors the retired old model's identical
     #: diffusive_shock_acceleration_efficiency default.
     dsa_efficiency: float = 0.1
+
+    #: multiplicative scale applied to the Kang & Ryu (2013) Mach-dependent
+    #: efficiency fit (cr_grey_injection.dsa_efficiency_kang_ryu_2013), only
+    #: used under dsa_efficiency_model == DSA_EFFICIENCY_KANG_RYU_2013. 1.0
+    #: (default) reproduces KR13 itself; 0.5 approximates Caprioli &
+    #: Spitkovsky (2014) for quasi-parallel shocks, per the literature's
+    #: standard implementation of CS14 as half of KR13 (Vazza et al. 2016;
+    #: no independent closed-form CS14 fit exists). CS14's stronger finding
+    #: -- efficiency also depends heavily on shock obliquity, near-zero for
+    #: quasi-perpendicular shocks -- is not modeled here, since
+    #: find_shocks_pfrommer does not currently expose shock-normal-vs-B
+    #: obliquity; this scale is a Mach-only approximation of CS14.
+    dsa_efficiency_mach_scale: float = 1.0
 
     #: simulation time before which diffusive_shock_acceleration injects
     #: nothing -- an ad-hoc guard against spurious shock detections before a

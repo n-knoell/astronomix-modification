@@ -32,7 +32,11 @@ import jax.numpy as jnp
 import jax
 
 # astronomix constants
-from astronomix.option_classes.simulation_config import STATE_TYPE
+from astronomix.option_classes.simulation_config import STATE_TYPE, FIELD_TYPE
+from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
+    DSA_EFFICIENCY_CONSTANT,
+    DSA_EFFICIENCY_KANG_RYU_2013,
+)
 
 # astronomix containers
 from astronomix.data_classes.simulation_helper_data import HelperData
@@ -42,6 +46,63 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 
 # astronomix functions
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
+
+
+@jax.jit
+def dsa_efficiency_kang_ryu_2013(mach_numbers: FIELD_TYPE) -> FIELD_TYPE:
+    """DSA acceleration efficiency vs. sonic Mach number (Kang & Ryu 2013).
+
+    Piecewise fit to KR13's kinetic DSA simulation results, in the form
+    standard across the cluster/cosmological CR literature (e.g. Vazza et al.
+    2016; the CRESCENDO code, Girichidis et al. 2022) -- KR13 itself reports
+    simulation tables/figures rather than a closed-form fit. Continuous
+    across both piece boundaries (checked by hand: ~2% agreement at Ms=5,
+    <1% at Ms=15) and consistent with KR13's own stated asymptotic value
+    (eta -> ~0.2 for Ms >~ 10).
+
+    Caprioli & Spitkovsky (2014) has no independent closed-form fit either;
+    the literature's standard approximation is half of this function's
+    output (Vazza et al. 2016) -- see
+    ``CosmicRayGreyParams.dsa_efficiency_mach_scale``.
+
+    Args:
+        mach_numbers: Sonic Mach number field (e.g.
+            ``ShockFinderResult.mach_numbers``); zero, negative, or any value
+            away from a detected shock surface is fine (the fit below is
+            zero for Ms < 2, so those cells contribute nothing).
+
+    Returns:
+        Efficiency field, same shape as ``mach_numbers``, in [0, ~0.211].
+    """
+    # ms**4 in the denominator of the intermediate piece below is only ever
+    # evaluated (for the *returned value*) where Ms > 5, but jnp.where's VJP
+    # differentiates every branch everywhere -- an un-selected 1/Ms**4 at
+    # Ms=0 (the typical "no shock here" value away from shock-surface cells)
+    # has an infinite local gradient, which contaminates the total gradient
+    # via 0 * inf = nan even though the forward value is masked out cleanly.
+    # Same "nan-safe forward, nan-unsafe backward" jnp.where gotcha this
+    # module has hit before (see cr_pressure_speed_floor); floor the value
+    # used *inside* the discardable branches instead of the real Mach number
+    # driving the branch selection.
+    ms = jnp.maximum(mach_numbers, 0.0)
+    ms_safe = jnp.maximum(ms, 1.0)
+
+    # weak-shock piece, 2 <= Ms <= 5
+    c, d, e = -5.95e-4, 1.88e-5, 5.334
+    weak = c + d * ms**e
+
+    # intermediate piece, 5 < Ms <= 15
+    b = (-2.87, 9.67, -8.88, 1.94, 0.18)
+    intermediate = sum(bn * (ms_safe - 1.0) ** n for n, bn in enumerate(b)) / ms_safe**4
+
+    # strong-shock plateau, Ms > 15
+    strong = 0.211
+
+    return jnp.where(
+        ms < 2.0,
+        0.0,
+        jnp.where(ms <= 5.0, weak, jnp.where(ms <= 15.0, intermediate, strong)),
+    )
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
@@ -80,11 +141,14 @@ def inject_crs_at_shocks(
     a no-op, without needing an explicit "any shock present" branch the way
     the retired old model's ``jax.lax.cond`` gate did.
 
-    A fixed ``dsa_efficiency`` fraction of that dissipated flux is diverted
-    from the gas thermal channel into ``e_cr`` instead -- exact, local
-    energy conservation (kinetic energy/velocity untouched; only the portion
-    of thermal energy the shock would have deposited this step is
-    repartitioned). Cartesian, uniform ``grid_spacing`` only for now
+    A fraction of that dissipated flux -- ``dsa_efficiency`` (constant) or
+    ``dsa_efficiency_mach_scale * dsa_efficiency_kang_ryu_2013(sf_result.
+    mach_numbers)`` (Mach-dependent), per ``config.cosmic_ray_grey_config.
+    dsa_efficiency_model`` -- is diverted from the gas thermal channel into
+    ``e_cr`` instead -- exact, local energy conservation (kinetic
+    energy/velocity untouched; only the portion of thermal energy the shock
+    would have deposited this step is repartitioned). Cartesian, uniform
+    ``grid_spacing`` only for now
     (matches every grey-CR ladder test to date, and the plan's own FV-first
     staging): a shock cell's cross-sectional area is
     ``grid_spacing^(dimensionality - 1)`` and its volume is
@@ -95,14 +159,15 @@ def inject_crs_at_shocks(
     spherical geometry is not supported here; extend if a future ladder item
     needs it.
 
-    Ladder item 7 uses a fixed, Mach-independent ``dsa_efficiency`` (mirrors
-    the retired old model's constant efficiency knob). Ladder item 8's
-    Mach-dependent DSA efficiency (Kang & Ryu 2013; Caprioli & Spitkovsky
-    2014) is a separate follow-up: it only needs to replace the scalar
-    ``dsa_efficiency`` below with a function of ``sf_result.mach_numbers``,
-    not change the injection mechanics.
+    Ladder item 7's fixed, Mach-independent ``dsa_efficiency`` remains the
+    default (``dsa_efficiency_model == DSA_EFFICIENCY_CONSTANT``); ladder
+    item 8 adds ``DSA_EFFICIENCY_KANG_RYU_2013`` as an opt-in alternative
+    (see ``dsa_efficiency_kang_ryu_2013`` above) without changing the
+    injection mechanics or the default behavior any existing config/test
+    relies on.
     """
     cr_params = params.cosmic_ray_grey_params
+    cr_config = config.cosmic_ray_grey_config
     gamma_gas = params.gamma
 
     sf_result = find_shocks_pfrommer(
@@ -113,8 +178,17 @@ def inject_crs_at_shocks(
         mach_min=cr_params.dsa_mach_min,
     )
 
+    if cr_config.dsa_efficiency_model == DSA_EFFICIENCY_KANG_RYU_2013:
+        efficiency = cr_params.dsa_efficiency_mach_scale * dsa_efficiency_kang_ryu_2013(
+            sf_result.mach_numbers
+        )
+    elif cr_config.dsa_efficiency_model == DSA_EFFICIENCY_CONSTANT:
+        efficiency = cr_params.dsa_efficiency
+    else:
+        raise ValueError("Invalid dsa_efficiency_model")
+
     delta_e_cr_density = (
-        cr_params.dsa_efficiency * sf_result.thermal_energy_flux / config.grid_spacing * dt
+        efficiency * sf_result.thermal_energy_flux / config.grid_spacing * dt
     )
 
     # Injecting only after a certain amount of time is an ad-hoc guard
