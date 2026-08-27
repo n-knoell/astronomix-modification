@@ -53,7 +53,7 @@ from astropy import units as u
 
 # astronomix constants
 from astronomix import CARTESIAN, FINITE_VOLUME, HLLC
-from astronomix.option_classes.simulation_config import MUSCL, SPLIT, MINMOD
+from astronomix.option_classes.simulation_config import MUSCL, SPLIT, VAN_ALBADA_PP
 from astronomix import OPEN_BOUNDARY, FORWARDS
 
 # astronomix containers
@@ -186,11 +186,29 @@ def run_cwb(num_cells):
     """
     config = SimulationConfig(
         progress_bar=True,
-        first_order_fallback=True,
+        first_order_fallback=False,
         geometry=CARTESIAN,
         solver_mode=FINITE_VOLUME,
         split=SPLIT,
-        limiter=MINMOD,
+        # HLLC + full 2nd-order MUSCL reconstruction is not unconditionally
+        # positivity-preserving the way HLL + first-order is; at this wind's
+        # Mach ~100 injection contrast that showed up as a genuine blow-up
+        # (checkify pinpointed it: NaN pressure straight out of
+        # _evolve_state_along_axis, confirmed at N=128). PositivityConfig
+        # (default_positivity_protection, vacuum_rest, nan_safe, ...) does
+        # NOT help here -- it's only ever consulted by the finite-difference
+        # SSPRK integrator (_apply_stage_positivity is called exclusively
+        # from astronomix/_finite_difference/_time_integrators/_ssprk.py);
+        # the finite-volume evolve path this config uses has no positivity
+        # floor wired in at all, so those knobs are silently inert here
+        # (confirmed: turning them all on made no difference). VAN_ALBADA_PP
+        # is the FV-path-aware fix instead -- a genuine positivity-preserving
+        # MUSCL reconstruction (astronomix/_finite_volume/_state_evolution/
+        # reconstruction.py) that clamps the interface extrapolation itself
+        # so it can't overshoot into negative density/pressure, rather than
+        # patching a bad state after the fact.
+        limiter=VAN_ALBADA_PP,
+        riemann_solver=HLLC,
         time_integrator=MUSCL,
         differentiation_mode=FORWARDS,
         dimensionality=3,
