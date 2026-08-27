@@ -326,10 +326,6 @@ def _wind_ei(
     source_term = source_term.at[
         0, num_ghost_cells : num_injection_cells + num_ghost_cells
     ].set(density_rate)
-    updated_density = (
-        primitive_state[0, num_ghost_cells : num_injection_cells + num_ghost_cells]
-        + density_rate * dt
-    )
 
     # When a wind-density tracer is active, tag the injected mass with the same
     # source rate so the tracer follows the wind material.
@@ -339,19 +335,21 @@ def _wind_ei(
             num_ghost_cells : num_injection_cells + num_ghost_cells,
         ].set(density_rate)
 
-    # Energy injection: convert the kinetic luminosity of the wind into a
-    # pressure source rate at the freshly injected density.
+    # Energy injection: the kinetic luminosity converted to a pressure source
+    # rate. The injected mass is added at the local gas velocity (no momentum
+    # kick), so it already carries 0.5 * density_rate * speed**2 of kinetic
+    # energy "for free"; only the remainder of the wind's kinetic-luminosity
+    # budget needs to land as thermal energy (pressure). Both terms are
+    # volumetric rates (energy / volume / time), so this is directly
+    # (gamma - 1) times a volumetric internal-energy rate -- see the matching
+    # derivation in ``_wind_ei3D``.
     energy_rate = (
         0.5 * wind_params.wind_final_velocity**2 * wind_params.wind_mass_loss_rate
         / injection_volume
     )
 
-    pressure_rate = pressure_from_energy(
-        energy_rate,
-        updated_density,
-        primitive_state[1, num_ghost_cells : num_injection_cells + num_ghost_cells],
-        gamma,
-    )
+    speed = primitive_state[1, num_ghost_cells : num_injection_cells + num_ghost_cells]
+    pressure_rate = (gamma - 1) * (energy_rate - 0.5 * density_rate * speed**2)
 
     source_term = source_term.at[
         2, num_ghost_cells : num_injection_cells + num_ghost_cells
@@ -584,16 +582,15 @@ def _wind_ei3D(
     density_rate = jnp.sum(density_rate_sources, axis=0)
     source_term = source_term.at[registered_variables.density_index].set(density_rate)
 
-    updated_density = primitive_state[registered_variables.density_index]
-    updated_density = jnp.where(
-        density_rate > 0,
-        updated_density + density_rate * dt,
-        updated_density,
-    )
-
     # Energy injection: the per-source kinetic luminosity converted to a
-    # pressure source rate at the freshly injected density. A small floor on
-    # the speed avoids a division by zero in the pressure conversion at rest.
+    # pressure source rate. The injected mass is added at the local gas
+    # velocity (no momentum kick), so it already carries
+    # 0.5 * density_rate * speed**2 of kinetic energy "for free"; only the
+    # remainder of the wind's kinetic-luminosity budget needs to land as
+    # thermal energy (pressure). Both terms here are volumetric rates
+    # (energy / volume / time), so this is directly (gamma - 1) times a
+    # volumetric internal-energy rate -- no division by density_rate (which
+    # is zero outside the injection region) is involved.
     energy_rate_sources = (
         (0.5 * vel_scales**2 * mass_rates / injection_volume)[:, None, None, None]
         * per_source_mask
@@ -605,7 +602,7 @@ def _wind_ei3D(
         + primitive_state[registered_variables.velocity_index.z] ** 2
         + 1e-20
     )
-    pressure_rate = pressure_from_energy(energy_rate, updated_density, speed, gamma)
+    pressure_rate = (gamma - 1) * (energy_rate - 0.5 * density_rate * speed**2)
 
     source_term = source_term.at[registered_variables.pressure_index].set(pressure_rate)
 
