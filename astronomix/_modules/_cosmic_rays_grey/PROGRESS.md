@@ -4,6 +4,304 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-09, ladder item 9 -- DONE, via a moving-shock redesign)
+
+**Ladder item 9 is now done.** Picking back up from the same-day entry below (Finding 2's
+mechanism understood, three candidate fixes identified, user asked to choose before
+implementing): discussed the tradeoffs of all three candidates with the user (physical
+accuracy, whether multi-cell injection is inherently less accurate, implementation
+difficulty) and the user chose **(c)**, redefining the test around a genuinely moving shock
+rather than one pinned motionless in the lab frame -- confirmed as not just the easiest
+option but plausibly the most physically correct one, since "steady CR-driven flow" in the
+DSA literature means steady *in the shock's own comoving frame* (gas flows through a fixed
+precursor profile, each parcel spending a finite time in it), not a shock nailed to one grid
+cell while CR energy accumulates in it forever.
+
+**Confirmed directly (ad hoc script, not committed) that this fixes Finding 2.** Built a
+Rankine-Hugoniot "piston" IC -- an exact steady-shock jump launched at a chosen nonzero,
+constant velocity into a quiescent ambient medium, so it genuinely propagates rather than
+needing an inflow boundary condition -- with `diffusive_shock_acceleration` and
+`diffusive_relaxation` both on. Fitted shock velocity from several snapshots matches the
+nominal value to <0.1% (confirms genuinely constant-velocity propagation, not drift), and
+peak `e_cr` at the shock **saturates to a bounded value** (e.g. `0.0100 -> 0.0119 -> 0.0125
+-> ... -> 0.0133`, flattening) instead of growing without bound the way the stationary-shock
+IC did -- the core mechanism (each cell only hosts the actively-injecting shock surface
+briefly before the shock advances to the next one) works exactly as the item-8-and-earlier
+"always expanding into fresh gas" pattern already relies on.
+
+**Calibrating the redesign surfaced a further, previously-unappreciated interaction with
+Finding 1 (still open, not fixed here).** The reference precursor ODE
+(`cr_precursor_ode_rhs`, built the prior session) only holds once `F_cr`'s relaxation rate
+`nu = reduced_streaming_speed^2 / diffusion_coefficient` is fast relative to the precursor's
+own advective formation rate `omega ~ v_shock / precursor_width`. Working through both rate
+expressions shows `nu / omega = (gamma_cr - 1) * (reduced_streaming_speed / v_shock)^2` --
+independent of `diffusion_coefficient` entirely -- so a resolvable, genuinely quasi-steady
+precursor requires `reduced_streaming_speed` several times the shock velocity, *regardless*
+of how `diffusion_coefficient` is chosen. That is almost exactly Finding 1's own
+already-documented bad regime (large `reduced_streaming_speed` relative to local gas signal
+speeds). Measured directly: raising `reduced_streaming_speed` from 4x to 8x the shock
+velocity improves the precursor-ODE match (median rel. err on `dP_cr/dx`/`dF_cr/dx` drops
+from ~230% to ~20%, as expected from a deeper quasi-steady margin) but *worsens* the subshock
+jump match (RH-jump errors on density/velocity/pressure stay at 24-42% at both settings, and
+`F_cr`'s jump error grows from ~4% to ~148%) and further degrades the measured shock Mach
+(2.0 nominal -> 1.4, then -> 1.3, right at `dsa_mach_min`); at 16x the shock velocity, the
+shock degrades below `dsa_mach_min` and disappears entirely by the run's end. **A single run
+cannot quantitatively validate both reference formulas (`cr_precursor_ode_rhs` and
+`modified_rankine_hugoniot_with_cr_injection`) at once without first fixing Finding 1** --
+confirmed with the user, who chose to split into two independent tests (same "independent
+layers" pattern ladder item 8 already used) rather than force one compromise
+`reduced_streaming_speed` onto both, loosen tolerances past the point of being diagnostic, or
+tackle Finding 1's Riemann-solver fix as a prerequisite.
+
+**Also found and fixed a real bug in the new reference solver's root-finding**
+(`modified_rankine_hugoniot_with_cr_injection`, uncommitted since the prior session, so fair
+game to fix directly): with `injected_energy_flux > 0`, `residual(r=1) = +injected_energy_flux`
+rather than exactly `0` (the plain-gas case's exact trivial root), which shifts a vestige of
+that trivial root to a spurious crossing very close to `r=1`. The naive two-point
+`brentq(residual, 1+eps, r_max)` then fails outright whenever the probed endpoints have equal
+sign (both positive, straddling the real root in between) -- hit immediately once a
+genuinely CR-precursor-modified upstream state (not the pristine ambient state the original
+degenerate-limit validation used) was fed in. Fixed by scanning for sign changes across
+`(1, r_max)` and taking the one closest to `r_max` (the real, well-separated, entropy-
+producing compression root; the near-1 artifact is confined to a narrow neighborhood of `r=1`
+by construction). Re-verified this doesn't regress the original validation: the degenerate
+(zero `p_cr`/injection) limit still matches the ideal-gas RH ratio to ~1e-14 across Mach
+1.5-7, and the previously-failing nonzero case now converges to a root where mass flux, total
+momentum flux, and total energy flux (gas + CR) are all exactly conserved (matches to machine
+precision), confirming it's the physical root, not a second spurious one.
+
+**New pytest: `pytests/cosmic_rays_grey/cr_modified_shock_structure.py`**, two independent
+test functions sharing one moving-shock IC helper:
+- `test_cr_dsa_shock_jump` (**Test A**): `diffusive_shock_acceleration` only (no
+  `diffusive_relaxation`), `reduced_streaming_speed=1.0` (Finding-1-safe, matches the local
+  pre-shock sound speed). Validates `modified_rankine_hugoniot_with_cr_injection` against the
+  simulation's own converged post-shock state (density/velocity/pressure match to <1.1%,
+  `F_cr` to ~21% -- looser because, without `diffusive_relaxation`, nothing pins `F_cr` to a
+  fixed post-shock plateau the way the strong-RH-conserved gas fields are; the reference
+  value is only exact as an instantaneous jump condition right at the subshock). Also serves
+  as this module's permanent regression guard for Finding 2 (asserts peak `e_cr` has
+  plateaued, not drifted, in the second half of the run).
+- `test_cr_precursor_ode` (**Test B**): `diffusive_relaxation` on, `reduced_streaming_speed=8.0`
+  (deep quasi-steady, accepting the Finding-1-degraded, but still `> dsa_mach_min`, shock this
+  requires). Confirms `mass_flux`/`momentum_flux` are genuinely close to constant across the
+  sampled precursor window (<0.5% spread, comfortably inside the 2% tolerance) before
+  cross-checking the simulation's own finite-difference precursor gradients against
+  `cr_precursor_ode_rhs` (median rel. err ~20-41% across the three quantities, calibrated
+  tolerances documented in the test's own docstring with the reasoning above).
+
+Full regression: all 9 pre-existing `pytests/cosmic_rays_grey/*.py` scripts (ladder items
+1-8 + `cr_gradient_check.py`) still pass unchanged; the new test passes with the tolerances
+above.
+
+**Finding 1 remains open** (unaffected by this session -- see DESIGN.md's "Open questions").
+This session's own calibration work (above) is a second, independent illustration of its
+cost, beyond the original Mach-degradation measurement: it directly limits how tightly a
+resolved shock combined with a fast CR-diffusion relaxation rate can be validated, which may
+be relevant again for Phase C wind/SNR work (ladder items 10-11) if those also combine a
+resolved shock with diffusive CR transport.
+
+**Next: ladder item 10** (wind-blown bubble with CR pressure, the first Phase C
+emission-adjacent target) -- Phase A/B's core ladder (items 1-9) is now complete.
+
+## Where things stand (2026-09-09, ladder item 9 -- Finding 2's budget instrumented, still blocked)
+
+**Item 1 of the 2026-08-27 "Next steps" list (instrument the per-step `e_cr` budget at the
+shock cell) is done.** Ad hoc script, not committed, per this module's established practice:
+reproduced Finding 2's setup (stationary Mach-2.5 shock, ideal-gas Rankine-Hugoniot IC,
+`N=1600`, `reduced_streaming_speed=1.5`, `dsa_efficiency=0.1`, `diffusive_shock_acceleration`
+only, no `diffusive_relaxation`) and drove it one fixed `dt` at a time (`fixed_timestep` +
+`return_snapshots` with `num_snapshots == num_timesteps`, `dt` picked below the CFL estimate so
+every recorded snapshot is exactly one internal step apart -- confirmed the `SnapshotData` this
+produces really is one state per `_step()` call, not a coarser sample). At the tracked cell, each
+step's actual `e_cr` change was decomposed as `injected` (`inject_crs_at_shocks`'s own delta) +
+`adiabatic_work * dt` (`cr_adiabatic_work_source`'s `-P_cr * div(v)`, evaluated explicit-Euler on
+the pre-step state) + `residual` (everything else, dominated by advection) -- this closes exactly
+to the measured actual change every step (to float32 precision), so the decomposition itself has
+no accounting bug.
+
+**The box-model estimate broke down for three compounding reasons, not "weak advective
+removal" (the original hypothesis):**
+
+1. **`cr_adiabatic_work_source`'s `-P_cr * div(v)` term (always active, not gated by
+   `diffusive_relaxation`) is a genuine, substantial, self-reinforcing source at the shock's
+   finite-width numerical transition zone -- proportional to the CR pressure already sitting
+   there, so it does not saturate on its own.** Measured directly: by `t~=0.056` in this repro,
+   `adiabatic_work * dt` (`8.8e-3`) is the same order of magnitude as `injected` (`1.4e-2`) at the
+   active cell, not a small correction. This is the *same* physical term ladder item 2 verified
+   gives the correct `P_cr propto rho^gamma_cr` adiabatic invariant for a fluid parcel that
+   transits a compression zone once -- but at a near-stationary shock the Eulerian compression
+   zone never releases the cell sitting in it, so nothing bounds the term the way a finite
+   transit time would.
+2. **The shock finder's detected surface cell is not perfectly static, even for an exact
+   Rankine-Hugoniot stationary IC -- it creeps downstream by exactly one grid cell at a time.**
+   Confirmed directly: printing `shock_surface_cells`/`mach_numbers` in a 12-cell window each
+   step around two observed transitions (cell 799->800 at step 1915 of 1968, `t~=0.0507`; an
+   earlier 799->800-equivalent transition at `t~=0.0137` in a longer run) shows a single flagged
+   cell (`identify_shock_surface`'s "one cell of max compression per zone" design) jumping
+   discretely, with the Rankine-Hugoniot Mach number at the flagged cell *decreasing* at each
+   new site (`2.17 -> 2.04` across the observed jump) -- consistent with the shock continuously
+   losing energy (to DSA injection itself, and to Finding 1's HLL-wave-speed-inflation
+   dissipation), so whatever compression-peak criterion the finder tracks slowly drifts, and
+   snaps to a new cell once the peak crosses a cell boundary.
+3. **Because the drift is real relocation, not injection re-appearing from nothing, each newly
+   adopted surface cell inherits a head start of CR pressure already built up there via ordinary
+   advection from its former-injection-site neighbor, on top of which direct DSA injection then
+   begins.** A single-fixed-cell box model implicitly assumes a static injection site starting
+   from `e_cr=0`, which undercounts this cross-cell hand-off.
+
+None of this means advection is failing to remove `e_cr` -- the measured `residual` (net
+advective divergence) is large and *negative* (strong outward removal) through most of the run
+once a cell is actively injecting (e.g. `injected=1.4e-2`, `adiabatic_work*dt=8.8e-3`,
+`residual=-1.9e-2` around `t~=0.056`) -- removal is working about as hard as a simple estimate
+would predict; it is just outpaced by the *combination* of direct injection, the self-reinforcing
+compressive term, and the cross-cell hand-off above, none of which a naive box model accounts for.
+
+**Still blocked, not fixed.** This explains the mechanism but does not yet suggest an obviously
+correct fix -- candidates not yet evaluated: (a) make `cr_adiabatic_work_source` (or DSA
+injection) aware of residence time / only apply the compressive term away from actively-injecting
+shock cells; (b) have `inject_crs_at_shocks` (or the finder) spread injection/detection over the
+whole resolved shock *zone* (`identify_shock_zones`'s ~3-4-cell criterion) rather than a single
+peak cell, so the "single fixed cell, no memory of predecessor" box-model mismatch in point 3
+above goes away by construction; (c) revisit whether a genuinely *stationary* shock (as opposed
+to the always-expanding shocks every other DSA test in this module uses) is a physical
+configuration this injection scheme is meant to support at all -- the plan's own ladder item 9
+wording ("1D steady CR-driven flow") may need to mean *slowly advecting*, not perfectly at rest,
+in which case the test design itself (not the injection code) is what should change. Next
+session: pick one of (a)/(b)/(c) with the user before implementing, since each is a real
+design decision with more than one defensible answer (same category of choice ladder items 2, 4
+and 8 all stopped to ask about).
+
+## Where things stand (2026-08-27, ladder item 9 -- BLOCKED, two real findings)
+
+**Ladder item 9 ("1D steady CR-driven flow / CR-modified shock structure") is not done and the
+pytest was never written.** Scope agreed with the user up front: a self-consistent DSA-driven
+precursor (run a shock with `diffusive_shock_acceleration` + `diffusive_relaxation` both on
+together for the first time, let a diffusive CR precursor build upstream self-consistently,
+validate against a new semi-analytic reference). That reference solver was built and
+independently validated, but setting up the actual simulation surfaced two real, previously-
+latent numerical findings that block the test as designed. Both are documented here rather than
+worked around silently, per the user's explicit direction to stop and write them up.
+
+**What's built and trustworthy:** new
+`astronomix/test_setups/reference_solutions/cr_modified_shock_structure.py` (plain numpy/scipy,
+same convention as `pfrommer_riemann_solver.py`), derived directly from this module's actual
+coupled equations (not textbook forms) by tracing through `grey_cr_flux_terms`,
+`cr_pressure_gradient_source`, `cr_adiabatic_work_source`, `cr_flux_relaxation_source`'s
+quasi-steady limit, and `inject_crs_at_shocks`/`calculate_thermal_energy_flux` directly:
+
+1. `cr_precursor_ode_rhs` -- the steady-state ODE (`du/dx`, `dP_cr/dx`, `dF_cr/dx`) the smooth
+   precursor upstream of a subshock must satisfy, given the two exact first integrals `mass_flux
+   = rho*u` and `momentum_flux = rho*u^2 + P_gas + P_cr`. Key derivation subtlety: `e_cr`'s actual
+   coded flux is the bare `u*e_cr + F_cr` (`grey_cr_flux_terms`), *not* the enthalpy-like `u*P_cr`
+   term a textbook two-fluid treatment would use -- using the wrong (enthalpy) form gives the
+   *wrong* adiabatic exponent when cross-checked against ladder item 2's already-verified
+   `P_cr propto rho^gamma_cr` invariant; the bare-advection form is the one that's actually
+   consistent with this codebase.
+2. `modified_rankine_hugoniot_with_cr_injection` -- the (mass, momentum, energy) jump across the
+   subshock itself, given the CR energy flux DSA injects there. Key derivation result: `P_cr` is
+   continuous through the subshock (collisionless, doesn't thermalize on the gas's collisional
+   length scale, and diffusion doesn't create a discontinuity in a quantity it's smoothing), which
+   makes it cancel out of the momentum jump entirely, leaving the *ordinary single-fluid*
+   mass+momentum Rankine-Hugoniot relations for `(rho, u, P_gas)` -- but gas energy loses exactly
+   the DSA-injected flux (a "radiative-shock-like" jump with a known energy sink), solved via a
+   1D root-find over the compression ratio.
+
+**Validation done before trusting either function** (ad hoc scripts, not committed, per this
+module's established practice -- see ladder item 6's Pfrommer-solver validation for the
+precedent):
+- `modified_rankine_hugoniot_with_cr_injection` reduces *exactly* to the standard ideal-gas
+  Rankine-Hugoniot jump (density/pressure ratio formulas) when `P_cr`/injection are zeroed, across
+  Mach 1.5-10 (`~1e-8` agreement, root-finder precision).
+- For a general (nonzero `P_cr`, nonzero injection) case, mass flux, total momentum flux, *and*
+  total energy flux `E = (1/2) rho u^3 + gamma_gas/(gamma_gas-1) P_gas u +
+  gamma_cr/(gamma_cr-1) P_cr u + F_cr` are all exactly conserved across the computed jump (checked
+  to `~1e-9`) -- a genuine, non-trivial cross-check, since `F_cr`'s post-shock value was derived
+  from the *individual* CR-only energy equation, independently of the gas-only jump used for
+  `(rho2, u2, P_gas2)`, so exact total-energy conservation confirms the two pieces are mutually
+  consistent rather than hard-coded to agree.
+- `cr_precursor_ode_rhs`: linearized the ODE around the exact upstream fixed point `(u1, 0, 0)`,
+  found the growing eigenmode (`F_cr = -[u1/(gamma_cr-1)] * P_cr`, growth rate `u1 /
+  (diffusion_coefficient*(gamma_cr-1))`), and numerically integrated (`scipy.integrate.solve_ivp`,
+  tight tolerances) from a small perturbation along that exact direction. Total energy flux `E`
+  (same formula as above) stays constant to `~1.6e-7` relative error along the resulting
+  trajectory even after `u` drops 30% and `P_cr` grows four orders of magnitude -- again a
+  non-trivial check, since `du/dx` (from the gas equation) and `dF_cr/dx` (from the CR equation)
+  were derived independently and only *have* to sum to zero net change in `E` if both are correct.
+
+**Finding 1: `reduced_streaming_speed` shares the Riemann-solver wave-speed bound with the gas,
+which measurably degrades shock-capturing whenever it exceeds local gas signal speeds --
+independent of resolution, independent of whether any CR is actually present.** `grey_cr_fast_speed`
+always contributes `reduced_streaming_speed` to `c = jnp.maximum(c_gas, grey_cr_fast_speed(...))`
+in `hll.py`'s `S_L`/`S_R` estimates (`registered_variables.cosmic_ray_e_active` gates this, not
+whether `e_cr` is actually nonzero anywhere). Reproduced directly: a stationary Mach-4 shock (exact
+gas-only Rankine-Hugoniot IC, `grey_cosmic_rays=True` but zero `e_cr` everywhere the whole run) is
+measured by `find_shocks_pfrommer` at Mach 3.81 with `reduced_streaming_speed=1.0` (the default),
+degrading monotonically to Mach 1.64 at `reduced_streaming_speed=8.0` (item 4's calibrated value) --
+**with `max|e_cr| = 0.0` confirmed throughout**, so this is a pure Riemann-solver-accuracy effect,
+not real CR physics. Ruled out grid resolution as an explanation: 4x finer (`N=800` to `N=3200`)
+gave essentially identical degradation (Mach 1.6414 vs. 1.6468), which rules out a simple
+"numerical diffusion width `~ wave_speed * dx`" picture (that would improve with resolution).
+Mechanism: HLL's flux formula has a term `S_L*S_R*(U_R-U_L)/(S_R-S_L)` that does *not* vanish even
+when `F_L = F_R` exactly (the definition of a stationary shock's RH condition) -- this term's
+magnitude scales with `|S_L*S_R|`, so an inflated, state-independent wave-speed floor directly
+adds spurious dissipation to an otherwise-exactly-resolved discontinuity, and this is a property
+of the HLL flux formula itself (not fixed by refining the grid). This wasn't visible in any prior
+ladder item because none combined a genuine propagating/standing shock with a
+`reduced_streaming_speed` large compared to the local gas signal speed at the same time (item 4's
+own large-`v_red` calibration used a smooth Gaussian diffusion test, no shock; items 7/8's
+Sedov-Taylor DSA tests used the default `reduced_streaming_speed=1.0`, comparable to or below the
+blast's own speeds). **Not fixed** -- would require giving the Riemann solver separate gas/CR
+wave-speed bounds instead of one shared `max(...)`, a real design change to shared FV code, out of
+scope to do unprompted. Practical consequence for any future shock+diffusion test in this module:
+keep `reduced_streaming_speed` close to (not many times above) the local gas `|u|+c`, and get a
+fast relaxation rate `nu = reduced_streaming_speed^2 / diffusion_coefficient` via a small
+`diffusion_coefficient` instead of a large `reduced_streaming_speed`.
+
+**Finding 2: sustained, repeated DSA injection at a *stationary* shock cell grows without bound,
+confined to a fixed few-cell width -- present with or without `diffusive_relaxation`.** Set up
+per Finding 1's mitigation (`reduced_streaming_speed=1.5`, small `diffusion_coefficient=0.05`,
+`N=1600`, a Mach-2.5 stationary-shock IC): `diffusive_shock_acceleration` alone (no
+`diffusive_relaxation`, undamped `F_cr` wave equation, pure advective removal) still shows the
+peak `P_cr` growing roughly exponentially in time (`t=0.05: 2.1e-5`, `t=0.12: 8.3e-5`, `t=0.2:
+4.0e-4`, `t=0.4: 1.6e-2`) while its *spatial width stays pinned at exactly 5 cells the entire
+time* -- i.e. this is not a genuinely spreading diffusive precursor slowly saturating, it's
+amplitude growing at a fixed location. Adding `diffusive_relaxation` back (the original item-9
+config) shows the same fixed-width/growing-amplitude pattern, just slower. A simple box-model
+estimate (roughly constant injection rate at roughly constant measured Mach, `~5.6%` of the cell's
+`e_cr` advected out per step at this resolution/CFL) predicts convergence to a finite steady value
+via a geometric series -- not the observed unbounded growth -- so either the actual advective
+removal of `e_cr` right at a strong, near-stationary discontinuity is weaker than that estimate
+(a plausible HLL-flux effect, not yet confirmed), or there is some other discrete-injection
+feedback not yet isolated. Measured shock Mach stayed essentially flat (`1.7188 -> 1.7143`)
+across this entire growth, ruling out "the growing `P_cr` is progressively weakening the shock,
+which increases the DSA efficiency, which is a real physical runaway" as the mechanism (that would
+require Mach to visibly change, and it barely does at these still-small `P_cr` magnitudes,
+`< 0.4%` of `P_gas` at the largest tested amplitude). **Root mechanism not found** -- the user
+asked to stop debugging further and log the finding rather than continue an open-ended
+investigation, given how much runtime/effort the session had already spent (see Finding 1 above
+for the other real finding from the same investigation). This is new territory: every existing
+DSA test (`cr_sedov_taylor.py`, `cr_dsa_mach_dependence.py`) has a shock that is *always expanding
+into fresh gas*, so no single cell there ever receives more than a handful of injection events --
+a genuinely *stationary* shock receiving *sustained* repeated injection has never been exercised
+in this module before, and this looks like a real gap in either the injection mechanism or its
+interaction with the FV solver at a discontinuity, not a test-design mistake.
+
+**Next steps for ladder item 9, in order:**
+1. Instrument the actual per-step `e_cr` budget at the shock cell directly (injected amount vs.
+   advected-out amount vs. actual `e_cr` after the step) to find exactly where the simple box-model
+   estimate in Finding 2 breaks down -- this is the concrete, bounded next action, more useful than
+   another hypothesis-and-rerun cycle at this point (same lesson `FIXES_TODO.md`'s CWB item 4
+   converged on after a similar number of ruled-out guesses).
+2. Once Finding 2 is understood/fixed, re-attempt the item-9 test using Finding 1's mitigation
+   (modest `reduced_streaming_speed`, small `diffusion_coefficient`, correspondingly higher
+   resolution to keep the precursor resolved) and the already-validated reference solver above.
+3. Consider whether Finding 1 (shared gas/CR wave-speed bound degrading shock-capturing) deserves
+   a separate, scoped fix independent of item 9 -- it plausibly affects the *accuracy* (not just
+   this new test) of any past or future ladder item that combines a resolved shock with
+   `reduced_streaming_speed` notably above local gas speeds; no existing ladder item's assertions
+   are known to depend on shock sharpness in a way this would break, but it hasn't been checked
+   item-by-item.
+
 ## Where things stand (2026-08-26, ladder item 8 -- Mach-dependent DSA efficiency)
 
 **Implementation done, smoke-verified; a dedicated calibrated pytest (matching
@@ -775,11 +1073,20 @@ See "What's done" and "Verified" below for details.
     dedicated `pytests/cosmic_rays_grey/cr_dsa_mach_dependence.py`: `dsa_efficiency_kang_ryu_2013`
     + `dsa_efficiency_model` / `dsa_efficiency_mach_scale` config, see "Where things stand
     (2026-08-26, ladder item 8)" above for the full test design and the two tolerance-calibration
-    lessons. **Phase B's scaffold-correctness items (7-8) are now both done. This is where the
-    next session should pick up: ladder item 9** (1D steady CR-driven flow / CR-modified shock
-    structure, plan Sec. 4's "Integration / physical" tier -- a step up from items 1-8's
-    scaffold-correctness checks toward genuinely physical validation).
-13. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
+    lessons.
+13. **Ladder item 9 (1D steady CR-driven flow / CR-modified shock structure) is BLOCKED, not
+    done** -- see "Where things stand (2026-08-27, ladder item 9)" above for the full account.
+    The semi-analytic reference solver (`cr_modified_shock_structure.py`) is built and
+    independently validated and can be reused once unblocked. **This is where the next session
+    should pick up**, in order: (a) instrument the per-step `e_cr` budget at a stationary shock
+    cell to find why sustained DSA injection there grows without bound instead of saturating
+    (Finding 2); (b) once that's understood, re-attempt the item-9 test with Finding 1's
+    mitigation (modest `reduced_streaming_speed`, small `diffusion_coefficient`, higher
+    resolution); (c) separately consider whether Finding 1 (the shared gas/CR Riemann-solver
+    wave-speed bound measurably degrading shock-capturing) warrants its own fix, independent of
+    item 9, since it plausibly affects shock accuracy in any CR-grey config with
+    `reduced_streaming_speed` well above local gas speeds.
+14. `evolve_state.py`'s `_split_gas_and_magnetic_state`/`_join_gas_and_magnetic_state` fix (general,
     not CR-specific) is worth a heads-up to whoever owns the MHD module / other in-flight MHD work,
     since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
     with `wind_density`, not just grey CR (the old `cosmic_ray_n` model this originally also

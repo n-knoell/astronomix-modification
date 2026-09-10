@@ -415,6 +415,67 @@ Continuous per-step shock-finding turned out to be cheap enough (~34s
 including JIT compile at N=48) that a true 3D setup was affordable without
 needing a cheaper 2D substitute.
 
+## Resolved: CR-modified shock structure (ladder item 9)
+
+`pytests/cosmic_rays_grey/cr_modified_shock_structure.py` passes, closing out Phase A/B's core
+ladder (items 1-9). As originally attempted (see "Open questions" below), a shock held exactly
+stationary in the lab frame surfaced Finding 2 (sustained DSA injection at a cell that never
+advects away grows `e_cr` without bound): the compressive `-P_cr * div(v)` term
+(`cr_grey_sources.cr_adiabatic_work_source`) never releases the way it would for a fluid
+parcel that transits a moving shock once (the finite-transit-time release ladder item 2
+verified gives the correct `P_cr ~ rho^gamma_cr` invariant). This matches how DSA theory
+itself frames a "steady shock": steady *in the shock's own comoving frame*, not a shock pinned
+motionless in the lab frame while CR energy accumulates in the same cell forever.
+
+**Resolved by redesigning the test around a genuinely moving shock** (confirmed with the
+user): a Rankine-Hugoniot "piston" IC -- an exact steady-shock jump launched at a nonzero,
+constant velocity into a quiescent ambient medium -- so each grid cell only hosts the
+actively-injecting shock surface for the brief time the shock front is passing through it,
+the same "always advancing into fresh gas" pattern `cr_sedov_taylor.py`/
+`cr_dsa_mach_dependence.py` already rely on. Verified directly (ad hoc script, not committed):
+fitted shock velocity from several snapshots matches the nominal value to <0.1%, and peak
+`e_cr` saturates to a bounded value instead of growing without bound -- `test_cr_dsa_shock_jump`
+turns this into a permanent regression guard (asserts the plateau, not just a single passing
+run).
+
+**A further interaction with Finding 1 surfaced while calibrating this redesign** (Finding 1
+itself remains open -- see "Open questions" below, unaffected by this section). The reference
+precursor ODE (`cr_precursor_ode_rhs`, in `astronomix/test_setups/reference_solutions/
+cr_modified_shock_structure.py`) only holds once `F_cr`'s relaxation rate `nu =
+reduced_streaming_speed^2 / diffusion_coefficient` is fast relative to the precursor's own
+advective formation rate `omega ~ v_shock / precursor_width`; working through both rates shows
+`nu / omega = (gamma_cr - 1) * (reduced_streaming_speed / v_shock)^2`, independent of
+`diffusion_coefficient` -- so a resolvable precursor needs `reduced_streaming_speed` several
+times the shock velocity *regardless* of `diffusion_coefficient`, which is almost exactly
+Finding 1's own bad regime. Measured directly: raising `reduced_streaming_speed` from 4x to 8x
+the shock velocity improves the precursor-ODE match but *worsens* the subshock-jump match and
+further degrades the measured shock Mach; at 16x, the shock degrades below `dsa_mach_min` and
+disappears. A single run cannot quantitatively validate both reference formulas at once
+without first fixing Finding 1.
+
+**Resolved by splitting into two independent tests** (confirmed with the user, same
+"independent layers" pattern ladder item 8 already used), each run at the
+`reduced_streaming_speed` its own reference formula actually needs:
+- `test_cr_dsa_shock_jump` (Test A): `diffusive_shock_acceleration` only, `reduced_streaming_speed`
+  close to the local gas sound speed (Finding-1-safe). Validates
+  `modified_rankine_hugoniot_with_cr_injection` against the simulation's own converged
+  post-shock state, and doubles as the Finding-2 regression guard.
+- `test_cr_precursor_ode` (Test B): `diffusive_relaxation` on, `reduced_streaming_speed` well
+  above the shock velocity (deep quasi-steady, accepting a Finding-1-degraded but still
+  super-critical shock as the cost). Validates `cr_precursor_ode_rhs` against the simulation's
+  own local precursor gradients, after confirming the two first integrals it assumes
+  (`mass_flux`, `momentum_flux`) are genuinely near-constant across the sampled window.
+
+**Also fixed a real root-finding bug** in `modified_rankine_hugoniot_with_cr_injection`
+(uncommitted since the prior session, so fair game to fix directly): with nonzero
+`injected_energy_flux`, the naive two-point `brentq` bracket can straddle a spurious root
+near `r=1` (a vestige of the plain-gas case's exact trivial root, shifted off exactly 1 by the
+injection term) and fail outright. Fixed by scanning for sign changes across `(1, r_max)` and
+taking the one closest to `r_max`; re-verified the degenerate zero-injection limit and the
+general nonzero-injection conservation checks (mass/momentum/total-energy flux, machine
+precision) both still hold. See PROGRESS.md's 2026-09-09 entry for full calibration numbers
+and tolerances.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)
@@ -465,6 +526,24 @@ open BCs).
   above; currently deferred.
 - **Spectral-interface contract** (Girichidis collaboration, Phase E): agree the `spectrum`
   object API early so Phase E is a swap, not a rewrite; not touched in Phase A.
+- **Shared gas/CR Riemann-solver wave-speed bound degrades shock-capturing** (found 2026-08-27,
+  ladder item 9 investigation): `grey_cr_fast_speed`'s `reduced_streaming_speed` is combined with
+  the gas sound speed via `max(...)` into one shared HLL wave-speed bound (`hll.py`), regardless of
+  whether any `e_cr` is actually present. Reproduced: a stationary Mach-4 shock with zero `e_cr`
+  the whole run is measured at Mach 3.81 by `find_shocks_pfrommer` with the default
+  `reduced_streaming_speed=1.0`, degrading to Mach 1.64 at `reduced_streaming_speed=8.0` --
+  resolution-independent (4x finer grid, same result), traced to HLL's flux formula having a term
+  that doesn't vanish even at an exact stationary-shock RH state, scaling with the *chosen*
+  wave-speed bound rather than the true local one. Not fixed (would need separate gas/CR
+  wave-speed bounds in the Riemann solver, a real design change); see PROGRESS.md's 2026-08-27
+  entry for the full mechanism and how it blocks ladder item 9.
+- **Sustained DSA injection at a stationary shock grows without bound**: resolved 2026-09-09 --
+  root mechanism was a stationary lab-frame shock never releasing the compressive
+  `-P_cr * div(v)` term the way a fluid parcel crossing a genuinely moving shock would; fixed by
+  redesigning ladder item 9's test around a shock that actually propagates. See "Resolved:
+  CR-modified shock structure (ladder item 9)" above and PROGRESS.md's 2026-09-09 entry for the
+  full account, including a further interaction with Finding 1 (below, still open) this
+  redesign surfaced.
 - **Consolidating with the old `_cosmic_rays` model**: resolved 2026-08-24 -- **retired**. The
   old `n_cr` model was 1D-only, had no test coverage anywhere in the repo (no pytest ever set
   `cosmic_rays=True`/`diffusive_shock_acceleration=True`), and its DSA injection
