@@ -4,6 +4,70 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-10, ladder item 10 -- DONE, wind-blown bubble)
+
+**Ladder item 10 ("wind-blown bubble with CR pressure") is done.** New pytest
+`pytests/cosmic_rays_grey/cr_wind_bubble.py`. Three design decisions were resolved with the user
+up front (asked via concrete options, same pattern as items 4/6/8/9): **(1) geometry** -- 3D
+Cartesian (not the cheaper 1D spherical alternative also on the table), matching
+`examples/stellar_wind/stellar_wind_3d.py`'s existing precedent; **(2) CR injection** -- reuse
+items 7/8's shock-DSA machinery (`inject_crs_at_shocks`/`find_shocks_pfrommer`) at the wind's
+forward shock, *not* a new dedicated "wind CR source term" (the plan Sec. 2's other, distinct
+injection channel) -- so no new injection code was needed, only a new test exercising the
+existing mechanism in a new physical setup; **(3) validation** -- "Weaver baseline + differential
+CR check" (lighter-weight, reuses item 7's pattern) over deriving a whole new CR-modified
+analytic wind-bubble solution (the item-9-style heavier option).
+
+**Closed a real, previously-untested gap: `astronomix/_modules/_stellar_wind/weaver.py`
+(the classic Weaver et al. 1977 analytic wind-bubble solution) existed in this repo already but
+had never been exercised by any pytest.** No plain-hydro wind-module test existed at all before
+this session (only an uncalibrated example script,
+`examples/stellar_wind/stellar_wind_3d.py`, MHD/FD). Calibrated setup (single EI-scheme wind
+source, 3D Cartesian FV non-MHD, `NUM_CELLS=64`, box 3.6 pc physical, `t_end=1e4` yr, `M_star=40
+Msun`, `v_inf=2000` km/s, ambient `n=2 cm^-3`/`P/k_B=3e4 K cm^-3`, `num_injection_cells=4`):
+the control run's forward-shock radius (found via `find_shocks_pfrommer`, same mechanism used for
+DSA injection) matches Weaver's analytic `R_2(t)` to **<1%** (0.42% observed); the shocked-wind
+interior pressure plateau matches Weaver's analytic value to ~19%. The inner (wind-termination)
+shock is deliberately *not* checked quantitatively against Weaver's `R_1(t)` -- confirmed
+directly that at this resolution the shock finder's innermost detection sits right at the wind
+source term's own injection-region edge (`num_injection_cells * grid_spacing`), not the
+physically resolved termination shock; a resolution limitation of a small
+(`num_injection_cells=4`) source region, not a bug, and out of scope to chase further for this
+item.
+
+**A real, pre-existing finding surfaced while calibrating, not fixed (unrelated to CR-grey,
+out of scope):** the wind module's 3D thermal-energy-injection scheme (`_wind_ei3D`,
+`astronomix/_modules/_stellar_wind/stellar_wind.py`) normalizes injected power by the *nominal*
+spherical injection volume (`4/3 * pi * (num_injection_cells * grid_spacing)**3`) but the actual
+per-cell injection mask uses a conservative radius shrunk by half a grid cell (`dist <=
+injection_radius - grid_spacing / 2`). At small `num_injection_cells` this is a large fractional
+volume mismatch: verified directly that at `num_injection_cells=4` the shrunk-vs-nominal volume
+ratio is `(3.5/4)**3 ~= 0.67`, and the measured total injected energy (final thermal+kinetic+CR
+minus initial ambient thermal, over the ~1e4 yr run) came out at `~66%` of the nominal `L_w *
+t_end` wind luminosity -- matching this predicted ratio almost exactly. Because of this, the new
+test does **not** assert an absolute energy budget against the nominal `L_w * t_end` formula (it
+would fail by a wide, resolution-dependent margin that has nothing to do with CR-grey
+correctness). Used two budget checks insensitive to this bias instead: (a) the item-7-style
+differential CR-partition identity (thermal+kinetic energy diverted from the control run equals
+the DSA run's `E_cr`) -- holds to ~2.4e-4 relative error; (b) a tight self-consistency check that
+the control and DSA runs' own *realized* total energy agree with each other (both draw from the
+same biased budget; `dsa_efficiency` only redirects ~1.6% of it into `e_cr`) -- holds to ~4e-6
+relative error. `E_cr` is ~1.6% of the DSA run's own realized total energy at
+`dsa_efficiency=0.1`, `dsa_mach_min=1.3`, forward-shock Mach ~2.9 -- clearly nonzero, physically
+bounded, and lower than item 7's Sedov blast (~5.3%) as expected for a much weaker shock. This
+volume-normalization bias is worth flagging as a real limitation of `_wind_ei3D` if the wind
+module is ever revisited (e.g. for Phase C SNR/wind emission work, ladder item 11), especially at
+small `num_injection_cells` -- not investigated further here since it's pre-existing and outside
+this module's scope.
+
+**No shared simulation code was touched for this item** -- purely a new test exercising existing
+infrastructure (`_wind_ei3D`, `inject_crs_at_shocks`/`find_shocks_pfrommer`, the CR-grey feedback
+sources) in a new physical setup, so items 1-9 are unaffected by construction (not re-run this
+session, since nothing they depend on changed).
+
+**Next: ladder item 11** (SNR expanding into a uniform then a clumpy medium) -- Phase B/C's
+integration-ladder items 9-10 are now both complete.
+
 ## Where things stand (2026-09-09, ladder item 9 -- DONE, via a moving-shock redesign)
 
 **Ladder item 9 is now done.** Picking back up from the same-day entry below (Finding 2's

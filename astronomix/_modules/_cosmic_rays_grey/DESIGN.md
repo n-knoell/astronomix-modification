@@ -476,6 +476,27 @@ general nonzero-injection conservation checks (mass/momentum/total-energy flux, 
 precision) both still hold. See PROGRESS.md's 2026-09-09 entry for full calibration numbers
 and tolerances.
 
+## Resolved: wind-blown bubble with CR pressure (ladder item 10)
+
+Test: `pytests/cosmic_rays_grey/cr_wind_bubble.py`. Three design decisions confirmed with the
+user before implementing (same pattern as items 4, 6, 8, 9): 3D Cartesian geometry (not 1D
+spherical); CR injection via the existing shock-DSA machinery (`inject_crs_at_shocks` at the
+wind's forward shock) rather than a new dedicated wind-source CR channel; and validation against
+the pre-existing (but previously untested) `Weaver` analytic solution plus an item-7-style
+differential CR energy-partition check, rather than deriving a new CR-modified analytic
+wind-bubble solution from scratch.
+
+No new simulation code was needed -- this item is a new test of existing machinery
+(`_wind_ei3D`, `inject_crs_at_shocks`/`find_shocks_pfrommer`, the CR-grey feedback sources) in a
+new physical configuration, not a new physics implementation. The control run's forward-shock
+radius matches Weaver's `R_2(t)` to <1%; a real, pre-existing (not CR-grey-related) energy-
+normalization bias in the wind module's `_wind_ei3D` injection scheme (nominal injection volume
+vs. the actually-masked, half-cell-shrunk volume) means an absolute energy-budget check against
+the nominal wind luminosity is not meaningful at small `num_injection_cells` -- worked around by
+using only differential (control-vs-DSA) energy checks, which are insensitive to this bias. See
+PROGRESS.md's 2026-09-10 entry for full calibration numbers, tolerances, and the energy-bias
+mechanism.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)
