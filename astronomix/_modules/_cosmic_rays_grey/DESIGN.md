@@ -524,6 +524,157 @@ max shock radius, fewer total shock-surface cells) that less total thermal energ
 through the whole shock surface within a fixed `t_end`, and so less total CR energy is injected
 overall. See PROGRESS.md's 2026-09-11 entry for the full calibration numbers and reasoning.
 
+## Resolved (partially): SILCC-ISM project M0a/M0b (ladder item 12 start)
+
+Ladder item 12 ("reproduce a published grey CR-ISM result") is scoped as its own multi-session
+project (user's explicit choice, not a single ladder item) targeting Girichidis et al. 2016
+(ApJL 816, L19) primarily and Simpson et al. 2016 (ApJL 827, L29) as a stretch cross-check. Full
+milestone roadmap (M0a through M6) and design decisions live in this session's plan file
+(`/export/home/nknoell/.claude/plans/memoized-discovering-scone.md`) and PROGRESS.md's 2026-09-11
+entry -- summary here covers only what's done.
+
+Two foundational milestones done this session, both new tests under `pytests/stratified_ism/`
+(a new test category -- no existing one fits a stratified-box project):
+
+- **M0a** (`bc_smoke_test.py`): validates the periodic-xy/open-z mixed boundary condition
+  combination this whole project needs, in isolation (a tanh-tapered blob advecting under uniform
+  bulk velocity, one full periodic wrap). Passed cleanly at its final calibration
+  (`N=128`, float64: mass conserved to `~2.15e-14`, x-centroid error `~4.9e-5`) -- no BC bugs
+  found, the general hydro BC handler's per-axis independence held up as expected. The one real
+  issue hit along the way was a float32 precision problem (mass conservation failed at `N=128`
+  under the default float32 before `jax_enable_x64` was enabled), not a BC bug.
+- **M0b** (`stratified_hydrostatic_column.py`): generalizes `pytests/self_gravity/
+  external_potential.py`'s Plummer-sphere pattern to a vertical potential
+  `phi(z) = C_pot*log(cosh((z-z0)/h))`, whose matching isothermal hydrostatic density is the
+  classic Spitzer (1942) `sech^2` profile. Passed its (loosened, honestly-calibrated) tolerances
+  at its final calibration (`N_XY=64`, `N_Z=512`: core Mach `~0.1057`, core density drift
+  `~0.0255`), but surfaced a **real, open gap**: the FV-mode gravity coupling
+  (`_gravitational_source_term_along_axis`, `_gravity.py:299`) only supports a simple
+  non-conservative source (unlike the FD path's flux-consistent conservative options), producing a
+  resolution-independent equilibrium residual confirmed across three resolutions (`N_XY=8/16/64`:
+  core Mach `~0.096`/`~0.101`/`~0.1057`, an 8x range in `N_XY`, 64x in total cell count) -- a
+  "not well-balanced" FV scheme combination, not a bug in this test. Flagged for any future
+  milestone (M2 onward) needing a tight hydrostatic baseline; not fixed here (out of scope for a
+  smoke-test milestone). Full numbers and the resolution/steepness checks that established this:
+  PROGRESS.md's 2026-09-11 entry.
+
+## Resolved: SILCC-ISM project M1 (Koyama & Inutsuka two-phase net-cooling curve)
+
+New cooling-curve type `KOYAMA_INUTSUKA_NET_COOLING` (`astronomix/_modules/_cooling/cooling_options.py`
+/`_cooling_tables.py`/`_cooling.py`) implements Koyama & Inutsuka (2002, ApJ 564, L97 eq. 4,
+corrected coefficients per Nagashima, Inutsuka & Koyama 2006) two-phase net heating/cooling:
+`dU/dt = n_H*Gamma - n_H^2*Lambda(T)`, `Gamma=2e-26` erg/s,
+`Lambda(T) = Gamma*[1e7*exp(-1.184e5/(T+1000)) + 1.4e-2*sqrt(T)*exp(-92/T)]`. New pytest
+`pytests/stratified_ism/ki_cooling_thermal_relaxation.py`, with an independent (plain numpy/scipy)
+reference solver at `astronomix/test_setups/reference_solutions/koyama_inutsuka_equilibrium.py`.
+
+**Design decision (decided and documented, not asked -- became unambiguous once the existing
+dispatch code was read carefully): a new analytic dispatch branch, not a `PIECEWISE_POWER_LAW`
+table.** The existing table format stores `log10(Lambda)`, which cannot represent a curve that
+changes sign -- and a sign change (net heating below the unstable branch, net cooling above it) is
+exactly what a two-phase equilibrium needs. K&I's own curve is a closed-form fit anyway (not
+tabulated data like Schure et al. 2009), so a dedicated `_cooling_rate` branch evaluating the
+formula directly is both simpler and more faithful than forcing it into the table format (which
+would also need a fabricated, physically meaningless Townsend `Y_table` for a curve Townsend
+integration was never validated against anyway).
+
+**The mu_e/mu_H bookkeeping is not an approximation.** Every downstream consumer
+(`dtemperature_dt` et al.) assumes `dU/dt = -rho^2/(mu_e*mu_H)*cooling_rate(T,rho)` (an `n_e*n_H`-
+shaped process). K&I's law has a different shape (`n_H^2*Lambda - n_H*Gamma`, no `n_e` at all).
+Substituting `cooling_rate = (mu_e/mu_H)*Lambda(T) - mu_e*Gamma/rho` into the generic formula makes
+every `mu_e` cancel algebraically, exactly reproducing `dU/dt = -n_H^2*Lambda(T) + n_H*Gamma`
+regardless of the configured `hydrogen_mass_fraction`/`metal_mass_fraction` -- verified two
+independent ways (symbolic re-derivation from the actual `dtemperature_dt` code, and a direct
+numeric single-step comparison against a hand-derived physical `dT/dt`) before trusting it.
+`gamma_heating_eff`/`lambda_scale_eff` bake this compensation in at build time (in
+`koyama_inutsuka_cooling`, given the same X/Z the run's `CoolingParams` uses) so the runtime
+dispatch branch's signature matches every other curve.
+
+**Real finding #1: the plan's "two stable phases from a range of initial temperatures" assumption
+was wrong for a fixed-density test.** `ki_bracket(T)` is monotonically increasing throughout
+`T=10-1e5` K (checked directly, no local hump) -- the equilibrium condition at fixed `n_H` has
+exactly one root, always thermally stable (Field's isochoric criterion). `update_pressure_by_cooling`
+only ever touches pressure, so a fixed-density box structurally cannot explore bistability at all.
+The real K&I "S-curve" lives in the **pressure-density plane**: `T_eq(n_H)` decreases with `n_H`,
+so `P_eq(n_H) = n_H*k_B*T_eq(n_H)` is non-monotonic -- a local max near `n_H~1 cm^-3`
+(`P_eq/k_B~4950` K/cm^3) and a local min near `n_H~8.6 cm^-3` (`P_eq/k_B~1597` K/cm^3); any
+pressure in between admits three equilibrium densities. Genuine bistability only shows up once
+density is free to respond to pressure imbalance (M2 onward), not in an isolated fixed-density
+milestone. The committed test instead checks: unique-root convergence from both sides at 3
+representative densities, plus the `P_eq(n_H)` non-monotonicity from the simulation's own
+converged points (matches the independent reference to <1%).
+
+**Real finding #2 (gap #3, confirmed not assumed): `update_temperature_implicit`'s naive
+fixed-point iteration fails at a genuinely stiff dt, silently.** At `n_H=10 cm^-3`, `T=1e4` K
+(instantaneous cooling time `~3438` yr), a single implicit step at `dt=5e4` yr (~14.5x that
+cooling time) gives `10068` K vs. the true `5855` K -- `jax.lax.while_loop` just stops at
+`max_iter=50` regardless of `tol`, no error. Fixed by adding a cooling-aware `dt_cool` term to
+`_finite_volume/_timestep_estimation/_timestep_estimator.py`'s `_cfl_time_step` (mirroring the
+existing `dt_visc`/`dt_relax` pattern: `C_cfl / max_over_grid(|dT/dt|/T)`, gated on
+`config.cooling_config.cooling` so every existing non-cooling test is unaffected by construction).
+Repairing the fixed-point iteration itself (e.g. Newton's method) would be a separate, larger
+change -- out of scope here; the guard prevents the hydro loop from ever handing it a dt this stiff.
+
+**Real finding #3 (test-setup pitfall, worth remembering for future cooling tests): `n_H =
+density/mu_H` is this codebase's convention** (`get_particle_number_density`), so building a
+uniform box at a target `n_H` needs `density = n_H*mu_H*m_p`, not `density = n_H*m_p` (the
+convention every CR-grey pytest uses, since none of them touch the cooling module's `n_H`-dependent
+machinery). Missing `mu_H` silently builds the wrong density and relaxes cleanly to the wrong
+`T_eq` (caught only because the test cross-checks against an independent reference, not just "did
+it converge to *some* value").
+
+Full exact numbers, all six calibrated (n_H, factor) combinations, and the CFL-guard calibration:
+PROGRESS.md's 2026-09-11 M1 entry.
+
+## Resolved (rescoped): SILCC-ISM project M2 (stratified column + K&I cooling: collapse, not equilibrium)
+
+M2 combines M0b's stratified external-potential column with M1's K&I two-phase net-cooling curve
+for the first time. The plan's original goal ("verify a physically sensible two-phase-structured
+quasi-equilibrium") turned out to be unreachable in this setup -- established via four independent
+checks (each a user-directed step in the investigation, per this module's "ask before picking a
+direction" pattern for genuine design forks) -- and the milestone was rescoped (user-confirmed) to
+verify the *onset* of a real thermal-gravitational collapse instead. New pytest
+`pytests/stratified_ism/stratified_column_thermal_collapse.py`.
+
+**The four checks, in order (full numbers: PROGRESS.md's 2026-09-11 M2 entry):**
+1. A naive single-temperature isothermal IC (M0b's own style) collapses the midplane
+   (`n_H`: 10 -> 195.5, `T`: 8000 -> 47.6 K by 2 dynamical times) and goes to NaN by 5.
+2. A "coarse local-equilibrium" IC (density from a warm barometric guess, temperature set per-cell
+   from the K&I equilibrium at that local density -- so the midplane starts essentially exactly at
+   its true equilibrium) makes **no qualitative difference** -- same collapse, same NaN. Rules out
+   "bad IC" as the cause. (A fully self-consistent hydrostatic+K&I-equilibrium profile, attempted
+   via fixed-point iteration on the coupled ODE, diverges outright even under strong
+   under-relaxation -- independent confirmation the underlying continuous problem is itself
+   unstable, not a numerical-iteration artifact.)
+3. Scanning the external potential's depth (`C_pot`) down to 10% of its reference value still
+   collapses just as badly; only at 1-3% does collapse stop -- but only because that also flattens
+   the *initial* density contrast away almost entirely (edge-to-midplane density ratio drops from
+   the intended ~100x down to ~1.1-1.3x). Weakening gravity trades away the stratification this
+   milestone needs, rather than stabilizing it.
+4. **Decisive: a resolution scan.** The *same* well-equilibrated-IC setup, run at higher resolution
+   (`N_Z`: 128 -> 256), collapses to NaN *faster* (between 1-2 dynamical times, vs. 2-5 at lower
+   resolution) -- not slower or convergent. A resolution increase making a collapse happen sooner
+   is the textbook signature of an **unregularized thermal instability** (Field 1965: the ISM
+   thermal instability's growth rate is unbounded at short wavelength without a regularizing
+   mechanism -- thermal conduction, turbulence, or magnetic tension, none implemented here).
+   Refining resolution further would only resolve smaller, faster-growing modes, never converge.
+
+**Conclusion:** a plain external-potential-confined column with K&I cooling and no additional
+support genuinely has no dynamically reachable stable equilibrium at meaningful density contrast
+-- real physics, not a bug, and a direct preview of why the roadmap's M3 (episodic SN
+driving/turbulence) exists as the mechanism expected to resist this exact runaway. The "stable
+two-phase profile" claim is deferred to M4/M5, once that additional physics can provide it.
+
+**What the committed test actually checks:** the collapse's early, well-resolved onset (up to a
+calibrated `t_end=1.0` dynamical time, safely inside the NaN-free window) is real, self-consistent
+physics, not numerical noise -- substantial ongoing midplane condensation (`n_H` growth factor
+`>1.5`), the midplane temperature tracking its own *new, shifting* local K&I equilibrium (not some
+other numerical effect) to `<8%`, the envelope (which started near its own equilibrium) staying
+quiescent, and mass conservation to `<5e-3` (all calibrated with real margin against the actual
+observed run -- see PROGRESS.md for exact numbers). The diagnostic plot overlays the K&I
+equilibrium curve evaluated at the final density against the actual final temperature profile,
+showing them tracking closely across the *entire* column, not just at isolated points.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

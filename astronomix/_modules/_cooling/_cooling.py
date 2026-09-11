@@ -39,6 +39,7 @@ from astronomix._modules._cooling.cooling_options import (
     COOLING_CURVE_TYPE,
     EXPLICIT_COOLING,
     IMPLICIT_COOLING,
+    KOYAMA_INUTSUKA_NET_COOLING,
     NEURAL_NET_COOLING,
     NEURAL_NET_COOLING_WITH_DENSITY,
     PIECEWISE_POWER_LAW,
@@ -391,6 +392,23 @@ def _cooling_rate(
         # so no appropriate rescaling here, to be changed later
         input_data = jnp.stack([jnp.log10(temperature), jnp.log10(density)], axis=-1)
         return 10 ** model(input_data).flatten()
+
+    elif cooling_curve_config.cooling_curve_type == KOYAMA_INUTSUKA_NET_COOLING:
+        # Koyama & Inutsuka (2002) two-phase net-cooling curve: can be
+        # negative (net heating below the thermally-unstable branch), unlike
+        # every other curve here -- see KoyamaInutsukaCoolingParams'
+        # docstring for the mu_e/mu_H-compensation that makes this "cooling
+        # rate" reproduce the true n_H*Gamma - n_H^2*Lambda(T) net rate once
+        # fed through dtemperature_dt's generic rho^2/(mu_e*mu_H) prefactor.
+        temperature_kelvin = jnp.maximum(
+            temperature / cooling_curve_params.code_temperature_per_kelvin, 1e-3
+        )
+        bracket = cooling_curve_params.t1_coeff * jnp.exp(
+            -cooling_curve_params.t1_exp_coeff / (temperature_kelvin + cooling_curve_params.t1_offset)
+        ) + cooling_curve_params.t2_coeff * jnp.sqrt(temperature_kelvin) * jnp.exp(
+            -cooling_curve_params.t2_exp_coeff / temperature_kelvin
+        )
+        return cooling_curve_params.lambda_scale_eff * bracket - cooling_curve_params.gamma_heating_eff / density
 
     else:
         raise ValueError(

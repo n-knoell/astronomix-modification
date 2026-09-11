@@ -37,6 +37,7 @@ from astronomix._modules._stellar_wind.stellar_wind import _wind_injection
 from astronomix._fluid_equations._fluxes import _euler_flux
 from astronomix._fluid_equations._equations import speed_of_sound
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
+from astronomix._modules._cooling._cooling import dtemperature_dt, get_temperature_from_pressure
 
 
 # NOTE: these wave speeds are computed without the reconstruction. For the
@@ -286,6 +287,45 @@ def _cfl_time_step(
         )
         dt_relax = C_CFL / relaxation_rate
         dt = jnp.minimum(dt, dt_relax)
+
+    # Cooling-time constraint: update_pressure_by_cooling is applied at
+    # whatever dt this function returns, but nothing above is aware of
+    # cooling at all. Near a strongly heating/cooling state, the local
+    # relaxation time |T / dT_dt| can be far shorter than the hydro dt above
+    # (confirmed directly for the Koyama & Inutsuka net-cooling curve --
+    # see astronomix/_modules/_cosmic_rays_grey/PROGRESS.md's M1 entry: at
+    # n_H=10 cm^-3, T=1e4 K, dt~14.5x the local cooling time made
+    # update_temperature_implicit's fixed-point iteration fail to converge
+    # and silently return a wrong temperature, since jax.lax.while_loop just
+    # stops at max_iter regardless of whether tol was reached). Bound dt by
+    # the fastest (smallest) local relaxation time anywhere on the grid,
+    # mirroring dt_visc/dt_relax's C_CFL-scaled convention.
+    if config.cooling_config.cooling:
+        cooling_params = params.cooling_params
+        density = primitive_state[registered_variables.density_index]
+        pressure = primitive_state[registered_variables.pressure_index]
+        temperature = get_temperature_from_pressure(
+            density, pressure, cooling_params.hydrogen_mass_fraction, cooling_params.metal_mass_fraction
+        )
+        dT_dt = dtemperature_dt(
+            density,
+            temperature,
+            cooling_params.hydrogen_mass_fraction,
+            cooling_params.metal_mass_fraction,
+            gamma,
+            config.cooling_config.cooling_curve_config,
+            cooling_params.cooling_curve_params,
+        )
+        # |dT/dt| = 0 (already at equilibrium, or cooling inactive there)
+        # imposes no constraint -- floor the rate rather than the time to
+        # keep this well-defined without an arbitrary large-time cap.
+        # cooling_params.floor_temperature is already in the same code-unit
+        # \tilde{T} convention as `temperature` here.
+        relaxation_rate_cool = jnp.max(
+            jnp.abs(dT_dt) / jnp.maximum(temperature, cooling_params.floor_temperature)
+        )
+        dt_cool = C_CFL / jnp.maximum(relaxation_rate_cool, 1e-30)
+        dt = jnp.minimum(dt, dt_cool)
 
     return dt
 

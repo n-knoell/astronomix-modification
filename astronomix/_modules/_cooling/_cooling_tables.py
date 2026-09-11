@@ -25,8 +25,9 @@ import astropy.constants as c
 from astropy.constants import m_p
 
 # astronomix containers
-from astronomix._modules._cooling.cooling_options import PiecewisePowerLawParams
+from astronomix._modules._cooling.cooling_options import KoyamaInutsukaCoolingParams, PiecewisePowerLawParams
 from astronomix.units.unit_helpers import CodeUnits
+from astronomix._modules._cooling._cooling import get_effective_molecular_weights
 
 
 def schure_cooling(
@@ -130,4 +131,93 @@ def schure_cooling(
         alpha_table = alpha,
         Y_table = Y_table,
         reference_temperature = reference_temperature
+    )
+
+
+def koyama_inutsuka_cooling(
+    code_units: CodeUnits,
+    hydrogen_mass_fraction: float = 0.76,
+    metal_mass_fraction: float = 0.02,
+):
+    """Build the Koyama & Inutsuka (2002) two-phase net-cooling curve.
+
+    Net volumetric rate ``dU/dt = n_H * Gamma - n_H^2 * Lambda(T)``, with the
+    constant photoelectric-heating rate ``Gamma = 2e-26 erg/s`` (per H
+    nucleus) and the collisional-line cooling function (eq. 4 of Koyama &
+    Inutsuka 2002, ApJ 564, L97 -- using the corrected coefficients from the
+    erratum discussion in Nagashima, Inutsuka & Koyama 2006, ApJ 652, 1331,
+    since the original eq. 4 had typographical errors)
+
+        Lambda(T) = Gamma * [1e7 * exp(-1.184e5 / (T + 1000))
+                             + 1.4e-2 * sqrt(T) * exp(-92 / T)]  erg cm^3 / s
+
+    Unlike ``schure_cooling``'s pure ``n_e * n_H`` collisional curve, this
+    has two structurally different terms in ``n_H`` (linear heating,
+    quadratic cooling) that do not fit the ``PIECEWISE_POWER_LAW`` table
+    format (which stores ``log10(Lambda)`` and so cannot represent a
+    curve that changes sign -- exactly what a two-phase equilibrium needs:
+    net heating below the unstable branch, net cooling above it). This
+    builder instead returns closed-form parameters for a dedicated
+    ``KOYAMA_INUTSUKA_NET_COOLING`` dispatch branch (``_cooling.py``'s
+    ``_cooling_rate``), which evaluates the analytic formula directly rather
+    than a tabulated fit -- also more faithful to the source, since K&I's
+    own curve is itself a closed-form fit, not tabulated data.
+
+    **Fitting this into the shared ``cooling_rate`` pipeline (the
+    mu_e/mu_H compensation below):** every downstream consumer
+    (``dtemperature_dt`` et al.) assumes ``dU/dt = -rho^2 / (mu_e * mu_H) *
+    cooling_rate(T, rho)`` (a pure ``n_e * n_H``-type process). To reproduce
+    the actual desired ``dU/dt = -n_H^2 * Lambda(T) + n_H * Gamma`` (with
+    ``n_H = rho / mu_H``, no ``mu_e`` in the real physics at all) through
+    that fixed pipeline, ``cooling_rate`` must equal
+    ``(mu_e / mu_H) * Lambda(T) - mu_e * Gamma / rho`` -- substituting this
+    back in makes every ``mu_e`` cancel exactly, so the returned rate
+    reproduces the true K&I physics for *any* ``hydrogen_mass_fraction`` /
+    ``metal_mass_fraction``, not an approximation. ``mu_e``/``mu_H`` are
+    baked into ``gamma_heating_eff``/``lambda_scale_eff`` here (at build
+    time, using the same fixed composition the rest of a run's
+    ``CoolingParams`` uses) so the runtime dispatch branch only needs
+    ``temperature`` and ``density``, matching every other curve's call
+    signature.
+
+    Args:
+        code_units: The code-unit system used to convert Gamma, the
+            Lambda(T) prefactor, and the Kelvin-to-code-temperature scale
+            factor from physical to code units.
+        hydrogen_mass_fraction: Hydrogen mass fraction, used only for the
+            mu_e/mu_H compensation above (must match the
+            ``CoolingParams.hydrogen_mass_fraction`` the run actually uses).
+        metal_mass_fraction: Metal mass fraction, same role as above.
+
+    Returns:
+        A :class:`KoyamaInutsukaCoolingParams` holding the already
+        unit-converted, already mu_e/mu_H-compensated curve parameters.
+    """
+
+    mu, mu_e, mu_H = get_effective_molecular_weights(hydrogen_mass_fraction, metal_mass_fraction)
+
+    # Gamma plays two dimensionally distinct roles in the literature formula
+    # (numerically the same 2e-26, but one is erg/s -- multiplying n_H once
+    # -- and the other is erg*cm^3/s -- multiplying n_H^2 as Lambda(T)'s
+    # overall scale) so each needs its own physical-to-code-unit conversion,
+    # following schure_cooling's exact m_p-power convention (one power of
+    # m_p for an n_H^1 process, two for an n_H^2 process).
+    gamma_heating_cgs = 2e-26 * u.erg / u.s
+    gamma_scale_cgs = 2e-26 * u.erg * u.cm ** 3 / u.s
+
+    gamma_heating_code = (gamma_heating_cgs / c.m_p).to(
+        code_units.code_energy / (code_units.code_time * code_units.code_mass)
+    ).value
+    gamma_scale_code = (gamma_scale_cgs / c.m_p ** 2).to(
+        code_units.code_energy * code_units.code_length ** 3 / (code_units.code_time * code_units.code_mass ** 2)
+    ).value
+
+    code_temperature_per_kelvin = (1.0 * u.K * c.k_B / c.m_p).to(
+        code_units.code_energy / code_units.code_mass
+    ).value
+
+    return KoyamaInutsukaCoolingParams(
+        gamma_heating_eff = float(mu_e * gamma_heating_code),
+        lambda_scale_eff = float((mu_e / mu_H) * gamma_scale_code),
+        code_temperature_per_kelvin = float(code_temperature_per_kelvin),
     )
