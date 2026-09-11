@@ -497,6 +497,33 @@ using only differential (control-vs-DSA) energy checks, which are insensitive to
 PROGRESS.md's 2026-09-10 entry for full calibration numbers, tolerances, and the energy-bias
 mechanism.
 
+## Resolved: SNR expanding into a uniform then a clumpy medium (ladder item 11)
+
+Test: `pytests/cosmic_rays_grey/cr_snr_clumpy_medium.py`. Three design decisions confirmed with
+the user before implementing (same pattern as items 4, 6, 8, 9, 10): discrete spherical clumps
+(generalizing the Sedov test's tanh-taper `weight` pattern to off-center positions) rather than a
+turbulent lognormal density field (the repo's `create_turb_field` generator exists but is unused
+elsewhere and would add unvalidated spectral choices); a new physically-scaled SNR setup
+(`E_SN=1e51` erg, `n=1 cm^-3`, `T=1e4` K ISM) as the uniform baseline, rather than reusing item 7's
+toy code-unit Sedov setup; and validation via the established item-7/9/10 differential CR
+energy-partition identity plus a second "clumps-matter" signature check (clumpy-DSA vs.
+uniform-DSA total `E_cr`), since no analytic reference solution exists for a CR-DSA shock breaking
+through an inhomogeneous medium.
+
+No new simulation code was needed -- like item 10, this is a new test of existing machinery
+(`inject_crs_at_shocks`/`find_shocks_pfrommer`, the CR-grey feedback sources) in a new physical
+configuration. The energy-partition identity holds to `~6.5e-4` (uniform) / `~2e-4` (clumpy)
+relative error, and total energy is conserved to `~1.5e-6` across all four runs (uniform/clumpy x
+control/DSA) -- identical because ambient *pressure*, not density, sets the initial thermal
+energy budget, so the clumps' extra mass does not perturb it. The clumps-matter signature is a
+clear, real effect (`E_cr` differs by `~18%` between uniform and clumpy media at fixed
+`dsa_efficiency`/`dsa_mach_min`), but its **sign is a decrease, not the naively-expected
+increase**: although clumps do locally raise the shock's Mach number as expected (lower sound
+speed at fixed pressure), their extra inertia slows the *overall* forward shock enough (smaller
+max shock radius, fewer total shock-surface cells) that less total thermal energy is processed
+through the whole shock surface within a fixed `t_end`, and so less total CR energy is injected
+overall. See PROGRESS.md's 2026-09-11 entry for the full calibration numbers and reasoning.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

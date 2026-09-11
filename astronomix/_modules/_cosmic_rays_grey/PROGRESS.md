@@ -4,6 +4,140 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-11, ladder item 11 follow-up -- resolution check, 48^3 vs 128^3)
+
+**Not yet resolved, logged for later.** After item 11 (below) was calibrated and committed at
+its documented `NUM_CELLS=48`, the user reran the same test with `NUM_CELLS=128` (all four
+`{uniform, clumpy} x {control, DSA}` runs, everything else unchanged) and asked whether the
+result was physically valid and an improvement. Numbers below for the 128^3 run were decoded
+directly from the run's own diagnostic plot (`cr_snr_clumpy_medium_test.svg`'s vector bar-chart
+paths and embedded density-slice raster) rather than from captured stdout, since the run's raw
+printed diagnostics weren't saved -- precise enough for this comparison (cross-checked against
+the plot's own axis-tick calibration) but a future resolution-scan session should capture the
+printed numbers directly instead of re-deriving them from the SVG.
+
+**What holds up well at 128^3 (both conservation checks get *tighter*, not looser):**
+- Total energy conservation: ~2e-5 relative error across all four runs (all ~5031.8 code-energy
+  units), vs. the 48^3 calibration's ~1.5e-6 -- both comfortably inside the committed
+  `conservation_tol=1e-3`.
+- The energy-partition identity (thermal+kinetic lost = CR gained): ~8e-5 relative error in both
+  media at 128^3, vs. ~6.5e-4 (uniform) / ~2e-4 (clumpy) at 48^3 -- tighter at higher resolution,
+  as expected (less numerical diffusion contaminating the bookkeeping).
+- The clumpy-DSA run's density slice shows a physically sensible, still-mostly-spherical shock
+  shell with a real, visible bow-shaped distortion where it overruns a clump caught in the
+  z-mid slice -- the qualitative picture item 11 was built to check for.
+
+**What does not hold up: the Check-2 "clumps-matter" signature and the absolute `E_cr` numbers
+are resolution-sensitive, not converged.**
+- `E_cr` (uniform-DSA / clumpy-DSA): `122.82 / 100.82` at 48^3 (**-17.9%**, the number item 11's
+  `clumpy_effect_min=0.05` was calibrated against, originally with a >3.5x margin) vs.
+  `255.30 / 240.72` at 128^3 (**-5.7%**) -- barely above that same 5% floor, almost no margin
+  left.
+- More fundamentally: `E_cr` as a *fraction* of the (resolution-independent, by construction)
+  total energy budget roughly doubled between resolutions -- `2.44%` (48^3) to `5.07%` (128^3) at
+  the same `dsa_efficiency=0.1`/`dsa_mach_min=1.3`. Since the total energy budget itself cannot
+  change with `NUM_CELLS` (set purely by `E_SN`, `P_AMBIENT`, `BOX_SIZE` in
+  `inject_crs_at_shocks`-independent code), this means the *absolute* amount of CR energy
+  `inject_crs_at_shocks` injects over a full run is not resolution-converged.
+- Root cause not identified -- reasoned through the `delta_e_cr_density = efficiency *
+  thermal_energy_flux / grid_spacing * dt` formula (`cr_grey_injection.py`) by hand two different
+  ways and got two different, equally plausible, opposite-sign explanations: (a) 48^3 under-
+  resolves the shock jump that `find_shocks_pfrommer`'s Rankine-Hugoniot-based
+  `thermal_energy_flux` depends on, so 48^3 *under*-injects and 128^3 is closer to converged; or
+  (b) the injection formula's `1/grid_spacing` normalization (calibrated for a nominally
+  one-cell-thick shocked shell) doesn't fully cancel the growth in flagged shock-surface-cell
+  count at finer resolution, so 128^3 *over*-injects. Dimensional analysis alone doesn't
+  distinguish these -- would need actual instrumentation (shocked-cell counts and per-cell
+  `thermal_energy_flux` values at both resolutions, the same style of per-step budget
+  instrumentation used to crack item 9's Finding 2) to settle it. Not attempted this session --
+  flagged instead of guessed, per this module's usual practice.
+- **This affects more than item 11**: every "X% of energy went to CR" number quoted for items 7,
+  8, and 10 (Sedov ~5.3%, wind bubble ~1.6%, item 11's own 2.44%/5.07% above) was calibrated at a
+  single, specific `NUM_CELLS` and should now be read as resolution-specific, not as a converged
+  physical prediction, until this is actually investigated.
+
+**Next step (user-scheduled, not yet run):** the user plans to rerun the same test at
+`NUM_CELLS=256` next. When that happens, extend the table above with the 256^3 numbers (`E_cr`
+uniform-DSA/clumpy-DSA, the fractional clumps-effect, and the `E_cr`/`E_total` fraction) and
+check whether the trend (`2.44% -> 5.07%` so far) is converging, still growing, or oscillating --
+that will narrow down which of the two hypotheses above is more likely, or rule out both. Ideally
+capture the run's real printed diagnostics (shocked-cell count, per-cell flux) directly this time
+rather than decoding the plot. Item 11's committed test itself is unaffected for now (its
+`NUM_CELLS=48` default and calibrated tolerances are unchanged and still self-consistent at that
+resolution) -- this entry is a heads-up flag, not a blocker on the ladder.
+
+## Where things stand (2026-09-11, ladder item 11 -- DONE, SNR into uniform/clumpy medium)
+
+**Ladder item 11 ("SNR expanding into a uniform then a clumpy medium") is done.** New pytest
+`pytests/cosmic_rays_grey/cr_snr_clumpy_medium.py`. Three design decisions were resolved with the
+user up front via concrete options (same pattern as items 4/6/8/9/10): **(1) clumpy-medium
+generation** -- discrete spherical clumps (generalizing the Sedov test's own tanh-taper `weight`
+pattern to off-center positions), not a turbulent lognormal field (the codebase's
+`create_turb_field` Gaussian-random-field generator exists but is currently unused anywhere and
+would have added unvalidated spectral-parameter choices with no precedent); **(2) uniform
+baseline** -- a new physically-scaled SNR setup (real `E_SN=1e51` erg, `n=1 cm^-3`, `T=1e4` K ISM,
+astropy units + `CodeUnits`, matching item 10's move away from item 7's toy code-unit setup), not
+a reuse of item 7's setup as-is; **(3) validation** -- the established item-7/9/10 differential
+CR energy-partition identity (Check 1) PLUS a second "clumps-matter" signature check (Check 2)
+comparing clumpy-DSA vs. uniform-DSA `E_cr`, since no analytic reference solution exists for a
+CR-DSA shock breaking through an inhomogeneous medium.
+
+**Setup (calibrated 2026-09-11):** 3D Cartesian, non-MHD, FV, `NUM_CELLS=48`, box 20 pc physical
+(`CODE_UNITS` base length 5 pc), `t_end=1000` yr (well inside the adiabatic Sedov-Taylor phase for
+these parameters -- free-expansion ends after a few hundred yr, radiative-phase onset is
+`~3e4` yr, and there's no cooling term in this module anyway). Explosion: `E_SN=1e51` erg
+deposited as a smooth pressure bump at the box center (tanh-tapered over `SMOOTH_CELLS=2`,
+generalizing item 7's formula to physical units). Clumpy medium: three spherical clumps
+(`CLUMP_RADIUS=1` pc, density contrast 10x ambient, tanh-tapered over 2 cells), centered 3 pc from
+the explosion along three deliberately non-axis-aligned directions (to break spherical symmetry)
+-- **density-only** perturbation, gas pressure held uniform everywhere (including inside clumps),
+per the user-confirmed design: this gives clumps a lower local sound speed (higher local Mach
+number) than the surrounding ambient gas when the shock arrives, a concrete checkable signature.
+DSA: `dsa_efficiency in {0, 0.1}` (control/DSA), `dsa_mach_min=1.3`, matching items 7/10.
+
+**Results, all four runs (uniform/clumpy x control/DSA):**
+- **Containment:** forward-shock max radius 1.431 (uniform) / 1.210 (clumpy) code units vs.
+  domain half-width 2.0 -- comfortable margins (`containment_margin=0.4` calibrated).
+- **Total-energy conservation** (new check, not present in earlier items' clumpy analog since this
+  is the first item with an inhomogeneous initial density): identical initial energy budget
+  (`E_total_initial ~= 5031.59` code units) across *all four* runs, because ambient **pressure**
+  (not density) sets the initial thermal energy and pressure is uniform even in the clumpy
+  configuration -- a useful internal-consistency confirmation that the clump construction is
+  density-only as intended. Observed conservation error `~1.5e-6`, `tol=1e-3`.
+- **Check 1 (energy-partition identity), per medium:** uniform rel. err `~6.5e-4`, clumpy rel.
+  err `~2e-4`, both well inside `tol=1e-2`.
+- **Check 2 (clumps-matter signature):** `E_cr` = 122.82 (uniform-DSA) vs. 100.82 (clumpy-DSA)
+  code units -- a clear **17.9% decrease**, `tol=0.05` (>3.5x margin). See the calibration note
+  below for why this is a decrease, not the naively-expected increase.
+
+**A real physical finding, not a bug (calibration note, matches this test's module docstring):**
+the initial hypothesis was that clumps' lower local sound speed (fixed pressure, 10x density)
+would *raise* the local shock Mach number and so *increase* total DSA injection. The
+locally-elevated-Mach part is confirmed directly in the data (clumpy run's minimum
+shock-surface Mach number is `~1.9-2.0` vs. uniform's `~1.35`, same `dsa_mach_min=1.3` threshold
+in both). But the *net*, whole-surface effect on total injected `E_cr` goes the other way: the
+clumps' extra inertia measurably slows the overall forward shock (max shock radius ~15% smaller
+at the same `t_end`) and the shock finder flags `~11%` fewer total shock-surface cells
+(`num_shocks`: 1809->1610-1618) -- so less total thermal energy is processed through the whole
+shock surface within a fixed `t_end`, and less is available to divert into CR at fixed
+`dsa_efficiency`. This net decrease wins over the per-clump Mach increase. Not investigated
+further (out of scope for this item -- it's a real prediction of the injection model as built,
+not a numerical artifact: NaN checks pass, energy is conserved to `~1.5e-6`, and the effect is
+robust/reproducible in the single calibrated configuration run). Worth keeping in mind for Phase
+C's later SNR-cloud emission work (item 15) -- a clumpy ambient medium may plausibly *reduce*
+total CR power output relative to a uniform medium of the same mean density, not increase it, at
+least in this regime (moderate 10x density contrast, `t_end` short enough that only a few clumps
+are engulfed).
+
+**No shared simulation code was touched for this item** -- purely a new test exercising existing
+infrastructure (`inject_crs_at_shocks`/`find_shocks_pfrommer`, the CR-grey feedback sources) in a
+new physical setup, same pattern as item 10, so items 1-10 are unaffected by construction (not
+re-run this session).
+
+**Next: ladder item 12** (reproduce a published grey CR-ISM result as a code-comparison anchor,
+e.g. a SILCC-style stratified box, Girichidis et al. 2016; Simpson et al. 2016) -- the ladder's
+integration/physical group (items 9-11) is now fully complete.
+
 ## Where things stand (2026-09-10, ladder item 10 -- DONE, wind-blown bubble)
 
 **Ladder item 10 ("wind-blown bubble with CR pressure") is done.** New pytest
@@ -1155,6 +1289,16 @@ See "What's done" and "Verified" below for details.
     since it changes behavior (from silently wrong to correct) for any future combination of `mhd`
     with `wind_density`, not just grey CR (the old `cosmic_ray_n` model this originally also
     applied to has since been retired -- see item 10 above).
+15. **Note: item 13 above is stale** -- ladder item 9 was actually resolved (2026-09-09, via a
+    moving-shock redesign) and ladder item 10 (wind-blown bubble) completed (2026-09-10) after
+    item 13 was written; see this file's dated entries above (newest-first) for the current
+    status, not item 13's text.
+16. ~~Ladder item 11 (SNR expanding into a uniform then a clumpy medium)~~ -- done (2026-09-11);
+    see "Where things stand (2026-09-11, ladder item 11 -- DONE, SNR into uniform/clumpy medium)"
+    above for the full design, calibrated numbers, and the clumps-matter signature's (counter-
+    intuitive) sign. **Next: ladder item 12** (reproduce a published grey CR-ISM result as a
+    code-comparison anchor, e.g. a SILCC-style stratified box, Girichidis et al. 2016; Simpson et
+    al. 2016) -- the ladder's integration/physical group (items 9-11) is now fully complete.
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 
