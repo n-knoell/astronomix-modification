@@ -152,6 +152,11 @@ def _helper_data_requirements(config: SimulationConfig) -> HelperDataRequirement
     if config.neural_net_force_config.neural_net_force:
         needs_geometric_centers = True
 
+    # Episodic supernova driving: needs cell-center coordinates for the
+    # per-site distance field.
+    if config.sn_driving_config.sn_driving:
+        needs_geometric_centers = True
+
     # Frame tracking (3D Cartesian) only needs the z-axis array.
     needs_cell_centers_x = False
     needs_cell_centers_y = False

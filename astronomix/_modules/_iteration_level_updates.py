@@ -45,6 +45,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
 )
 from astronomix._modules._frame_tracking._frame_tracking import _frame_tracking
 from astronomix._modules._neural_net_force._neural_net_force import _neural_net_force
+from astronomix._modules._sn_driving.sn_driving import _inject_supernovae
 from astronomix._modules._stellar_wind.stellar_wind import _wind_injection
 from astronomix._modules._turbulent_forcing._turbulent_forcing import (
     _apply_forcing,
@@ -100,6 +101,22 @@ def _iteration_level_updates(
             params,
             helper_data,
             registered_variables,
+        )
+
+    # Episodic supernova driving (SILCC-ISM project milestone M3): a
+    # stochastic per-step trigger, so it must run before cooling -- inserted
+    # here (matching wind's placement above, before cooling below) so
+    # freshly-deposited hot ejecta isn't clipped by cooling before hydro ever
+    # advects it (gap #4 in cr_grey/DESIGN.md's SILCC-ISM section).
+    if config.sn_driving_config.sn_driving:
+        key, primitive_state = _inject_supernovae(
+            key,
+            primitive_state,
+            dt,
+            config,
+            params,
+            registered_variables,
+            helper_data,
         )
 
     # Cooling.

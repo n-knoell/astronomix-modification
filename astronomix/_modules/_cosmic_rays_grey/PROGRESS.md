@@ -4,6 +4,73 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-12, SILCC-ISM project M3 -- DONE, episodic SN driving)
+
+**Milestone M3 (new episodic SN-driving module, validated in isolation via an exact
+energy-conservation check) is done.** New module `astronomix/_modules/_sn_driving/`
+(`sn_driving.py`'s `_inject_supernovae`, `sn_driving_options.py`'s `SNDrivingConfig`/
+`SNDrivingParams`), wired into `_iteration_level_updates.py` before cooling (gap #4, per the
+plan file's already-decided ordering). New pytest
+`pytests/stratified_ism/sn_driving_energy_conservation.py`.
+
+**Mechanism:** each step draws one Bernoulli trial with probability `sn_rate * dt` (thinned-
+Poisson approximation, valid for `sn_rate * dt << 1` -- at most one supernova per step) and, if
+it fires, a uniformly random site in the box. Deposits the same tanh-tapered spherical footprint
+items 7/11 use: a thermal part added to gas pressure, plus -- when the CR-grey model is active --
+`sn_cr_fraction` (default 0.1, Girichidis et al. 2016) of the total dumped directly into `e_cr`
+(gap #4's design decision #2: not routed through `inject_crs_at_shocks`/DSA). `sn_cr_fraction` is
+forced to 0 (all-thermal) whenever `registered_variables.cosmic_ray_e_active` is False, so total
+energy conservation never depends on whether CR-grey is on -- verified directly (see below).
+
+**Real bug found and fixed while building the validation test:** the first version computed the
+taper weight (and its normalizing sum) over the full *ghost-padded* array
+`_iteration_level_updates` operates on. For a site drawn near a periodic edge this double-counts
+real domain volume in the normalization (a ghost cell mirrors a real interior cell on the far
+side, so both get weight) and then silently discards the ghost cells' share of the deposit the
+next time the boundary handler refreshes them from the interior -- losing a fraction of
+`sn_energy` whenever a site landed near an edge. Calibrated mismatch before the fix: `~0.125` out
+of `0.45` total injected over 9 triggers -- large and systematic, not noise. Fixed by restricting
+the weight (both the normalization sum and the actual `.add()` deposit) to the interior cells
+only, relying on the standard boundary handler to refresh the ghost cells afterward. This is a
+genuinely new failure mode relative to every earlier point-injection ladder item (7/10/11), which
+all use *open* boundaries with the explosion kept well away from the domain edge by construction
+-- periodic-box point injection at arbitrary random sites had never been exercised in this
+codebase before M3.
+
+**Test design (exact, not statistical energy-conservation check):** a uniform 3D Cartesian
+*periodic* box (`NUM_CELLS=32`), no gravity/cooling/turbulent forcing, `config.fixed_timestep=True`
+(`NUM_TIMESTEPS=400`, `T_END=0.05`) so every step's `dt` -- and hence the trigger probability -- is
+identical and known in advance, and `config.random_seed`'s default key is the *only* per-step
+PRNG consumer (turbulent forcing, the other one in this codebase, is off). This lets the test
+independently replay the exact `jax.random.split`/`bernoulli` sequence outside the simulation
+(`_replica_trigger_count`) and know `N_triggers` exactly, then check
+`E_total(t_end) - E_total(0) == N_triggers * sn_energy` to near machine precision -- valid
+regardless of how complicated the subsequent shock evolution gets, since a periodic box with no
+gravity/cooling has no other channel to gain or lose energy. Same `fixed_timestep`-based technique
+ladder item 9 used to instrument the per-step `e_cr` budget (see the 2026-09-09 entry below).
+Requires `jax_enable_x64` (this directory's now-familiar float32-round-off lesson, see M0a) --
+without it the accumulated round-off over 400 fixed steps blew the tolerance by ~5 orders of
+magnitude and, more subtly, could shift which step the `exact_end_time` clamp lands on.
+
+**Calibrated numbers:** at `NUM_CELLS=32`, `SN_RATE=100`, `T_END=0.05` (expected count 5, observed
+`N_triggers=9` at the default seed): CR-active run's energy-conservation relative error `~7.2e-10`
+(tol `1e-6`, >1000x margin); CR-inactive run (verifies the `sn_cr_fraction`-forced-to-0 fallback)
+`~7.8e-15` (essentially exact -- one fewer floating-point exchange path than the CR-active run).
+CR-active run's final `E_cr / (N_triggers * sn_energy) ~= 0.096` vs. the raw injected
+`sn_cr_fraction = 0.1` -- not an exact match, and not expected to be: once deposited, `e_cr`
+exchanges energy with the gas via the always-active adiabatic-work coupling (verified correct back
+in ladder items 1/2), so some drift away from the raw injected fraction is expected physics.
+
+**No existing simulation code changed except the new gated `_iteration_level_updates.py` branch**
+(off by default, `SNDrivingConfig.sn_driving = False`) and a new `needs_geometric_centers` gate in
+`simulation_helper_data.py`, both no-ops for every existing config -- confirmed via
+`shock_tube1D.py` and `cr_advection.py` re-runs, unaffected.
+
+**Next: milestone M3.5** (SN driving + cooling combined, still uniform/unstratified -- isolates
+the freshly-injected-hot-ejecta-vs-explicit-cooling stiffness risk, gap #3, in a 2-module
+combination before it's buried inside M4's 4-way combination). See the roadmap in
+`/export/home/nknoell/.claude/plans/memoized-discovering-scone.md` for M3.5 through M6.
+
 ## Where things stand (2026-09-11, SILCC-ISM project M2 -- DONE, rescoped to collapse onset)
 
 **Milestone M2 is done, but not as originally scoped.** The plan's goal ("M0b + M1 combined --

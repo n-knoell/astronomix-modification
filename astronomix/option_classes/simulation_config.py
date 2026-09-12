@@ -33,6 +33,7 @@ from astronomix._modules._nbody._nbody_options import NBodyConfig
 from astronomix._modules._neural_net_force._neural_net_force_options import (
     NeuralNetForceConfig,
 )
+from astronomix._modules._sn_driving.sn_driving_options import SNDrivingConfig
 from astronomix._modules._stellar_wind.stellar_wind_options import WindConfig
 from astronomix._modules._turbulent_forcing._turbulent_forcing_options import TurbulentForcingConfig
 
@@ -642,6 +643,10 @@ class SimulationConfig(NamedTuple):
 
     #: The configuration for the cooling module.
     cooling_config: CoolingConfig = CoolingConfig()
+
+    #: The configuration for episodic supernova driving (see
+    #: astronomix/_modules/_sn_driving).
+    sn_driving_config: SNDrivingConfig = SNDrivingConfig()
 
     #: Frame tracking in z-direction
     #: shifting the frame to follow a

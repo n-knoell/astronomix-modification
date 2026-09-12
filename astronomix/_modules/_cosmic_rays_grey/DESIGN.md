@@ -675,6 +675,63 @@ observed run -- see PROGRESS.md for exact numbers). The diagnostic plot overlays
 equilibrium curve evaluated at the final density against the actual final temperature profile,
 showing them tracking closely across the *entire* column, not just at isolated points.
 
+## Resolved: SILCC-ISM project M3 (episodic supernova-driving module)
+
+New module `astronomix/_modules/_sn_driving/` (`SNDrivingConfig`/`SNDrivingParams`,
+`_inject_supernovae`), wired into `_iteration_level_updates.py` before cooling -- resolving gap
+#4's injection-ordering question in the direction the plan already anticipated (matching wind's
+placement, so freshly-deposited hot ejecta isn't clipped by cooling before hydro ever advects it).
+New pytest `pytests/stratified_ism/sn_driving_energy_conservation.py`.
+
+**Mechanism:** each step draws one Bernoulli trial with probability `sn_rate * dt` (a standard
+thinned-Poisson-process approximation -- valid whenever `sn_rate * dt << 1`, so at most one
+supernova per step is the overwhelmingly common case and a second simultaneous trigger isn't
+modeled) and, if it fires, a uniformly random site in the box ("random" placement, matching
+Girichidis et al. 2016's own comparison case and Simpson et al. 2016's "random" mode -- "at
+density peaks" is the M6 stretch cross-check, not implemented here). Deposits the same
+tanh-tapered spherical footprint items 7/11 use, renormalized (Sedov-style) so the total energy
+deposited is exactly `sn_energy` regardless of resolution: a thermal part added to gas pressure,
+plus -- when the CR-grey model is active -- `sn_cr_fraction` (default 0.1, Girichidis' convention)
+of the total dumped directly into `e_cr` (design decision #2: not routed through
+`inject_crs_at_shocks`/DSA, so it doesn't compound item 9's still-open DSA resolution-
+non-convergence finding). `sn_cr_fraction` is forced to 0 (all-thermal) whenever
+`registered_variables.cosmic_ray_e_active` is False, so total energy conservation never depends on
+whether CR-grey happens to be on.
+
+**Periodic wraparound (needed for "random site anywhere in the box", genuinely new to this
+codebase):** the site-to-cell distance uses the minimum-image convention along any axis whose
+`config.boundary_settings` is periodic, so a site drawn near a periodic edge still gets its full,
+undistorted footprint instead of being truncated by the domain edge.
+
+**Real bug found and fixed (worth flagging for any future point-injection-in-a-periodic-box
+work):** the first version computed the taper weight -- and, critically, its normalizing sum --
+over the full *ghost-padded* array `_iteration_level_updates` actually operates on. For a site
+near a periodic edge this double-counts real domain volume in the normalization (a ghost cell
+mirrors a real interior cell on the far side, so both pick up weight), and then silently discards
+the ghost cells' share of the deposit the next time the boundary handler refreshes them from the
+interior -- quietly losing a fraction of `sn_energy` every time a site landed near an edge (a
+large, systematic bias, not noise -- calibrated at `~0.125` lost out of `0.45` injected over 9
+triggers). Fixed by restricting the weight -- both the normalization sum and the actual `.add()`
+deposit -- to the interior cells only, and relying on the standard boundary handler to correctly
+repopulate the ghost cells from the (now updated) interior afterward. Every earlier point-injection
+ladder item (7/10/11) uses *open* boundaries with the explosion kept well inside the domain by a
+containment check, so this exact failure mode had never been exercised before M3.
+
+**Validation is an exact, not statistical, energy-conservation check** -- a genuinely different
+validation style from every other feedback module in this codebase, made possible by two facts
+specific to this setup: (1) in a periodic box with no gravity/cooling/open boundaries, a
+conservative FV scheme's domain-integrated (thermal + kinetic + CR) energy can only change at a
+supernova deposit, so `E_total(t_end) - E_total(0)` must equal exactly `N_triggers * sn_energy`
+regardless of how complicated the subsequent shock evolution gets; (2) `N_triggers` itself can be
+known exactly rather than just statistically, because `config.fixed_timestep=True` makes every
+step's trigger probability identical and known in advance, and the SN-driving trigger is the only
+per-step PRNG consumer active in this test (turbulent forcing, this codebase's other one, is off)
+-- so the test replays the exact `jax.random.split`/`bernoulli` sequence outside the simulation and
+compares against the real run's actual energy change. The same `fixed_timestep`-based technique
+ladder item 9 used to instrument its per-step `e_cr` budget (2026-09-09). Calibrated relative error
+`~7.2e-10` (CR-active) / `~7.8e-15` (CR-inactive) against a `1e-6` tolerance. Full numbers:
+PROGRESS.md's 2026-09-12 entry.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

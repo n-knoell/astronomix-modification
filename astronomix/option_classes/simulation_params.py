@@ -21,6 +21,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 )
 from astronomix._modules._nbody._nbody_options import NBodyParams
 from astronomix._modules._neural_net_force._neural_net_force_options import NeuralNetForceParams
+from astronomix._modules._sn_driving.sn_driving_options import SNDrivingParams
 from astronomix._modules._stellar_wind.stellar_wind_options import WindParams
 from astronomix._modules._turbulent_forcing._turbulent_forcing_options import TurbulentForcingParams
 
@@ -134,6 +135,10 @@ class SimulationParams(NamedTuple):
 
     #: The parameters of the cooling module.
     cooling_params: CoolingParams = CoolingParams()
+
+    #: The parameters of the episodic supernova-driving module (see
+    #: astronomix/_modules/_sn_driving).
+    sn_driving_params: SNDrivingParams = SNDrivingParams()
 
     #: The parameters of the neural network force module.
     neural_net_force_params: NeuralNetForceParams = NeuralNetForceParams()
