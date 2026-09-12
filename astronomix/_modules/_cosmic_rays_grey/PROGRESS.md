@@ -4,6 +4,108 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-12, SILCC-ISM project M3.5 -- DONE, SN driving + cooling; a real bug found and reported, not fixed)
+
+**Milestone M3.5 (SN driving + K&I cooling combined, still uniform/unstratified) is done, after a
+long investigation that found five real things, the last of which is a genuine architectural bug
+in shared time-stepping code, reported here rather than fixed.** New pytest
+`pytests/stratified_ism/sn_driving_with_cooling.py`, three tests: `test_sn_blast_evolves_cleanly_pre_cooling`,
+`test_cooling_guard_engages_for_sn_driving`, `test_sn_injection_with_cooling_stability`. Full
+narrative and all numbers are in that file's own module docstring (the canonical record); this
+entry summarizes it.
+
+**Finding 1: the instant of SN injection is *not* where cooling stiffness (gap #3) shows up.** A
+single SN deposit (`E_SN=1e51` erg into `n_H=1 cm^-3` ambient gas, any astrophysically-reasonable
+injection radius) produces `T_hot ~2.3e9` K -- so hot that K&I's `Lambda(T)` has already saturated,
+making the cooling time *longer* than the pure-hydro CFL `dt` (`~1.7e5` yr vs. `~11` yr) -- the
+opposite of stiff. This is the textbook reason the early adiabatic/free-expansion Sedov-Taylor
+phase (item 11's own cooling-free SNR test lives here) is adiabatic in the first place.
+
+**Finding 2: this project's own affordable box/resolution doesn't spontaneously reach a
+genuinely cooling-stiff state either.** Evolved a single SN deposit hydro-only (no cooling) and
+scanned `T_EVOLVE_YEARS in {2000, 5000, 10000, 20000, 30000}`, tracking the cell actually driving
+the cooling-CFL constraint (via `dtemperature_dt`, not a guessed cell). The compressed cell's
+density grows (`n_H` up to `~20.4` at `2e4` yr) but its temperature never drops below `~1e5-1e7` K
+in this window, and `dt_hydro/t_cool` never exceeds `~1.0` across the whole scan (need `>10x` to
+count as stiff) -- the interior stays too hot for too long, in this 20 pc periodic box, for the
+shell's cooling time to ever overtake the interior's own sound-crossing constraint.
+
+**Finding 3: a real, randomly-sited explosion in a periodic box NaN'd the solver via a
+periodic-edge wrap, at two resolutions.** The first full-run test (`NUM_CELLS=48`, all-periodic
+BCs, matching M3's own convention) NaN'd reproducibly (cooling on *and* off, ruling out cooling)
+within `~50-100` yr of a real trigger firing. Direct bisection traced it to a trigger landing at
+grid index `x=5` of `48` (`~2.3` pc from the edge), whose `~2.5` pc footprint wraps the periodic
+seam -- the ghost-cell handler mirrors a second copy of the `~1e8-1e9` K blast onto itself, an
+extreme, poorly-resolved head-on collision the HLLC solver can't handle. Doubling resolution to
+`NUM_CELLS=96` only reduced the failure rate (halves the wrap danger zone) -- a second,
+independent random trigger reproduced the same near-instant NaN there too.
+
+**Finding 4: switching periodic -> open boundaries did not fix it either.** The *exact same*
+explosion (boundary type cannot change the PRNG trigger sequence) NaN'd again under open
+boundaries at `NUM_CELLS=96`, ruling out "periodic wrap" as the sole mechanism -- an open
+boundary's own interior-only weight renormalization can make a near-edge deposit *more*
+concentrated when part of the tapered sphere falls outside the domain. Root cause reframed as the
+raw injection magnitude itself (`T_hot ~1e8-1e9` K at `n_H=1`) being numerically extreme near any
+edge, any handling. Fix (user-directed): ambient density raised 100x to `n_H=100 cm^-3` (M1's
+other calibration point, `T_eq~41.8` K) and the injection radius decoupled from grid spacing,
+fixed at a physical 4 pc -- a direct calibration scan picked this to land `T_hot` at `~2.6e6` K
+instead of `~1e9` K (`~1000x` reduction). Box widened to 40 pc, `NUM_CELLS` raised to 128 (both
+user-directed).
+
+**Finding 5, the deepest one: even the 1000x-gentler injection still NaN'd, and root-causing it
+found a genuine architectural bug in the shared time-stepping code -- unrelated to cooling, edges,
+or injection magnitude.** The new hot cell was `~30+` cells from any domain edge (rules out edges);
+cooling-on vs. cooling-off NaN'd at the identical step with near-identical pressure (rules out
+cooling); every synthetic single-explosion reproduction attempted -- box-centered, off-grid-offset,
+and the *exact* off-center coordinates the real failure used -- evolved cleanly for `10000+` yr
+(rules out "any explosion at this energy/location is just fragile"). The common thread: only the
+real, stochastic, *mid-run* `_inject_supernovae` path ever failed. Reading
+`astronomix/time_stepping/time_integration.py` confirmed why: each step's `dt` is computed from the
+primitive state *before* `_iteration_level_updates` runs, and that same already-fixed `dt` is then
+used by `_inject_supernovae`, `update_pressure_by_cooling`, *and* the hydro flux evolve for that
+same step -- so on the triggering step, cooling and the hydro update both apply a `dt` sized for
+the calm pre-explosion state to the freshly-injected, extremely hot cell. Measured directly: the
+pre-injection ambient `dt` (`~41281` yr) was `~441824x` larger than the correctly-sized
+post-injection `dt` (`~0.093` yr). Applying cooling alone at the stale `dt` didn't NaN but drove
+some cells to an unphysical `98` K (M1's known silent-non-convergence failure mode, confirmed
+reachable via this exact pathway); the subsequent hydro flux step at the same stale `dt` is the
+most likely proximate source of the actual NaN. Lowering `EXPECTED_N_TRIGGERS` from 4 to 1 (an
+intermediate attempt at working around it within this test) *still* NaN'd -- consistent with the
+bug firing from any single real stochastic injection, not requiring overlapping explosions.
+
+**This is a real, open bug, flagged for a future dedicated session -- not fixed here (user
+confirmed: report, don't fix now).** It affects the shared time-stepping code
+(`astronomix/time_stepping/time_integration.py`'s per-step `dt` computation order relative to
+`_iteration_level_updates`), not just SN driving -- any future module that injects a large,
+localized perturbation mid-run (not via the initial condition) would hit the same gap. Not touched
+this session per explicit user direction; `astronomix/_modules/_iteration_level_updates.py` and
+`astronomix/time_stepping/time_integration.py` are unmodified.
+
+**Closing test design (redesigned around Finding 5):** since the stochastic mid-run trigger
+mechanism can't be exercised reliably right now, and the bug is about that mechanism (not gap #3
+itself), the closing test returns to the same safe pattern every earlier point-injection ladder
+item already uses: build the SN deposit into the *initial condition*, not via `SNDrivingConfig`'s
+trigger, so `time_integration`'s first `dt` is already correctly sized for the hot state.
+`test_sn_injection_with_cooling_stability` (`n_H=100`, `NUM_CELLS=128`, 40 pc box, `T_END=3e4` yr,
+item 11's own radiative-phase-onset estimate): NaN-free; mass conserved to `1.4e-16` relative error
+(tol `1e-9`); peak temperature drops from the raw-injection `2,592,683` K to `5002.8` K at t_end
+(a `99.8%` drop, tol `>1%` margin >>1) while staying far below the `1.5x` raw-injection runaway
+ceiling; minimum temperature at t_end matches the ambient equilibrium (`41.77` K) exactly, as
+expected for far-field cells untouched by the blast.
+
+**No shared simulation code was changed for this milestone** (the bug above is reported, not
+fixed) -- `_iteration_level_updates.py`, `time_stepping/time_integration.py`, `sn_driving.py`, and
+the M1/M3 cooling/SN-driving modules are all exactly as M3 left them.
+
+**Next session should pick up at M4** (per the roadmap: M0b+M1+M3 combined, CR off, flagged
+highest-risk step) -- but first, strongly consider whether to fix Finding 5's stale-`dt`-at-injection
+bug before attempting M4, since M4 combines SN driving with a real, much longer, much more
+elaborate run where the same bug would very likely resurface (M4 cannot rely on M3.5's workaround
+of avoiding the stochastic trigger mechanism entirely, since M4's whole point is repeated SN
+driving over time). A plausible fix shape (not implemented, not verified): recompute/re-clamp `dt`
+after `_iteration_level_updates`'s injection step, before the hydro evolve consumes it -- or have
+`_inject_supernovae` report the post-injection state's own CFL requirement back to the loop.
+
 ## Where things stand (2026-09-12, SILCC-ISM project M3 -- DONE, episodic SN driving)
 
 **Milestone M3 (new episodic SN-driving module, validated in isolation via an exact
