@@ -129,7 +129,7 @@ def _inject_supernovae(
     )
 
     # helper_data/primitive_state here are ghost-padded (this function is
-    # called from _iteration_level_updates with helper_data_pad). Restrict
+    # called from _iteration_level_injections with helper_data_pad). Restrict
     # the weight -- both the normalization sum and the actual deposit -- to
     # the interior cells only: a ghost cell's contribution would otherwise
     # double-count real domain volume across a periodic wrap (a site near an

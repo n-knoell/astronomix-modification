@@ -12,7 +12,7 @@ and ``cr_grey_sources.cr_streaming_heating_source`` together.
 ``streaming_flux_target`` (``cr_grey_transport.py``) computes, per axis,
 ``F_cr,axis = -sign(dP_cr/dx_axis) * reduced_streaming_speed * e_cr``, using
 :func:`regularized_streaming_sign` (``tanh``) for the direction. Applied
-once per full step in ``_iteration_level_updates`` as a discrete
+once per full step in ``_iteration_level_continuous_updates`` as a discrete
 correction that **overwrites** ``F_cr`` -- the same "instantaneous
 relaxation" pattern ``anisotropic_flux_projection`` already uses for ladder
 item 3 (the physical picture: in the streaming-dominated limit, self-confined

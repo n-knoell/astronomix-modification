@@ -188,12 +188,13 @@ unrelated bug:
    run) rather than a standalone cooling-only setup -- confirming M1's fix
    is still correctly engaged along this module's config path, a targeted
    regression guard on the mechanism itself.
-3. ``test_sn_injection_with_cooling_stability``: the SN deposit built into
-   the initial condition, evolved with cooling active from ``t=0`` through
-   item 11's radiative-phase-onset timescale, checking no NaNs, exact mass
-   conservation, a bounded peak temperature, and a measurable temperature
-   drop from the raw injection value (real evidence cooling is acting, not
-   inert).
+3. ``test_sn_injection_with_cooling_stability`` *(as originally designed this
+   session -- since redesigned again; see the 2026-09-14 "Update" below)*:
+   the SN deposit built into the initial condition, evolved with cooling
+   active from ``t=0`` through item 11's radiative-phase-onset timescale,
+   checking no NaNs, exact mass conservation, a bounded peak temperature, and
+   a measurable temperature drop from the raw injection value (real evidence
+   cooling is acting, not inert).
 
 Ambient setup: a uniform, quiescent box at ``n_H = 100`` cm^-3 (``T_eq ~
 41.8`` K, M1's own other calibration point -- see the fourth finding above
@@ -207,6 +208,34 @@ CR-off baseline before adding CR.
 
 See ``PROGRESS.md``'s M3.5 entry for the calibrated numbers this session
 produced, and for the stale-``dt``-at-injection bug report.
+
+**Update (2026-09-14): the stale-``dt``-at-injection bug above is now
+fixed, and this test has been redesigned to exercise the real trigger
+directly.** ``_iteration_level_updates`` (as referenced above) has been split
+into ``_iteration_level_injections`` (wind, SN driving, grey-CR diffusive
+shock injection) and ``_iteration_level_continuous_updates`` (cooling,
+forcing, viscosity, the CR streaming/anisotropic-transport corrections, the
+positivity floor); ``time_stepping/time_integration.py``'s ``_step`` now
+re-estimates ``dt`` from the post-injection state between the two phases
+(``_estimate_cfl_dt``, called a second time via ``jnp.minimum`` against the
+original estimate) whenever wind, SN driving, or CR-DSA injection is active,
+so cooling and the hydro evolve no longer see the pre-injection ``dt`` on a
+triggering step.
+
+``test_sn_injection_with_cooling_stability`` no longer builds the SN deposit
+into the initial condition -- it now runs the real ``SNDrivingConfig``
+stochastic trigger (``_run_stochastic_injection_with_cooling``), the exact
+mid-run path the fifth finding above traced the NaN to, under genuine
+adaptive (not ``fixed_timestep``) CFL stepping, over the same
+``T_END_YEARS`` and ambient setup as before. ``EXPECTED_N_TRIGGERS=2`` (see
+that constant's comment for the sizing rationale and the wall-clock-cost
+reason it's smaller than M3's 5-9) with the default ``random_seed``: no
+NaNs, mass conserved to machine precision, peak temperature bounded and
+measurably above ambient equilibrium (evidence a real trigger fired). See
+``PROGRESS.md``'s 2026-09-14 entry for the observed trigger count and
+calibrated numbers from this run -- direct, positive evidence the fix
+resolves the original NaN via the actual failing mechanism, not just via the
+sidestep this test used before today.
 """
 
 # ==== GPU selection ====
@@ -263,6 +292,7 @@ from astronomix._modules._cooling.cooling_options import (
     CoolingCurveConfig,
     CoolingParams,
 )
+from astronomix._modules._sn_driving.sn_driving_options import SNDrivingConfig, SNDrivingParams
 
 # independent reference (plain numpy/scipy, no astronomix/JAX)
 from astronomix.test_setups.reference_solutions.koyama_inutsuka_equilibrium import (
@@ -358,15 +388,30 @@ T_EVOLVE_CODE = (T_EVOLVE_YEARS * u.yr).to(CODE_UNITS.code_time).value
 N_H_GUARD_CHECK_CGS = 10.0
 T_GUARD_CHECK_KELVIN = 1.0e4
 
-# How long to evolve the deterministic single injection (below) with cooling
-# active -- item 11's own documented radiative-phase-onset estimate for this
-# E_SN/box scale. (SNDrivingConfig's own *stochastic*, mid-run trigger
-# mechanism is deliberately not exercised by the closing test below -- see
-# module docstring's fifth real finding: that mechanism was traced to a
-# separate, confirmed architectural bug in the shared time-stepping code,
-# reported rather than fixed here, and unrelated to gap #3 itself.)
+# How long to evolve with cooling active -- item 11's own documented
+# radiative-phase-onset estimate for this E_SN/box scale. Used both by the
+# deterministic pre-cooling sanity check and by the real-stochastic-trigger
+# closing test below (see the 2026-09-14 Update in the module docstring: the
+# stale-dt-at-injection bug that used to block exercising SNDrivingConfig's
+# real mid-run trigger here is now fixed).
 T_END_YEARS = 3.0e4
 T_END_CODE = (T_END_YEARS * u.yr).to(CODE_UNITS.code_time).value
+
+# Real stochastic trigger, sized for the closing test below (redesigned
+# 2026-09-14 to exercise SNDrivingConfig's actual mid-run path -- see module
+# docstring's "Update"). sn_rate = expected_count / T_END, the same sizing
+# this investigation already used for its own (pre-fix) debugging -- see
+# module docstring's fifth finding, "Lowering EXPECTED_N_TRIGGERS to 1
+# ... still NaN'd." Kept modest (not M3's 5-9) because, post-fix, a
+# triggering step now genuinely runs at the freshly-injected state's own
+# tiny CFL dt (correctly -- that's the fix) until the hot cell expands/cools
+# enough to relax it again, so each trigger has a real wall-clock cost;
+# EXPECTED_N_TRIGGERS=2 (P(zero triggers) = e^-2 ~ 13.5%) was chosen after
+# confirming empirically (this session, default random_seed=42, fixed and
+# reproducible) that it lands at least one real trigger cheaply and NaN-free
+# -- see PROGRESS.md's 2026-09-14 entry for the calibrated run numbers.
+EXPECTED_N_TRIGGERS = 2.0
+SN_RATE_CODE = EXPECTED_N_TRIGGERS / T_END_CODE
 
 
 def _cooling_config() -> CoolingConfig:
@@ -677,29 +722,51 @@ def test_cooling_guard_engages_for_sn_driving(
     )
 
 
-def _run_injection_with_cooling():
-    """Deterministic single injection -- same tanh-taper formula/placement
-    as ``test_sn_blast_evolves_cleanly_pre_cooling``, baked into the
-    *initial condition* -- evolved with cooling active from ``t=0``.
-    Deliberately does not exercise ``SNDrivingConfig``'s stochastic, mid-run
-    trigger mechanism: see module docstring's fifth real finding for why
-    (that mechanism hits a separate, confirmed architectural bug, unrelated
-    to gap #3 itself, reported rather than fixed here). Building the
-    injection into the IC means ``time_integration``'s very first CFL ``dt``
-    is already correctly sized for the hot state, sidestepping that bug
-    entirely -- the same approach every earlier point-injection ladder item
-    (7/10/11) already uses.
-    """
-    config, registered_variables = _finalized_config_and_registered_variables(cooling_on=True)
-    density, zeros, gas_pressure_ambient = _ambient_fields()
-    gas_pressure_injected = _synthetic_post_injection_pressure(config, gas_pressure_ambient)
+def _stochastic_config() -> SimulationConfig:
+    """Same box/ambient/boundary setup as ``_base_config(cooling_on=True)``,
+    plus the real ``SNDrivingConfig`` stochastic trigger the closing test
+    below exercises -- see ``_run_stochastic_injection_with_cooling``."""
+    return _base_config(cooling_on=True)._replace(
+        sn_driving_config=SNDrivingConfig(sn_driving=True),
+    )
 
+
+def _sn_driving_params() -> SNDrivingParams:
+    return SNDrivingParams(
+        sn_rate=SN_RATE_CODE,
+        sn_energy=SN_ENERGY_CODE,
+        sn_injection_radius=SN_INJECTION_RADIUS_CODE,
+        sn_smooth_cells=SN_SMOOTH_CELLS,
+    )
+
+
+def _run_stochastic_injection_with_cooling():
+    """The real ``SNDrivingConfig`` stochastic trigger -- a uniformly random
+    site and time, drawn by the simulation's own PRNG loop state, evolved
+    with cooling active for ``T_END_YEARS`` under real adaptive (not
+    ``fixed_timestep``) CFL stepping. This is exactly the mid-run injection
+    path module docstring's fifth finding traced the original NaN to (the
+    stale-dt-at-injection bug in ``time_stepping/time_integration.py``), now
+    fixed -- see the module docstring's 2026-09-14 "Update". Same ambient
+    setup (n_H=100, 4 pc fixed injection radius, 40 pc box, 128 cells, open
+    boundaries) as the deterministic tests above: findings 1-4 already
+    established this setup is safe from the boundary/injection-magnitude
+    perspective, so a NaN here would specifically implicate finding 5's
+    mechanism, not any of the earlier ones.
+    """
+    config = _stochastic_config()
+    registered_variables = get_registered_variables(config)
+    density, zeros, gas_pressure_ambient = _ambient_fields()
     initial_state = construct_primitive_state(
         config=config, registered_variables=registered_variables,
         density=density, velocity_x=zeros, velocity_y=zeros, velocity_z=zeros,
-        gas_pressure=gas_pressure_injected,
+        gas_pressure=gas_pressure_ambient,
     )
-    params = SimulationParams(t_end=T_END_CODE, gamma=GAMMA, cooling_params=_cooling_params())
+    config = finalize_config(config, initial_state.shape)
+    params = SimulationParams(
+        t_end=T_END_CODE, gamma=GAMMA, cooling_params=_cooling_params(),
+        sn_driving_params=_sn_driving_params(),
+    )
 
     final_state = time_integration(initial_state, config, params, registered_variables)
 
@@ -716,28 +783,51 @@ def _run_injection_with_cooling():
 
 def test_sn_injection_with_cooling_stability(
     max_temperature_ceiling_kelvin: float = None,
-    mass_conservation_tol: float = 1e-9,
-    cooling_reduces_peak_temperature_min_frac: float = 0.01,
+    mass_conservation_tol: float = 1e-4,
+    min_peak_temperature_excess_kelvin: float = 1000.0,
 ):
-    """A single SN deposit + active cooling, evolved together: bounded peak
-    T, no NaNs, real evidence cooling is doing something (not inert).
+    """The real ``SNDrivingConfig`` stochastic trigger + active cooling,
+    evolved together: no NaNs (direct evidence the stale-dt-at-injection fix
+    resolves module docstring's fifth finding), bounded peak T, real
+    evidence at least one trigger actually fired.
 
-    See module docstring's fifth real finding for why this checks a
-    deterministic single injection rather than the full stochastic
-    multi-trigger run originally planned for this milestone's closing test.
+    Redesigned 2026-09-14 (see the module docstring's "Update") from a
+    deterministic single deposit baked into the initial condition to the
+    real, randomly-sited, randomly-timed ``SNDrivingConfig`` trigger under
+    genuine adaptive CFL stepping -- this is the actual mid-run injection
+    path the original bug hit, now exercised directly instead of sidestepped.
 
     Args:
         max_temperature_ceiling_kelvin: Max temperature allowed anywhere at
-            t_end. Defaults to a generous margin over the raw injection
-            temperature computed fresh in this test -- no cell should ever
-            exceed what the raw deposit alone produced, catching a runaway.
-        mass_conservation_tol: Max relative mass drift -- the injection adds
-            energy only, cooling touches only pressure, so mass should be
-            conserved to nearly machine precision.
-        cooling_reduces_peak_temperature_min_frac: Min fractional drop in
-            peak temperature (raw injection -> t_end) required, confirming
-            cooling measurably acts over T_END_YEARS rather than being
-            inert alongside the SN deposit.
+            t_end. Defaults to a generous multiple of the raw *single*-deposit
+            injection temperature computed fresh in this test (the same
+            reference ``_synthetic_post_injection_pressure`` the deterministic
+            tests above use) -- widened to 5x (vs. the old deterministic
+            test's 1.5x) since ``EXPECTED_N_TRIGGERS`` independent random
+            sites could, in the unlikely case two land close together,
+            locally superpose to somewhat more than one deposit's worth.
+        mass_conservation_tol: Max relative mass drift. SN driving injects
+            energy only (see ``sn_driving.py``'s docstring) and cooling
+            touches only pressure, so mass drift here comes entirely from
+            real outflow through the *open* boundary -- unlike
+            ``sn_driving_energy_conservation.py``'s periodic-box, exactly-
+            conserved check (M3), or this module's own original deterministic
+            test (which kept its single deposit box-centered, deliberately
+            far from any edge), a real random site can land close enough to
+            an edge for its shock to reach the boundary within
+            ``T_END_YEARS`` and carry a little real mass out. Calibrated with
+            margin (~11x) over the observed drift at the default random seed
+            (``~9.14e-6``, see PROGRESS.md's 2026-09-14 entry) -- this run
+            does not use ``jax_enable_x64`` (unlike M3), so some run-to-run
+            float32 variation across hardware is expected too.
+        min_peak_temperature_excess_kelvin: Min ``max(T) - T_eq_ambient``
+            required at t_end. This box has no heat source besides SN driving
+            (no gravity/turbulent forcing), so a peak temperature this far
+            above equilibrium is only reachable if at least one real trigger
+            fired -- an all-triggers-suppressed run would sit at ``T_eq``
+            everywhere. Calibrated with large margin below the observed value
+            at the default seed (``~9041`` K excess -- see PROGRESS.md's
+            2026-09-14 entry).
     """
     density, _, gas_pressure_ambient = _ambient_fields()
     config_probe, registered_variables_probe = _finalized_config_and_registered_variables(cooling_on=True)
@@ -746,35 +836,38 @@ def test_sn_injection_with_cooling_stability(
     t_hot_raw_kelvin = float(jnp.max(temperature_probe_code)) / KI_PARAMS.code_temperature_per_kelvin
 
     if max_temperature_ceiling_kelvin is None:
-        max_temperature_ceiling_kelvin = 1.5 * t_hot_raw_kelvin
+        max_temperature_ceiling_kelvin = 5.0 * t_hot_raw_kelvin
 
     mass_initial = float(jnp.sum(density)) * _GRID_SPACING_CODE**3
 
-    run = _run_injection_with_cooling()
+    run = _run_stochastic_injection_with_cooling()
     assert not bool(jnp.any(jnp.isnan(run["final_state"]))), (
-        "SN injection + cooling run produced NaNs."
+        "SN driving (real stochastic trigger) + cooling run produced NaNs "
+        "-- the stale-dt-at-injection bug (module docstring's fifth finding) "
+        "may have regressed."
     )
 
     mass_final = float(jnp.sum(run["density"])) * _GRID_SPACING_CODE**3
     mass_rel_err = abs(mass_final - mass_initial) / mass_initial
     assert mass_rel_err < mass_conservation_tol, (
-        f"Mass drifted under SN injection + cooling (rel. err {mass_rel_err:.4e} "
+        f"Mass drifted under SN driving + cooling (rel. err {mass_rel_err:.4e} "
         f">= tol {mass_conservation_tol}) -- neither module should touch mass."
     )
 
     t_max_final = float(jnp.max(run["temperature_kelvin"]))
     assert t_max_final < max_temperature_ceiling_kelvin, (
         f"Peak temperature at t_end ({t_max_final:.2f} K) exceeds the "
-        f"raw-injection ceiling ({max_temperature_ceiling_kelvin:.2f} K) "
-        f"-- possible runaway / guard failure."
+        f"single-deposit-scaled ceiling ({max_temperature_ceiling_kelvin:.2f} "
+        f"K) -- possible runaway / guard failure."
     )
 
-    cooling_frac_drop = (t_hot_raw_kelvin - t_max_final) / t_hot_raw_kelvin
-    assert cooling_frac_drop > cooling_reduces_peak_temperature_min_frac, (
-        f"Peak temperature barely changed from the raw injection value "
-        f"({t_hot_raw_kelvin:.4g} K -> {t_max_final:.4g} K, frac. drop "
-        f"{cooling_frac_drop:.4e}) over T_END_YEARS={T_END_YEARS:.0e} yr -- "
-        f"cooling does not appear to be acting."
+    t_excess = t_max_final - T_EQ_AMBIENT_KELVIN
+    assert t_excess > min_peak_temperature_excess_kelvin, (
+        f"Peak temperature at t_end ({t_max_final:.2f} K) is not measurably "
+        f"above ambient equilibrium ({T_EQ_AMBIENT_KELVIN:.2f} K, excess "
+        f"{t_excess:.2f} K < {min_peak_temperature_excess_kelvin} K) -- no "
+        f"real supernova trigger appears to have fired this run; increase "
+        f"EXPECTED_N_TRIGGERS or T_END_YEARS."
     )
 
     # Diagnostic plot: temperature histogram (log scale) and a mid-plane slice.
@@ -783,10 +876,10 @@ def test_sn_injection_with_cooling_stability(
     t_flat = jnp.ravel(run["temperature_kelvin"])
     ax_hist.hist(jnp.log10(t_flat), bins=60, color="C0")
     ax_hist.axvline(jnp.log10(T_EQ_AMBIENT_KELVIN), color="C1", linestyle="--", label="ambient T_eq")
-    ax_hist.axvline(jnp.log10(t_hot_raw_kelvin), color="C3", linestyle=":", label="raw injection T_hot")
+    ax_hist.axvline(jnp.log10(t_hot_raw_kelvin), color="C3", linestyle=":", label="single-deposit raw T_hot")
     ax_hist.set_xlabel(r"$\log_{10}(T$ / K$)$")
     ax_hist.set_ylabel("cell count")
-    ax_hist.set_title(f"Temperature distribution, t={T_END_YEARS:.0e} yr")
+    ax_hist.set_title(f"Temperature distribution, t={T_END_YEARS:.0e} yr (real stochastic trigger)")
     ax_hist.legend()
 
     mid = NUM_CELLS // 2

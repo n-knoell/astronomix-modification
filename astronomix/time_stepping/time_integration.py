@@ -56,7 +56,10 @@ from astronomix._finite_difference._timestep_estimation._timestep_estimator impo
     _cfl_time_step_fd,
     _cfl_time_step_fd_hydro
 )
-from astronomix._modules._iteration_level_updates import _iteration_level_updates
+from astronomix._modules._iteration_level_updates import (
+    _iteration_level_continuous_updates,
+    _iteration_level_injections,
+)
 from astronomix._modules._nbody._nbody import _advance_nbody_state
 from astronomix._modules._turbulent_forcing._turbulent_forcing import _init_ou_forcing_state
 from astronomix._snapshotting._snapshot_diagnostics import (
@@ -559,6 +562,45 @@ def _build_initial_loop_state(primitive_state, config, params, restart_state=Non
     return LoopState(primitive_state, key0, forcing0, nbody_state0)
 
 
+def _estimate_cfl_dt(primitive_state, config, params, helper_data, registered_variables, time):
+    """Estimate the CFL-limited time step for ``primitive_state``.
+
+    Factored out of ``_step`` so it can be called a second time, on the
+    post-injection state, to fix the stale-``dt``-at-injection bug: a
+    lump-sum injection (a full supernova's energy dumped into one cell in a
+    single step, in particular -- see ``_iteration_level_injections``'s
+    docstring) can leave a cell far outside the CFL bound this step's ``dt``,
+    estimated from the *pre*-injection state, was sized for.
+    """
+    if config.solver_mode == FINITE_VOLUME:
+        if config.source_term_aware_timestep:
+            return jax.lax.stop_gradient(
+                _source_term_aware_time_step(
+                    primitive_state, config, params, helper_data,
+                    registered_variables, time,
+                )
+            )
+        return jax.lax.stop_gradient(
+            _cfl_time_step(primitive_state, config, params, registered_variables)
+        )
+    elif config.solver_mode == FINITE_DIFFERENCE:
+        if config.mhd:
+            return jax.lax.stop_gradient(
+                _cfl_time_step_fd(
+                    primitive_state, config.grid_spacing, params.dt_max,
+                    params.gamma, config, params, registered_variables,
+                    params.C_cfl,
+                )
+            )
+        return jax.lax.stop_gradient(
+            _cfl_time_step_fd_hydro(
+                primitive_state, config.grid_spacing, params.dt_max,
+                params.gamma, config, params, registered_variables,
+                params.C_cfl,
+            )
+        )
+
+
 def _integrate_core(
     config: SimulationConfig,
     params: SimulationParams,
@@ -619,12 +661,33 @@ def _integrate_core(
     # advances the state by one (adaptive) timestep, and — when snapshots are
     # requested — a recorder plus the predicate that decides when to record.
 
+    # Injection modules that can dump a lump sum into a cell in a single
+    # step -- large enough that the pre-injection CFL estimate below can be
+    # badly wrong for the post-injection state. A static (config-level)
+    # condition, so configs using none of these compile to exactly the same
+    # single-dt-estimate path as before this fix (see _estimate_cfl_dt and
+    # _iteration_level_injections's docstrings for the bug this re-estimate
+    # fixes). Skipped whenever config.fixed_timestep is set, since that mode
+    # intentionally bypasses CFL entirely (e.g. for an exact PRNG-replay
+    # energy-conservation check, which depends on dt staying exactly fixed).
+    _has_lump_sum_injection = (
+        config.wind_config.stellar_wind
+        or config.sn_driving_config.sn_driving
+        or (
+            registered_variables.cosmic_ray_e_active
+            and config.cosmic_ray_grey_config.diffusive_shock_acceleration
+        )
+    )
+
     def _step(time, state, snapshot_index):
         """Advance the state by one timestep.
 
         Estimates ``dt``, clamps it to land on the next snapshot time / the
-        end time, runs the per-step modules and evolves the state.  Returns
-        ``(dt, new_state)``; the driver advances the time.
+        end time, applies the lump-sum injection modules (wind, SN driving,
+        CR-DSA), re-estimates ``dt`` for the post-injection state when any of
+        those are active, then runs the remaining per-step modules and
+        evolves the state.  Returns ``(dt, new_state)``; the driver advances
+        the time.
         """
         primitive_state = state.primitive_state
         key = state.key
@@ -633,37 +696,10 @@ def _integrate_core(
 
         # determine the time step size
         if not config.fixed_timestep:
-            if config.solver_mode == FINITE_VOLUME:
-                if config.source_term_aware_timestep:
-                    dt = jax.lax.stop_gradient(
-                        _source_term_aware_time_step(
-                            primitive_state, config, params, helper_data_pad,
-                            registered_variables, time,
-                        )
-                    )
-                else:
-                    dt = jax.lax.stop_gradient(
-                        _cfl_time_step(
-                            primitive_state, config, params, registered_variables,
-                        )
-                    )
-            elif config.solver_mode == FINITE_DIFFERENCE:
-                if config.mhd:
-                    dt = jax.lax.stop_gradient(
-                        _cfl_time_step_fd(
-                            primitive_state, config.grid_spacing, params.dt_max,
-                            params.gamma, config, params, registered_variables,
-                            params.C_cfl,
-                        )
-                    )
-                else:
-                    dt = jax.lax.stop_gradient(
-                        _cfl_time_step_fd_hydro(
-                            primitive_state, config.grid_spacing, params.dt_max,
-                            params.gamma, config, params, registered_variables,
-                            params.C_cfl,
-                        )
-                    )
+            dt = _estimate_cfl_dt(
+                primitive_state, config, params, helper_data_pad,
+                registered_variables, time,
+            )
         else:
             dt = params.t_end / config.num_timesteps
 
@@ -683,7 +719,13 @@ def _integrate_core(
 
         # N-body: advance the point-mass RK4 solver jointly with (i.e. using
         # the same time step as) the hydro update below. rk4_step_nbody only
-        # ever depends on the other bodies' masses, never the gas.
+        # ever depends on the other bodies' masses, never the gas. Note:
+        # uses the pre-injection dt even when it's later shrunk below (the
+        # multi-source stellar wind injection right after needs the fresh
+        # N-body position *before* dt is finalized) -- a narrow, currently
+        # unexercised approximation for the combination of nbody with an
+        # active lump-sum injection module, analogous to the Lax-Friedrichs
+        # known-gap note in _lax_friedrichs.py.
         if config.nbody_config.nbody:
             nbody_state = _advance_nbody_state(
                 nbody_state, params.nbody_params.masses, dt, config,
@@ -698,17 +740,39 @@ def _integrate_core(
                 nbody_params=step_params.nbody_params._replace(nbody_state=nbody_state)
             )
 
+        # Lump-sum injections (stellar wind, episodic SN driving, grey-CR
+        # diffusive shock injection): apply first, at the pre-injection dt.
+        key, primitive_state = _iteration_level_injections(
+            primitive_state, key, dt, config, step_params, helper_data_pad,
+            registered_variables, time + dt,
+        )
+
+        # Re-estimate dt from the post-injection state before cooling/
+        # forcing/the hydro evolve consume it -- this is the actual fix for
+        # the stale-dt-at-injection bug (PROGRESS.md's 2026-09-12 M3.5
+        # entry). jnp.minimum rather than an outright replacement so the
+        # snapshot/end-time clamps above are never relaxed, only tightened.
+        if not config.fixed_timestep and _has_lump_sum_injection:
+            dt = jnp.minimum(
+                dt,
+                _estimate_cfl_dt(
+                    primitive_state, config, params, helper_data_pad,
+                    registered_variables, time,
+                ),
+            )
+
         # Stellar wind: make the current simulation time available to the
         # (per-RK-stage) finite-difference source-term path, which has no
         # other access to the absolute time, for real_wind_params' tabulated
-        # time interpolation (see astronomix._modules._stellar_wind).
+        # time interpolation (see astronomix._modules._stellar_wind). Uses
+        # the final (possibly re-estimated) dt.
         if config.wind_config.stellar_wind:
             step_params = step_params._replace(
                 wind_params=step_params.wind_params._replace(current_time=time + dt)
             )
 
-        # modules that run every time step
-        key, forcing, primitive_state = _iteration_level_updates(
+        # per-step continuous-rate modules, at the final dt
+        key, forcing, primitive_state = _iteration_level_continuous_updates(
             primitive_state, key, forcing, dt, config, step_params, helper_data_pad,
             registered_variables, time + dt,
         )

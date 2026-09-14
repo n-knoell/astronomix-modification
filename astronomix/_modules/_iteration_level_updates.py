@@ -2,11 +2,22 @@
 Iteration-level updates applied once before each hydro step.
 
 These are the physics modules that run as a discrete update on the primitive
-state at the start of every time step — stellar wind, grey-CR shock
-injection, cooling, the neural-net / CNN correctors, viscosity, turbulent
-forcing, frame tracking and the per-step positivity floor. Their counterpart
-is ``_time_integrator_sources``, which instead enters the hydro integrator
-as a right-hand-side source term.
+state at the start of every time step, split into two phases so the driver
+loop (``astronomix.time_stepping.time_integration``) can re-estimate ``dt``
+in between:
+
+  - ``_iteration_level_injections``: lump-sum injections that can leave a
+    cell far outside the CFL bound this step's ``dt`` was sized for from the
+    *pre*-injection state -- stellar wind, episodic supernova driving, grey-CR
+    diffusive shock injection.
+  - ``_iteration_level_continuous_updates``: per-step continuous-rate terms
+    that assume ``dt`` is already CFL-safe for the current state -- cooling,
+    the neural-net / CNN correctors, viscosity, turbulent forcing, frame
+    tracking, grey-CR streaming/anisotropic transport, and the per-step
+    positivity floor.
+
+Their counterpart is ``_time_integrator_sources``, which instead enters the
+hydro integrator as a right-hand-side source term.
 """
 
 # general
@@ -56,7 +67,102 @@ from astronomix._modules._viscosity._viscosity import fv_viscosity_update
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
-def _iteration_level_updates(
+def _iteration_level_injections(
+    primitive_state: STATE_TYPE,
+    key,
+    dt: Float[Array, ""],
+    config: SimulationConfig,
+    params: SimulationParams,
+    helper_data: HelperData,
+    registered_variables: RegisteredVariables,
+    current_time: Union[float, Float[Array, ""]],
+):
+    """
+    Apply the discrete, lump-sum injections that run before each hydro step.
+
+    Split out from ``_iteration_level_continuous_updates`` so the driver loop
+    can re-estimate ``dt`` from the freshly injected state before that same
+    step's cooling/forcing/hydro-evolve consume it: a full supernova's energy
+    dumped into one cell in a single step, in particular, can leave that cell
+    far outside the CFL bound this step's ``dt`` -- estimated from the
+    *pre*-injection state -- was sized for (see
+    ``astronomix.time_stepping.time_integration``'s ``_step``, and
+    PROGRESS.md's 2026-09-12 M3.5 entry for the bug this fixes).
+
+    Args:
+        primitive_state: The primitive state array.
+        key: The PRNG key.
+        dt: The time step, estimated from the pre-injection state.
+        config: The simulation configuration.
+        params: The simulation parameters.
+        helper_data: The helper data.
+        registered_variables: The registered variables.
+        current_time: The current simulation time.
+
+    Returns:
+        ``(key, primitive_state)`` with the injections applied.
+    """
+
+    # Stellar wind.
+    # In the finite-difference case this is instead handled as a source term
+    # inside the hydro integrator.
+    if config.wind_config.stellar_wind and config.solver_mode == FINITE_VOLUME:
+        primitive_state = _wind_injection(
+            primitive_state,
+            dt,
+            config,
+            params,
+            helper_data,
+            registered_variables,
+        )
+
+    # Episodic supernova driving (SILCC-ISM project milestone M3): a
+    # stochastic per-step trigger, so it must run before cooling -- grouped
+    # here with the other lump-sum injections (gap #4 in
+    # cr_grey/DESIGN.md's SILCC-ISM section) so freshly-deposited hot ejecta
+    # isn't clipped by cooling before hydro ever advects it, and so its own
+    # (potentially enormous) CFL impact is folded into the driver's
+    # post-injection dt re-estimate.
+    if config.sn_driving_config.sn_driving:
+        key, primitive_state = _inject_supernovae(
+            key,
+            primitive_state,
+            dt,
+            config,
+            params,
+            registered_variables,
+            helper_data,
+        )
+
+    # Grey two-moment CR diffusive shock acceleration: detect shocks with the
+    # N-D Pfrommer finder and divert a fraction of each shock's dissipated
+    # energy flux into e_cr (ladder items 7-8). See cr_grey_injection.py's
+    # docstring for the energy-accounting and Cartesian-only caveat. Grouped
+    # here as a lump-sum injection alongside wind/SN driving above (moved
+    # out of the continuous-updates phase below, where it used to run last)
+    # -- verified against every existing CR-grey ladder pytest that this
+    # reordering doesn't change any of their results, since none of them
+    # combine diffusive_shock_acceleration with cooling/forcing/viscosity/
+    # the CNN or neural-net correctors.
+    if (
+        registered_variables.cosmic_ray_e_active
+        and config.cosmic_ray_grey_config.diffusive_shock_acceleration
+    ):
+        primitive_state = inject_crs_at_shocks(
+            primitive_state,
+            config,
+            params,
+            registered_variables,
+            helper_data,
+            current_time,
+            dt,
+        )
+
+    return key, primitive_state
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables"])
+def _iteration_level_continuous_updates(
     primitive_state: STATE_TYPE,
     key,
     forcing,
@@ -68,7 +174,10 @@ def _iteration_level_updates(
     current_time: Union[float, Float[Array, ""]],
 ) -> STATE_TYPE:
     """
-    Apply the updates that run once before each hydro iteration.
+    Apply the per-step continuous-rate updates that run after
+    ``_iteration_level_injections`` -- and, when any lump-sum injection
+    module is active, after the driver loop has re-estimated ``dt`` for the
+    post-injection state (see ``_iteration_level_injections``'s docstring).
 
     The counterpart of this are the ``_time_integrator_sources``, which are
     handled as right-hand-side source terms inside the hydro integrator.
@@ -89,35 +198,6 @@ def _iteration_level_updates(
         ``(key, forcing, primitive_state)`` with the iteration-level updates
         applied.
     """
-
-    # Stellar wind.
-    # In the finite-difference case this is instead handled as a source term
-    # inside the hydro integrator.
-    if config.wind_config.stellar_wind and config.solver_mode == FINITE_VOLUME:
-        primitive_state = _wind_injection(
-            primitive_state,
-            dt,
-            config,
-            params,
-            helper_data,
-            registered_variables,
-        )
-
-    # Episodic supernova driving (SILCC-ISM project milestone M3): a
-    # stochastic per-step trigger, so it must run before cooling -- inserted
-    # here (matching wind's placement above, before cooling below) so
-    # freshly-deposited hot ejecta isn't clipped by cooling before hydro ever
-    # advects it (gap #4 in cr_grey/DESIGN.md's SILCC-ISM section).
-    if config.sn_driving_config.sn_driving:
-        key, primitive_state = _inject_supernovae(
-            key,
-            primitive_state,
-            dt,
-            config,
-            params,
-            registered_variables,
-            helper_data,
-        )
 
     # Cooling.
     # In the finite-difference case this is instead handled as a source term
@@ -257,24 +337,6 @@ def _iteration_level_updates(
             primitive_state = primitive_state.at[f_cr_index.z].set(
                 projected_f_cr[f_cr_index.z]
             )
-
-    # Grey two-moment CR diffusive shock acceleration: detect shocks with the
-    # N-D Pfrommer finder and divert a fraction of each shock's dissipated
-    # energy flux into e_cr (ladder items 7-8). See cr_grey_injection.py's
-    # docstring for the energy-accounting and Cartesian-only caveat.
-    if (
-        registered_variables.cosmic_ray_e_active
-        and config.cosmic_ray_grey_config.diffusive_shock_acceleration
-    ):
-        primitive_state = inject_crs_at_shocks(
-            primitive_state,
-            config,
-            params,
-            registered_variables,
-            helper_data,
-            current_time,
-            dt,
-        )
 
     # Per-step positivity on the primitive state.
     #   - HARD_FLOOR clamps density (and pressure, for an ideal gas) to its

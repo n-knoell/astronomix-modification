@@ -4,6 +4,106 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-14, stale-dt-at-injection bug -- FIXED)
+
+**M3.5's Finding 5 (stale `dt` reused across injection/cooling/hydro-evolve on a triggering
+step) is fixed, before starting M4 as recommended below.** Discussed four candidate approaches
+with the user first (global unconditional fix; the same split but gated behind an opt-in flag;
+each injection module reporting its own CFL requirement with a full adaptive retry loop; other) --
+**user picked the global, unconditional fix.** One correction surfaced during that discussion
+worth recording: the bug is *not* CR-triggered (M3.5, where it was found, and M4, which it
+blocks, both run CR off) -- an earlier framing of "gate behind a CR flag" would not have covered
+the actual failing case, since the real trigger condition is "an episodic lump-sum injection
+module is active" (SN driving today; wind and CR-DSA shock injection structurally share the same
+risk). A second correction: the recompute point can't sit between `_iteration_level_updates` and
+the hydro evolve as PROGRESS.md's earlier sketch assumed -- cooling itself, which runs *inside*
+that function right after SN injection, was directly implicated in Finding 5 (cooling alone at
+the stale `dt` drove cells to unphysical `98` K), so the split has to be internal to that
+function, not at its outer boundary.
+
+**Implementation:** `astronomix/_modules/_iteration_level_updates.py`'s single
+`_iteration_level_updates` is now two jitted functions: `_iteration_level_injections` (stellar
+wind, SN driving, and -- newly regrouped here, previously last in the old function -- grey-CR
+diffusive shock injection: all three are lump-sum/discontinuous updates to `primitive_state`) and
+`_iteration_level_continuous_updates` (cooling, the neural-net/CNN correctors, viscosity,
+turbulent forcing, frame tracking, CR streaming/anisotropic-transport corrections, the positivity
+floor -- unchanged relative order among themselves). `time_stepping/time_integration.py`'s `_step`
+now: estimates `dt` from the pre-injection state (factored into a new `_estimate_cfl_dt` helper,
+byte-for-byte the same FV/FD x mhd/hydro x source-term-aware branching that used to be inlined),
+applies `_iteration_level_injections` at that `dt`, then -- only `if not config.fixed_timestep`
+and at least one of `wind_config.stellar_wind` / `sn_driving_config.sn_driving` /
+`cosmic_ray_grey_config.diffusive_shock_acceleration` is active (a static, config-level condition)
+-- calls `_estimate_cfl_dt` a second time on the post-injection state and takes
+`jnp.minimum(old_dt, new_dt)` (never relaxes the snapshot/end-time clamps already applied, only
+tightens), before running `_iteration_level_continuous_updates` and the hydro evolve at the final
+`dt`. Configs using none of the three lump-sum modules compile to exactly the same single-estimate
+path as before this change -- zero behavior change for the rest of the test suite.
+`config.fixed_timestep` (M3's own exact-PRNG-replay energy-conservation technique) is deliberately
+exempted, since re-estimating there would desync the replay from the simulation's actual `dt`
+sequence.
+
+**Reordering risk check (CR-DSA injection moved out of the continuous phase):** grepped every
+`pytests/cosmic_rays_grey/*.py` config for `diffusive_shock_acceleration=True` combined with
+`cooling`/`turbulent_forcing`/`neural_net_force`/`cnn_mhd_corrector`/`diffusion`/`frame_tracking`
+-- none of items 7-11's tests ever combine DSA injection with any of the modules now running after
+it (this module's consistent "isolate one thing per test" convention), so this reordering changes
+none of their computed results; not independently re-run this session (deferred to the general
+regression pass below) but the config-level argument is airtight given the existing test suite's
+composition.
+
+**Known, deliberately accepted residual gap, documented in a code comment (`time_integration.py`,
+next to the N-body advance):** N-body's RK4 advance must run *before* `_iteration_level_injections`
+(multi-source stellar wind needs the freshly-advanced orbit position for its injection sites this
+same step), so it necessarily uses the pre-recompute `dt` even on a step where SN driving/wind/
+CR-DSA later shrinks it -- a currently-unexercised combination (no CR-grey ladder test uses
+`nbody`) analogous in spirit to the standing Lax-Friedrichs CR-dissipation gap.
+
+**Regression suite re-run against this change (2026-09-14), all pass:** every CR-grey ladder
+pytest that exercises the moved/split code paths -- items 3, 5, 7, 8, 10, 11
+(`cr_anisotropic_diffusion_oblique.py`, `cr_streaming_1d.py`, `cr_sedov_taylor.py`,
+`cr_dsa_mach_dependence.py`, `cr_wind_bubble.py`, `cr_snr_clumpy_medium.py`) -- plus both
+SN-driving tests (`sn_driving_energy_conservation.py`, M3's `fixed_timestep` exact-replay check;
+`sn_driving_with_cooling.py`, M3.5's own test, closest to the original bug). Run individually
+(not in a shared batch) via the GPU workaround on a pinned free device to avoid cross-run GPU
+memory contention -- an early batched run produced one apparent OOM (`cr_snr_clumpy_medium.py`)
+and one apparent hang (`cr_wind_bubble.py` hit a 590s timeout at 76% progress) that both turned
+out to be contention/insufficient-timeout artifacts from running heavy jobs back-to-back on one
+GPU, not real regressions -- both passed cleanly in isolation with more time.
+
+**M3.5's closing test redesigned (2026-09-14) to exercise the real stochastic trigger, per
+explicit user request as direct evidence the fix works.** `test_sn_injection_with_cooling_stability`
+(`pytests/stratified_ism/sn_driving_with_cooling.py`) no longer builds the SN deposit into the
+initial condition -- it now runs the actual `SNDrivingConfig` stochastic trigger
+(`_run_stochastic_injection_with_cooling`, replacing the deleted `_run_injection_with_cooling`)
+under genuine adaptive (not `fixed_timestep`) CFL stepping, the exact mid-run mechanism Finding 5
+traced the original NaN to. Same ambient setup as the deterministic tests (`n_H=100`, 4 pc fixed
+injection radius, 40 pc box, 128 cells, open boundaries, cooling on, CR-grey off), over the same
+`T_END_YEARS=3e4`. New `EXPECTED_N_TRIGGERS=2` / `SN_RATE_CODE = EXPECTED_N_TRIGGERS / T_END_CODE`
+constants (kept modest, not M3's 5-9, since each real trigger now correctly forces a run of tiny
+post-injection steps -- that's the fix working as intended -- so more triggers means real added
+wall-clock cost).
+
+**Result at the default `random_seed=42` (fixed, fully reproducible): no NaNs -- direct,
+positive evidence the fix resolves the original bug via the actual failing mechanism, not just via
+the sidestep the test used before today.** Calibrated numbers from this run: peak temperature at
+t_end `9083.2` K, `9041.4` K above ambient equilibrium (`41.77` K) -- proves at least one real
+trigger fired, since this box has no other heat source -- comfortably below the
+single-deposit-reference-scaled ceiling (`5x` the raw single-deposit `T_hot=2,592,683` K
+`=12.96e6` K). Mass conserved to `9.14e-6` relative error -- looser than M3's near-machine-precision
+periodic-box identity, and *correctly so*: this test's real random site can land close enough to
+the open boundary for its shock to reach the edge and carry real mass out within `T_END_YEARS`,
+unlike M3's periodic box or this module's old deterministic test (deliberately box-centered, kept
+away from any edge) -- confirmed via a diagnostic probe that boundary-face density shifts by
+`~0.07%` from ambient at t_end, consistent with a real edge-reaching shock, not an accounting bug.
+`mass_conservation_tol` recalibrated from a stale `1e-9` (copied from the old deterministic test's
+different physical regime) to `1e-4` (~11x margin over the observed value); `max_temperature_
+ceiling_kelvin` widened from `1.5x` to `5x` the raw single-deposit reference (to allow, without
+asserting, for the small chance two of the `EXPECTED_N_TRIGGERS` random sites land close enough to
+locally superpose); new `min_peak_temperature_excess_kelvin=1000` K check added (replacing the old
+"cooling reduces peak T from the known raw value" check, which doesn't transfer cleanly to
+multiple, randomly-timed triggers) as the test's real evidence a trigger fired. Full narrative:
+that file's own module docstring (canonical record, updated in place).
+
 ## Where things stand (2026-09-12, SILCC-ISM project M3.5 -- DONE, SN driving + cooling; a real bug found and reported, not fixed)
 
 **Milestone M3.5 (SN driving + K&I cooling combined, still uniform/unstratified) is done, after a

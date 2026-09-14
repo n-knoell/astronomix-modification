@@ -47,7 +47,7 @@ isolation from the gas EOS.
   characteristics.
 - Anisotropic transport: when `CosmicRayGreyConfig.anisotropic_transport` (requires `config.mhd`),
   `F_cr` is projected onto the local B direction (`cr_grey_transport.anisotropic_flux_projection`,
-  implemented -- ladder item 3) once per full step, in `_iteration_level_updates` -- **not**
+  implemented -- ladder item 3) once per full step, in `_iteration_level_continuous_updates` -- **not**
   inside `grey_cr_flux_terms`, because that function runs inside the FV MHD Strang split's
   gas-only Riemann solve, where the magnetic-field rows are structurally absent from the state
   array for that half-step (see "Resolved: anisotropic transport" below). A direct projection,
@@ -65,8 +65,15 @@ Per physical step, both solver modes:
 1. dt estimate (`_timestep_estimator.py`, FV: `_cfl_time_step`/`get_wave_speeds`; FD:
    `_cfl_time_step_fd*`) -- CR-grey fast speed folds in here (FV only for now).
 2. N-body advance (independent of hydro).
-3. `_iteration_level_updates` (discrete update on the primitive state, both modes) -- `e_cr`
-   positivity floor goes here, alongside the existing density/pressure hard floor.
+3. `_iteration_level_injections` (discrete lump-sum injections on the primitive state, both
+   modes: stellar wind, SN driving, CR-DSA shock injection) -- **then, when any of those three
+   is active, dt is re-estimated from the post-injection state** (`jnp.minimum` against step 1's
+   estimate) before the next step, fixing the stale-dt-at-injection bug (see "Resolved:
+   stale-dt-at-injection bug" below).
+3b. `_iteration_level_continuous_updates` (discrete update on the primitive state, both modes) --
+   cooling, the neural-net/CNN correctors, viscosity, turbulent forcing, frame tracking, CR
+   streaming/anisotropic-transport corrections; `e_cr` positivity floor goes here, alongside the
+   existing density/pressure hard floor.
 4. Hydro evolve:
    - **FV** (`_finite_volume/_state_evolution/evolve_state.py`): reconstruction -> Riemann
      solve -> flux differencing -> conserved update -> primitive recovery, per axis
@@ -150,7 +157,7 @@ to change -- see `PROGRESS.md`.
 `F_cr`, returns `F_cr_parallel = (F_cr . b_hat) * b_hat`, `b_hat = B / sqrt(|B|^2 +
 b_field_floor^2)` (a smooth, always-defined floor -- `CosmicRayGreyParams.b_field_floor` -- same
 "prefer smooth regularization over min/max" philosophy as `regularized_streaming_sign`). It is
-called from `astronomix._modules._iteration_level_updates` once per full step, before the hydro
+called from `astronomix._modules._iteration_level_continuous_updates` once per full step, before the hydro
 update -- overwriting the `F_cr` state with its B-projected value -- **not** from within
 `grey_cr_flux_terms`, which cannot reach B (see below). `F_cr`'s own pressure-driving term
 (`v_red^2 * P_cr`, in `grey_cr_flux_terms`) stays isotropic, un-projected, each Cartesian
@@ -258,13 +265,13 @@ always-at-equilibrium" limit): self-confined CRs stream down their own
 pressure gradient at the reduced free-streaming speed, so `F_cr` is pinned
 per axis to `F_cr,axis = -sign(dP_cr/dx_axis) * reduced_streaming_speed *
 e_cr` (regularized sign via `regularized_streaming_sign`, already
-implemented). Applied once per full step in `_iteration_level_updates` as a
+implemented). Applied once per full step in `_iteration_level_continuous_updates` as a
 discrete correction that **overwrites** `F_cr` -- the same "instantaneous
 relaxation" pattern `anisotropic_flux_projection` (item 3) already uses, not
 a new stiff relaxation-rate source term. Isotropic per-axis, **does not
 require `config.mhd`** (unlike anisotropic transport) -- matches the plan's
 own "1D streaming" staging for this item. When both `streaming` and
-`anisotropic_transport` are enabled, `_iteration_level_updates` applies the
+`anisotropic_transport` are enabled, `_iteration_level_continuous_updates` applies the
 streaming target first and the B-projection second; this combination is a
 documented, plausible, but **not separately verified** approximation (no
 ladder item tests it).
@@ -390,11 +397,14 @@ Design choices, and why they weren't open questions worth asking about:
   transport equations; no other CR-grey source term (`cr_pressure_gradient_
   source`, `cr_adiabatic_work_source`) touches `F_cr` directly either, so
   this matches the established pattern rather than introducing a new one.
-- **Placed in `_iteration_level_updates.py`, not `_time_integrator_sources.py`.**
-  DSA injection is a discrete detect-and-deposit operation (the shock finder
-  is a discrete algorithm, not a smooth field), the same category as
-  `streaming_flux_target`/`anisotropic_flux_projection`/the retired old
-  model's injection -- not a continuous RK-integrated PDE source term.
+- **Placed in `_iteration_level_updates.py`'s `_iteration_level_injections`, not
+  `_time_integrator_sources.py`.** DSA injection is a discrete detect-and-deposit operation (the
+  shock finder is a discrete algorithm, not a smooth field), the same category as wind/SN-driving
+  injection -- not a continuous RK-integrated PDE source term. Grouped with those (rather than
+  with `streaming_flux_target`/`anisotropic_flux_projection`, which are also discrete
+  per-step corrections but live in `_iteration_level_continuous_updates`) since, like wind/SN
+  driving, it's a lump-sum addition to `e_cr` that the driver loop's post-injection dt
+  re-estimate should account for -- see "Resolved: stale-dt-at-injection bug" below.
 - **Cartesian, uniform-grid only** (`area / volume = 1 / grid_spacing`,
   mirroring the retired old model's identical non-spherical-branch formula).
   Matches every grey-CR ladder test's geometry to date; extend if a future
@@ -678,7 +688,8 @@ showing them tracking closely across the *entire* column, not just at isolated p
 ## Resolved: SILCC-ISM project M3 (episodic supernova-driving module)
 
 New module `astronomix/_modules/_sn_driving/` (`SNDrivingConfig`/`SNDrivingParams`,
-`_inject_supernovae`), wired into `_iteration_level_updates.py` before cooling -- resolving gap
+`_inject_supernovae`), wired into `_iteration_level_updates.py`'s `_iteration_level_injections`
+before cooling -- resolving gap
 #4's injection-ordering question in the direction the plan already anticipated (matching wind's
 placement, so freshly-deposited hot ejecta isn't clipped by cooling before hydro ever advects it).
 New pytest `pytests/stratified_ism/sn_driving_energy_conservation.py`.
@@ -705,7 +716,7 @@ undistorted footprint instead of being truncated by the domain edge.
 
 **Real bug found and fixed (worth flagging for any future point-injection-in-a-periodic-box
 work):** the first version computed the taper weight -- and, critically, its normalizing sum --
-over the full *ghost-padded* array `_iteration_level_updates` actually operates on. For a site
+over the full *ghost-padded* array `_iteration_level_injections` actually operates on. For a site
 near a periodic edge this double-counts real domain volume in the normalization (a ghost cell
 mirrors a real interior cell on the far side, so both pick up weight), and then silently discards
 the ghost cells' share of the deposit the next time the boundary handler refreshes them from the
@@ -732,7 +743,7 @@ ladder item 9 used to instrument its per-step `e_cr` budget (2026-09-09). Calibr
 `~7.2e-10` (CR-active) / `~7.8e-15` (CR-inactive) against a `1e-6` tolerance. Full numbers:
 PROGRESS.md's 2026-09-12 entry.
 
-## Resolved: SILCC-ISM project M3.5 (SN driving + K&I cooling combined) -- and an open bug found, not fixed
+## Resolved: SILCC-ISM project M3.5 (SN driving + K&I cooling combined) -- and a real bug found, since fixed (see below)
 
 New pytest `pytests/stratified_ism/sn_driving_with_cooling.py` (three tests: a lightweight
 pre-cooling sanity check, an M1-calibration-point guard-engagement regression check, and a
@@ -773,17 +784,12 @@ canonical narrative: the pytest's own module docstring):
    -- measured directly, the pre-injection ambient `dt` was `~441824x` larger than the
    correctly-sized post-injection `dt` at this state.
 
-**This bug is real and open, reported here per explicit user direction rather than fixed.** It is
-a gap in shared code (`time_stepping/time_integration.py`'s per-step `dt`-computation order
+**This bug was real and open at the time -- reported here per explicit user direction rather than
+fixed that session. It has since been fixed; see "Resolved: stale-dt-at-injection bug" below.**
+It was a gap in shared code (`time_stepping/time_integration.py`'s per-step `dt`-computation order
 relative to `_iteration_level_updates`), not specific to SN driving -- any future module injecting
-a large, localized, mid-run perturbation (not via the initial condition) would hit the same gap.
-Neither `_iteration_level_updates.py` nor `time_stepping/time_integration.py` was modified this
-session. A plausible fix shape (not implemented, not verified): recompute/re-clamp `dt` after
-`_iteration_level_updates`'s injection step runs, before the hydro evolve consumes it -- or have
-`_inject_supernovae` report the post-injection state's own CFL requirement back to the loop.
-**Strongly consider fixing this before M4**, which combines SN driving with a much longer,
-elaborate run that cannot rely on M3.5's own workaround (avoiding the stochastic trigger path
-entirely) since M4's whole point is repeated SN driving over time.
+a large, localized, mid-run perturbation (not via the initial condition) would have hit the same
+gap.
 
 **Closing test, redesigned around finding 5:** builds the SN deposit into the initial condition
 (not via `SNDrivingConfig`'s trigger, sidestepping the bug since `time_integration`'s first `dt`
@@ -792,6 +798,86 @@ radiative-phase-onset timescale (`3e4` yr). Calibrated: NaN-free; mass conserved
 relative error; peak temperature drops `99.8%` from the raw-injection `2,592,683` K to `5002.8` K
 at t_end while staying far below a `1.5x` raw-injection runaway ceiling; minimum temperature
 matches the ambient equilibrium (`41.77` K) exactly.
+
+## Resolved: stale-dt-at-injection bug (2026-09-14)
+
+Before this fix, `time_stepping/time_integration.py`'s `_step` computed one `dt` per step from
+the pre-injection state and reused it unchanged for every downstream module (injections, cooling,
+forcing, the hydro evolve) -- so a lump-sum injection landing mid-step (SN driving's `E_SN` dump,
+in particular) left the rest of that same step running at a `dt` sized for the calm state it just
+blew past. See M3.5's writeup above for the discovery (a `~441824x` measured discrepancy between
+the pre- and post-injection CFL estimate at the triggering step).
+
+**Design discussion before implementing:** four candidate fix shapes were compared with the user
+-- (1) a global, unconditional fix; (2) the same split gated behind an opt-in flag; (3) each
+injection module reporting its own CFL requirement back to the loop, with a full adaptive
+retry/reject substep; (4) other. **User picked (1).** Two things surfaced during that discussion
+worth recording for future reference:
+
+- **The bug is not CR-specific, and a CR-gated fix (an early framing of option 2) would not have
+  covered the case that actually needs it.** M3.5 (where the bug was found) and M4 (which it
+  blocks) both run with `cosmic_ray_grey_config` off -- the real trigger condition is "an episodic,
+  lump-sum injection module is active" (SN driving today; wind and CR-DSA shock injection carry
+  the same structural risk), not "CR is on."
+- **Option (3)'s full adaptive retry was judged more machinery than the bug needs, and riskier.**
+  `time_stepping/_time_loop.py` already runs the per-step body inside `fori_loop`/`while_loop`/
+  `checkpointed_while_loop` (the last specifically built to keep reverse-mode AD working through an
+  adaptive-trip-count loop); nesting a second, data-dependent-trip-count reject/retry loop inside
+  that for one re-check is a real complexity and AD-risk increase for a bug that a single
+  re-estimate (reusing the existing, already CR/MHD-aware `_cfl_time_step`/
+  `_source_term_aware_time_step`/`_cfl_time_step_fd*` estimators) fully addresses.
+
+**Implementation:** `_iteration_level_updates.py`'s single `_iteration_level_updates` function is
+now two: `_iteration_level_injections` (stellar wind, SN driving, and CR-DSA shock injection --
+all three lump-sum/discontinuous updates to `primitive_state`, previously scattered across the old
+function's start and end) and `_iteration_level_continuous_updates` (cooling, the neural-net/CNN
+correctors, viscosity, turbulent forcing, frame tracking, CR streaming/anisotropic-transport
+corrections, the positivity floor -- unchanged relative order). `time_integration.py`'s `_step`
+factors the pre-existing FV/FD x mhd/hydro x source-term-aware dt-estimation branch into a new
+`_estimate_cfl_dt` helper, calls it once as before, applies `_iteration_level_injections`, then --
+only when `not config.fixed_timestep` and at least one of `wind_config.stellar_wind` /
+`sn_driving_config.sn_driving` / `cosmic_ray_grey_config.diffusive_shock_acceleration` is active
+(a static, config-level condition -- configs using none of the three compile to exactly the same
+single-estimate path as before) -- calls `_estimate_cfl_dt` again on the post-injection state and
+takes `jnp.minimum(old_dt, new_dt)`, before running `_iteration_level_continuous_updates` and the
+hydro evolve at the final `dt`. `config.fixed_timestep` (M3's exact-PRNG-replay energy-conservation
+technique) is deliberately exempted, since re-estimating there would desync the replay from the
+run's actual `dt` sequence.
+
+**Why the recompute point had to move inside `_iteration_level_updates`, not just before the hydro
+evolve** (correcting the earlier "plausible fix shape" sketch above): cooling itself, which used
+to run right after SN injection inside the old combined function, was directly implicated in
+Finding 5 above (cooling alone at the stale `dt` drove cells to an unphysical `98` K) -- so the
+split has to separate injections from cooling/forcing/etc., not just from the hydro evolve.
+
+**Reordering risk check (CR-DSA injection moved from last in the old function to grouped with
+wind/SN driving):** every `pytests/cosmic_rays_grey/*.py` config using
+`diffusive_shock_acceleration=True` was checked against `cooling`/`turbulent_forcing`/
+`neural_net_force`/`cnn_mhd_corrector`/`diffusion`/`frame_tracking` -- none combine DSA injection
+with any module now running after it, consistent with this module's "isolate one thing per test"
+convention throughout items 7-11, so the reordering changes none of their computed results.
+
+**Known, deliberately accepted residual gap:** N-body's RK4 advance must still run before
+`_iteration_level_injections` (multi-source stellar wind needs the freshly-advanced orbit position
+for its injection sites that same step), so it necessarily uses the pre-recompute `dt` even on a
+step where SN driving/wind/CR-DSA later shrinks it -- a currently-unexercised combination (no
+CR-grey ladder test uses `nbody`), flagged in a code comment analogous to the standing
+Lax-Friedrichs CR-dissipation gap above.
+
+**Regression suite re-run (2026-09-14), all pass:** items 3, 5, 7, 8, 10, 11 and both SN-driving
+tests (M3, M3.5) -- run individually on a pinned GPU to avoid cross-run memory contention, which
+produced two misleading artifacts (an apparent OOM and an apparent hang) in an earlier batched run
+that both cleared on an isolated rerun. See `PROGRESS.md`'s 2026-09-14 entry for the full list.
+
+**M3.5's closing test redesigned (2026-09-14, user-requested) to exercise the real stochastic
+trigger directly, as evidence the fix works.** `test_sn_injection_with_cooling_stability` now runs
+the actual `SNDrivingConfig` trigger under real adaptive CFL stepping (not the old
+initial-condition workaround) -- same ambient setup, `EXPECTED_N_TRIGGERS=2`. Result at the default
+seed: no NaNs, peak temperature `9041` K above ambient (proof a trigger fired), mass conserved to
+`9.14e-6` (recalibrated from a stale `1e-9` -- this test's real random site can, unlike M3's
+periodic box or the old box-centered deterministic test, land close enough to the open boundary
+for real mass to leave the domain; confirmed via boundary-face density, not a bug). Full numbers:
+PROGRESS.md's 2026-09-14 entry; full narrative: that pytest's own module docstring.
 
 ## BC handling per scheme
 

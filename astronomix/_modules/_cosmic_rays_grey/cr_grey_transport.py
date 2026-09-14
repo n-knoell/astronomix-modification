@@ -151,7 +151,7 @@ def grey_cr_flux_terms(
     # (evolve_state._split_gas_and_magnetic_state) and are not part of
     # ``primitive_state`` here -- so this function structurally cannot read
     # B. Projecting F_cr onto B instead happens once per full step, before
-    # the hydro update, in _iteration_level_updates (see that module and
+    # the hydro update, in _iteration_level_continuous_updates (see that module and
     # anisotropic_flux_projection's docstring) -- by the time this function
     # runs, F_cr is already B-aligned if anisotropic_transport is on, so the
     # isotropic-looking flux below is correct either way.
@@ -277,7 +277,7 @@ def anisotropic_flux_projection(
     gas-only Riemann solve where :func:`grey_cr_flux_terms` runs, so this
     function cannot be called from there. Instead it's applied once per full
     step, as a primitive-state correction in
-    ``astronomix._modules._iteration_level_updates`` (alongside the ``e_cr``
+    ``astronomix._modules._iteration_level_continuous_updates`` (alongside the ``e_cr``
     positivity floor), overwriting ``F_cr`` with its B-projected value
     *before* the hydro update runs -- so by the time
     :func:`grey_cr_flux_terms` reads ``F_cr`` mid-step, it is already
@@ -347,7 +347,7 @@ def streaming_flux_target(
     e_cr`` (regularized via :func:`regularized_streaming_sign` instead of a
     hard ``sign``, for the same adjoint reason as everywhere else in this
     module). Applied once per full step in
-    ``astronomix._modules._iteration_level_updates`` as a discrete
+    ``astronomix._modules._iteration_level_continuous_updates`` as a discrete
     correction that **overwrites** ``F_cr`` -- the same "instantaneous
     relaxation" pattern :func:`anisotropic_flux_projection` already uses for
     item 3 (see that function's docstring), not a new stiff relaxation-rate
@@ -356,7 +356,7 @@ def streaming_flux_target(
     Isotropic per-axis, not projected along a true magnetic-field direction
     -- this does not require ``config.mhd`` (matches the plan's own "1D
     streaming" staging for this ladder item). If both ``streaming`` and
-    ``anisotropic_transport`` are enabled, ``_iteration_level_updates``
+    ``anisotropic_transport`` are enabled, ``_iteration_level_continuous_updates``
     applies this correction first and the B-projection second, so the
     combination is "isotropic streaming target, then projected onto B" --
     a reasonable but **not separately verified** approximation (no ladder

@@ -5,8 +5,9 @@ Assembles the physics source terms that are added to the conserved state inside
 the time integrator (rather than as a discrete per-step update): stellar wind,
 cooling, self-gravity, viscosity and thermal conduction. Which terms are active
 depends on the configuration and the solver mode. Its counterpart is
-``_iteration_level_updates``, which applies physics as a discrete update on the
-primitive state at the start of every step.
+``_iteration_level_injections``/``_iteration_level_continuous_updates``,
+which apply physics as a discrete update on the primitive state at the start
+of every step.
 
 TODO: streamline the finite-difference and finite-volume code paths.
 """

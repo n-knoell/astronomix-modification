@@ -43,7 +43,7 @@ building this test, neither specific to anisotropic transport):
    the magnetic-field rows from the state array for that half-step. B is
    therefore structurally unavailable at that call site. The projection is
    applied instead once per full step, *before* the hydro update, in
-   ``astronomix._modules._iteration_level_updates`` (alongside the existing
+   ``astronomix._modules._iteration_level_continuous_updates`` (alongside the existing
    ``e_cr`` positivity floor) -- see that function and
    ``anisotropic_flux_projection``'s docstring for the consequence (a small,
    per-step, non-accumulating residual: the isotropic per-axis pressure

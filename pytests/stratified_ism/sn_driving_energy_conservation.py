@@ -39,7 +39,7 @@ two facts specific to this setup:
 
 **Real bug found and fixed while building this test:** the first version
 computed the tanh-taper weight (and its normalizing sum) over the full
-*ghost-padded* array ``_iteration_level_updates`` operates on. For a site
+*ghost-padded* array ``_iteration_level_injections`` operates on. For a site
 drawn near a periodic edge, that double-counts real domain volume (a nearby
 ghost cell mirrors a real interior cell on the far side, so both receive
 weight) in the normalization, and then the ghost cells' share of the deposit
