@@ -506,6 +506,33 @@ def _evolve_gas_state_unsplit_inner(
         conservative_states, gamma, config, registered_variables
     )
 
+    # Positivity floor: this unsplit scheme sums all axes' flux-divergence
+    # contributions into the one conserved-state update above *before* ever
+    # recovering the primitive state -- unlike the per-axis Strang-split
+    # counterpart (_evolve_state_along_axis, which recovers/checks
+    # positivity once per axis), a single call here can drive a near-vacuum
+    # cell to negative pressure even though every individual axis's
+    # reconstruction and flux were themselves clean. That negative pressure
+    # then poisons the very next Riemann solve with NaN, since nothing else
+    # downstream floors it -- confirmed via debug instrumentation against a
+    # real SILCC-ISM M4 run (see PROGRESS.md's 2026-09-15 "continued to the
+    # deepest level yet" entry). Unconditional, not gated on
+    # config.positivity_config.per_stage_mode -- that flag is dead code for
+    # this solver path (only the finite-difference SSPRK integrator reads
+    # it; see the same PROGRESS.md entry).
+    primitive_state = primitive_state.at[registered_variables.density_index].set(
+        jnp.maximum(
+            primitive_state[registered_variables.density_index],
+            params.minimum_density,
+        )
+    )
+    primitive_state = primitive_state.at[registered_variables.pressure_index].set(
+        jnp.maximum(
+            primitive_state[registered_variables.pressure_index],
+            params.minimum_pressure,
+        )
+    )
+
     if config.boundary_handling == GHOST_CELLS:
         primitive_state = _boundary_handler(primitive_state, config, registered_variables, params)
 

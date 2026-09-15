@@ -76,6 +76,7 @@ def _iteration_level_injections(
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
     current_time: Union[float, Float[Array, ""]],
+    cooling_shield=None,
 ):
     """
     Apply the discrete, lump-sum injections that run before each hydro step.
@@ -98,9 +99,16 @@ def _iteration_level_injections(
         helper_data: The helper data.
         registered_variables: The registered variables.
         current_time: The current simulation time.
+        cooling_shield: The persistent per-cell "time remaining shielded"
+            field consumed by delayed-cooling gating in
+            ``_iteration_level_continuous_updates`` (see
+            ``SNDrivingConfig.delayed_cooling``'s docstring), or ``None``
+            when that flag is off. Extended by SN driving's own trigger
+            footprint when active; passed through unchanged otherwise.
 
     Returns:
-        ``(key, primitive_state)`` with the injections applied.
+        ``(key, primitive_state, cooling_shield)`` with the injections
+        applied and the (possibly extended) cooling shield field.
     """
 
     # Stellar wind.
@@ -124,7 +132,7 @@ def _iteration_level_injections(
     # (potentially enormous) CFL impact is folded into the driver's
     # post-injection dt re-estimate.
     if config.sn_driving_config.sn_driving:
-        key, primitive_state = _inject_supernovae(
+        key, primitive_state, cooling_shield = _inject_supernovae(
             key,
             primitive_state,
             dt,
@@ -132,6 +140,7 @@ def _iteration_level_injections(
             params,
             registered_variables,
             helper_data,
+            cooling_shield,
         )
 
     # Grey two-moment CR diffusive shock acceleration: detect shocks with the
@@ -158,7 +167,7 @@ def _iteration_level_injections(
             dt,
         )
 
-    return key, primitive_state
+    return key, primitive_state, cooling_shield
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
@@ -172,6 +181,7 @@ def _iteration_level_continuous_updates(
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
     current_time: Union[float, Float[Array, ""]],
+    cooling_shield=None,
 ) -> STATE_TYPE:
     """
     Apply the per-step continuous-rate updates that run after
@@ -193,23 +203,48 @@ def _iteration_level_continuous_updates(
         helper_data: The helper data.
         registered_variables: The registered variables.
         current_time: The current simulation time.
+        cooling_shield: The persistent per-cell "time remaining shielded"
+            field (see ``SNDrivingConfig.delayed_cooling``'s docstring), or
+            ``None`` when that flag is off. Gates the cooling update below
+            and decays by ``dt`` (floored at 0) each call; passed through
+            unchanged when the flag is off.
 
     Returns:
-        ``(key, forcing, primitive_state)`` with the iteration-level updates
-        applied.
+        ``(key, forcing, primitive_state, cooling_shield)`` with the
+        iteration-level updates applied.
     """
 
     # Cooling.
     # In the finite-difference case this is instead handled as a source term
     # inside the hydro integrator.
     if config.cooling_config.cooling and config.solver_mode == FINITE_VOLUME:
-        primitive_state = update_pressure_by_cooling(
+        cooled_state = update_pressure_by_cooling(
             primitive_state,
             registered_variables,
             config.cooling_config,
             params,
             dt,
         )
+        if config.sn_driving_config.delayed_cooling:
+            # Cells still shielded (cooling_shield > 0, set at a recent SN
+            # trigger's footprint -- see _iteration_level_injections) keep
+            # their pre-cooling pressure this step; everywhere else the
+            # cooled pressure applies as normal.
+            shielded = cooling_shield > 0.0
+            primitive_state = primitive_state.at[
+                registered_variables.pressure_index
+            ].set(
+                jnp.where(
+                    shielded,
+                    primitive_state[registered_variables.pressure_index],
+                    cooled_state[registered_variables.pressure_index],
+                )
+            )
+        else:
+            primitive_state = cooled_state
+
+    if config.sn_driving_config.delayed_cooling:
+        cooling_shield = jnp.maximum(cooling_shield - dt, 0.0)
 
     # Neural-network body force.
     if config.neural_net_force_config.neural_net_force:
@@ -381,4 +416,4 @@ def _iteration_level_continuous_updates(
                 registered_variables,
             )
 
-    return key, forcing, primitive_state
+    return key, forcing, primitive_state, cooling_shield

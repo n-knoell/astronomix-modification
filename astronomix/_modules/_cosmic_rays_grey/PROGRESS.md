@@ -4,6 +4,906 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-15, later same day: SILCC-ISM project M4 -- DONE. Root cause of the stall was cooling stiffness, not the positivity floor at all; fixed via opt-in adaptive cooling subcycling; full run completes cleanly through `t_end`)
+
+**Picked up exactly where the previous session paused (the problem-scale-floor run that stalled
+at a fixed percentage, GPU pinned at ~100% but simulation time frozen) and continued
+autonomously per explicit user instruction ("keep going ... until you accomplish the goal of M4
+or hit the session usage limit").** Reproduced the stall directly (GPU-pinned rerun) with a new,
+throttled `jax.debug.callback` probe added temporarily inside `_step` (removed again once done,
+`grep -n DEBUG` on `time_stepping/time_integration.py` clean) printing `dt`/`rho_min`/`p_min`/
+`speed_max` every 2000 steps or whenever `dt<1e-9`. **This immediately refuted the previous
+session's leading hypothesis:** at the stall (`n=2000`, `t=0.689`, `dt=9.35e-7`), `rho_min=
+3.44e-3` is ~100x *above* the positivity floor (`3.25e-5`), not pinned at it -- so "cells sitting
+at the new cold floor" was not what was happening. Deriving the cell's temperature from its
+captured `rho`/`p` gives `T~7591` K at `n_H~0.1 cm^-3` -- ordinary warm/diffuse post-blowout gas,
+not floor-temperature gas.
+
+**Root cause: `_cfl_time_step`'s cooling-time constraint (`dt_cool`, added at M1 as a guard
+against `update_temperature_implicit`'s fixed-point iteration diverging for stiff `dt`) is a
+*domain-wide minimum* -- one persistently fast-cooling cell anywhere pins the *entire*
+simulation's `dt` to that cell's own local cooling time forever.** M4's SN-driven blow-out
+continuously produces exactly this kind of cell (diffuse, recently-shocked-then-unshielded gas
+in the K&I curve's fast-cooling regime), so once the run reaches that regime, `dt` collapses and
+stays collapsed -- a real stall, not a transient dip, distinct from (and unrelated to) the
+positivity-floor NaN mechanism this and the previous several sessions were fixing. The fix that
+worked for the *NaN* (the local positivity floor in `_evolve_gas_state_unsplit_inner`,
+problem-scale floor values) is correct and stays; it just wasn't the stall's cause.
+
+**Fix: `CoolingConfig.subcycle_stiff_cooling` (new, opt-in, default `False` -- every existing
+config/test is bit-for-bit unaffected).** When set, `update_pressure_by_cooling` calls a new
+`update_temperature_implicit_subcycled` (`_cooling.py`) instead of the plain
+`update_temperature_implicit`, and `_cfl_time_step` (`_timestep_estimator.py`) skips its
+`dt_cool` term entirely (the stiffness it guards against is now handled internally instead of by
+bounding the global hydro `dt`). Two implementation attempts, the first of which failed
+instructively:
+
+1. **First attempt (wrong): a `jax.lax.fori_loop` over a *fixed* number of sub-steps, sized once
+   from the state's *initial* relaxation rate.** Validated well against the calibrated stiff case
+   from `ki_cooling_thermal_relaxation.py`'s `test_ki_cooling_cfl_guard` (`n_H=10`, `T=1e4` K,
+   `dt=14.5x` the local cooling time: subcycled gives `5939` K vs. the fine-ODE reference's
+   `5855` K, 1.4% error, vs. the naive single-step call's `10068` K / 72% error) -- but a
+   synthetic 1000x-more-extreme case (`dt=1000x` the initial cooling time, relaxing most of the
+   way to a `~160` K equilibrium) diverged badly (`78324` K vs. reference `160.5` K): the
+   *initial* rate underestimates how stiff the trajectory gets as `T` keeps dropping, so a fixed
+   sub-step count under-resolves the later, stiffer part, and the fixed-point solve inside an
+   under-resolved sub-step can itself diverge -- compounding across every subsequent sub-step
+   since each starts from the previous (wrong) state.
+2. **Second attempt (used): an adaptive `jax.lax.while_loop`** that re-derives the safe local
+   sub-step (`dt_sub * rate <= 0.1`, from the *current* state, re-evaluated every sub-step) and
+   accumulates elapsed time until it reaches the full `time_step`, using plain explicit
+   (forward-Euler) sub-steps rather than chaining fixed-point solves -- once a sub-step is kept
+   inside the stability target, explicit is simpler and avoids the fixed-point's own
+   non-convergence risk entirely. Re-validated: mild case `5536` K (5.4% error, still far better
+   than the naive 72%), extreme 1000x case `147.4` K (8.2% error, vs. the first attempt's ~490x
+   overshoot) -- degrades gracefully instead of diverging. `max_substeps=20000` bounds worst-case
+   cost; timed on an M4-grid-shaped (`32x32x256`) field: `0.002s` at the mild calibrated
+   stiffness, `0.069s` at the 1000x ratio (close to what the real stalled cell implied), `1.85s`
+   only at a deliberately-extreme synthetic `1e5x` stress test far beyond anything the real run
+   demanded.
+
+**Verified the default (non-subcycled) path is unaffected before spending GPU time on the real
+run:** `ki_cooling_thermal_relaxation.py` (M1's cooling regression) and
+`sn_driving_with_cooling.py` (M3.5's SN+cooling regression) both re-run clean (exit 0) with no
+changes to their configs, since `subcycle_stiff_cooling` defaults to `False` everywhere except
+the M4 script.
+
+**Real M4 run (`subcycle_stiff_cooling=True` set in the M4 script's `CoolingConfig`, GPU-pinned,
+progress bar monitored end-to-end, auto-killing any run stuck at a fixed percentage for 3+
+minutes per this session's instructions): completed cleanly through the full `t_end` (`~7.39e6`
+yr, all 40 snapshots), no NaNs, no stall.** A first re-run attempt (before this fix, with only
+the previous session's problem-scale floor) reproduced the documented stall exactly (frozen at
+9.1% for 3+ min, GPU pinned near 100%) and was killed per this session's instructions; the second
+run, with `subcycle_stiff_cooling=True` added, sailed through the 9.1% and 34.4% stall points
+from this and the previous session and ran to completion. The resulting trajectory shows genuine
+repeated SN-driven disruption/re-collapse cycles -- midplane `n_H` swinging between `~20-35`
+cm^-3 (collapsed) and `~0.001-0.4` cm^-3 (blown out) several times over the run, with coincident
+`max(T)` spikes to `1e7-1e8` K at each disruption -- exactly the qualitative behavior M4 was
+scoped to demonstrate (episodic SN driving able to disrupt and re-trigger collapse, not just
+overcool/collapse monotonically like M2's baseline). Diagnostic plot:
+`pytests/stratified_ism/pics/m4_stratified_column_sn_driving_delayed_cooling.svg`.
+
+**Operational note for future GPU-pinned background runs:** an early launch attempt in this
+session backgrounded an entire `cd && source && LOG=... && nohup ...` chain with a single
+trailing `&` -- since `&` applies to the whole `&&`-chained list, the `LOG` variable assignment
+happened inside the backgrounded subshell, not the calling shell, so a subsequent `tail "$LOG"`
+in the calling shell failed (empty variable) even though the backgrounded run itself started
+fine. This left an orphaned, unmonitored duplicate process running on the GPU for ~35 minutes
+before being noticed and killed. Fix: assign shell variables like `LOG=...` on their own line
+(so they execute in the foreground/current shell) before backgrounding only the actual long-running
+command.
+
+**M4 is now the ladder's SILCC-ISM project (item 12) fully complete through its planned
+milestones (M0a through M4).** `subcycle_stiff_cooling` is a generally-useful opt-in fix (not
+M4-specific) worth keeping in mind for any future module that can locally drive the K&I curve
+into its fast-cooling regime for an extended stretch, not just SN driving.
+
+## Where things stand (2026-09-15 continued to session's end, SILCC-ISM project M4 -- the problem-scale positivity floor no longer NaNs quickly, but the run stalls/hangs instead -- a new, unresolved, unrelated-looking problem; session paused here)
+
+**User picked "try a problem-scale floor directly" over first instrumenting to confirm the
+1e-14-is-too-small hypothesis.** Left the floor mechanism in `_evolve_gas_state_unsplit_inner`
+unchanged (still reads `params.minimum_density`/`minimum_pressure` generically) and instead
+overrode those two `SimulationParams` fields from the M4 script itself, tied to this run's own
+density scale rather than the codebase-wide `1e-14` default:
+
+```
+MIN_DENSITY_CODE = RHO_MIDPLANE_CODE * 1e-4       # ~3.25e-5 code units
+MIN_PRESSURE_CODE = get_pressure_from_temperature(MIN_DENSITY_CODE, FLOOR_TEMPERATURE_CODE, ...)
+```
+
+(`FLOOR_TEMPERATURE_CODE` is this module's existing 10 K floor temperature, already used by K&I
+cooling -- reused here so the floor represents "cold gas at floor density," not an arbitrary
+number.) Printed both new values at run start for visibility. This is a pure `SimulationParams`
+override in the M4 script; no further changes to `_evolve_gas_state_unsplit_inner` were needed,
+since it already reads these fields generically.
+
+**Result: inconclusive on the original bug, but NOT because it still NaNs quickly -- this attempt
+did not reproduce the earlier fast NaN at all, but it also never finished.** The re-run (GPU 3, this
+session) ran far longer than every earlier attempt -- all of which NaN'd within ~20-26 minutes of
+wall time -- reaching over 70 minutes of continuous 97-100% GPU/CPU utilization with no sign of
+being stuck (still actively computing, not a frozen process) before being terminated (see below).
+**Separately, the user copied the identical script
+(`m4_stratified_column_sn_driving_delayed_cooling_copy.py`, byte-identical, confirmed via `diff`)
+and ran it themselves on a different GPU, watching the real progress bar directly (my own run's
+progress was invisible due to a `| tail -200` piping mistake that buffers all output until the
+process exits, an avoidable monitoring error worth not repeating) -- their run stalled at a fixed
+34.4% progress, for a reason not yet diagnosed.** Two independent runs both failing to progress
+normally (mine silently for 70+ minutes with no way to check its percentage, the user's own visibly
+frozen at a specific point) is strong corroborating evidence this is the same real, reproducible
+phenomenon, not a fluke of one run.
+
+**Not a NaN -- a stall/hang, a qualitatively new failure mode distinct from every previous entry in
+this investigation.** Not yet diagnosed at all. A plausible, not-yet-checked hypothesis: the
+adaptive-`dt` CFL estimator may be driven pathologically small once a cell sits at the new floor
+(e.g. if `config.source_term_aware_timestep` folds in a cooling-stiffness criterion, evaluated at
+the floor's own cold, `FLOOR_TEMPERATURE_CODE=10` K state, which could sit on a numerically stiff
+part of the K&I curve) -- producing a real adaptive loop that is *technically* still advancing but
+via such enormous numbers of vanishingly small steps that it never completes in any practical wall
+time, which would look exactly like "stuck at a fixed percentage" to a live progress bar without
+ever being a true deadlock. **Not confirmed** -- no instrumentation was added to check this before
+the session ended.
+
+**Background task terminated by user request** (`kill` on the driving bash process and its python
+child; confirmed via the task's own completion notification, exit code 144 = SIGTERM, and via
+`nvidia-smi --query-compute-apps` showing no remaining process of ours). **Session paused here per
+explicit user request ("document the findings for now, we will pick it up here later") -- do not
+resume experimentation without the user restarting this thread.**
+
+**Where a future session should pick this up:** the local floor mechanism itself
+(`_evolve_gas_state_unsplit_inner`'s unconditional clamp, still in place, not reverted) is a real,
+defensible fix for the negative-pressure-at-vacuum mechanism confirmed two entries above --
+independent of whatever is causing this new stall, and worth keeping. The problem-scale floor
+*values* (`MIN_DENSITY_CODE`/`MIN_PRESSURE_CODE` in the M4 script, also still in place) may or may
+not be implicated in the stall -- this is exactly the open question. Suggested next steps, not yet
+discussed with the user: (a) instrument `_estimate_cfl_dt`/`_step` (same debug-print technique used
+throughout this investigation) to directly observe whether `dt` collapses toward some tiny,
+non-recovering value once the floor first engages; (b) try a substantially less aggressive floor
+(e.g. much closer to the codebase default, or scaled differently) to see whether the stall's onset
+depends on how deep the floor sits; (c) check whether disabling `delayed_cooling` (isolating the
+floor fix from the SN-driving/cooling interaction entirely) still stalls, to determine whether the
+combination is required to reproduce it or whether the floor alone is enough.
+
+## Where things stand (2026-09-15 continued still further, SILCC-ISM project M4 -- the local positivity floor fix had ZERO effect, likely because the generic minimum_density/minimum_pressure defaults are the wrong scale for this problem)
+
+**User picked "implement the local floor fix" over continuing to test `split=SPLIT`.** Added an
+unconditional positivity floor to `_evolve_gas_state_unsplit_inner` (`_finite_volume/
+_state_evolution/evolve_state.py`), right after `primitive_state_from_conserved` at the end of the
+per-axis loop -- `jnp.maximum(density, params.minimum_density)` /
+`jnp.maximum(pressure, params.minimum_pressure)` -- exactly the point the debug instrumentation
+identified as where the negative pressure first appears. Reverted the M4 script's `split=SPLIT`/
+`time_integrator=MUSCL` experiment back to defaults (MINMOD, unsplit, RK2_SSP) for a clean test of
+this fix in isolation.
+
+**Result: no effect whatsoever.** Bit-for-bit identical to the original, completely unfixed
+baseline through snapshot 13 (expected -- the floor is a no-op everywhere before the failure point,
+confirmed by the debug instrumentation two entries above to occur strictly between snapshot 13 and
+14), and **still NaNs at the identical snapshot 14.** Verified the code itself is correct and
+reachable: the edit sits inside `_evolve_gas_state_unsplit_inner` (confirmed via `sed`/`grep` on the
+function boundaries), the same exact call site the debug prints fired from in the investigation two
+entries above, so this isn't a case of dead/unreached code.
+
+**Most likely explanation, not yet independently confirmed: the floor VALUES are the wrong scale
+for this problem, not the floor mechanism's placement.** `SimulationParams.minimum_density`/
+`minimum_pressure` default to `1e-14` (`simulation_params.py`), and M4's own `SimulationParams(...)`
+call never overrides them. M4's actual density scale is `RHO_MIDPLANE_CODE~0.325` code units (the
+`n_H=10` calibration point) -- the negative-pressure cell found via instrumentation had
+`rho~6.9e-4`, already tiny relative to ambient, but flooring it all the way down to `1e-14` (~25
+trillion times smaller than the box's ambient density) doesn't recover anything physically
+sensible -- it plausibly creates an even sharper vacuum-level density discontinuity against its
+still-normal neighbors than the unfloored negative-pressure state did, likely reproducing
+essentially the same category of Riemann-solver failure just as fast (or via a closely adjacent
+pathway that happens to fail by the same snapshot). `1e-14` is a reasonable floor for whatever
+regime the rest of the codebase's tests operate in, but not for this specific milestone's density
+scale.
+
+**Not yet independently confirmed** (would need the same debug-instrumentation technique, this time
+checking whether the floor actually engages and what happens in the very next Riemann solve
+afterward) **-- paused to report this negative-but-informative result and get direction on the
+floor value itself**, rather than guess at a replacement value and burn another ~20 minutes of GPU
+time on a blind retry.
+
+## Where things stand (2026-09-15 continued yet another level, SILCC-ISM project M4 -- SPLIT+MUSCL ran cleanly but the result is inconclusive on the specific bug, and surfaced a different, likely pre-existing failure mode)
+
+**With `time_integrator=MUSCL` added, `split=SPLIT` ran without any config error and reached a
+materially different, farther trajectory than every earlier attempt.** Per-snapshot summary:
+density rises smoothly and monotonically the entire run (`n_H_mid`: `10.0 -> 10.8` through snapshot
+9, then `11.7 -> 12.3 -> 13.3 -> 18.4 -> 40.8 -> 48.5` through snapshot 15), with only a mild,
+gradual temperature rise (`7.6e3 -> 1.86e4` K) -- nothing resembling the unsplit run's dramatic,
+disruptive SN-driven spike/blow-out (which reached `1.3e7` K and crashed density from `35.8` down to
+`0.43` before NaNing). This run instead NaNs at snapshot 16 (`t` between `2.77e6` and `~2.96e6` yr)
+while density is still *climbing*, at `n_H~48+` -- the opposite regime (high, still-increasing
+density, not a rarefied/blown-out one) from the mechanism root-caused two entries above.
+
+**Not a clean confirmation either way on the original bug.** This run's own SN triggers landed at
+different times/sites than the unsplit run's (expected: MUSCL/SPLIT numerics differ from MINMOD/
+unsplit from step 1, so the whole dt/PRNG trajectory diverges immediately, not just after a
+trigger) -- and this particular trajectory never produced a disruptive-enough SN event to blow the
+column out to low density at all, so **the near-vacuum negative-pressure mechanism was never
+exercised in this run one way or the other.** The eventual NaN, at high and still-rising density
+with only mild heating, looks instead like this project's own separately-documented, pre-existing
+issue: **M2's baseline finding that this exact box/resolution/IC undergoes genuine, unmitigated
+thermal-gravitational runaway collapse with no equilibrium (see the 2026-09-11 M2 entry) -- a real
+physics result, not a numerical bug, that predates SN driving entirely and was never claimed to be
+fixed by any of delayed cooling, momentum injection, or this axis-splitting change.**
+
+**Interpretation, not yet confirmed further:** `split=SPLIT` may well have avoided the specific
+negative-pressure-at-vacuum mechanism (consistent with the code-path reasoning: primitives are
+recovered once per axis rather than after combining all three, so no single evolve call can
+"secretly" go negative from the combined effect the way the unsplit path did) -- but this run
+doesn't prove it, since density never got low enough to test it. **Not yet decided how to proceed --
+paused to report this ambiguous-but-promising result and get direction** rather than keep spending
+GPU time chasing a specific low-density state without a plan (e.g. trying other random seeds under
+SPLIT to see if any produces a real blow-out and, if so, whether it survives; or treating this as
+good enough evidence to adopt SPLIT and separately tackle M2's own baseline collapse limit, which is
+outside this bug's scope).
+
+## Where things stand (2026-09-15 continued a level further, SILCC-ISM project M4 -- trying config.split=SPLIT (Strang) as a cheaper FV-only alternative to switching solver modes)
+
+**User asked, before picking a fix scope, whether switching to FINITE_DIFFERENCE with a "split"
+formalism would sidestep this entirely -- investigated directly rather than guessed.** Found: FD in
+this codebase has no axis-split formalism at all (`_ssprk.py`'s `rhs` always accumulates all three
+axes' flux divergence into one combined update per stage, structurally identical to FV's unsplit
+path) -- but FD's SSPRK/LSRK4 integrators do call `_apply_stage_positivity` (using
+`config.positivity_config.per_stage_mode`, and honoring `nan_safe`) before *and* after every single
+stage, which is a real, working floor entirely absent from FV's `rk2_ssp`. So FD would plausibly
+sidestep this specific failure category -- but at real cost specific to this milestone: the
+`cooling_shield`/`delayed_cooling` gating built this session lives only inside
+`_iteration_level_continuous_updates`'s FV-gated cooling block, not in FD's `_time_integrator_
+sources`-based cooling path, so switching to FD would silently drop the very mitigation this
+investigation exists to validate (would need porting, not just a config flip); SN driving has never
+been exercised under FD; none of M2/M3/M3.5's validation carries over. User picked the cheaper,
+FV-only alternative instead: **`config.split = SPLIT`** (Strang splitting, already in this
+codebase), which recovers the primitive state once per axis (`_evolve_state_along_axis`) instead of
+combining all three axes before ever recovering primitives -- directly targets the confirmed
+mechanism without a solver-mode change.
+
+**First attempt failed immediately with a real (non-NaN) error, not yet a physics result:**
+`_reconstruct_at_interface_split` (the split path's reconstruction) only supports
+`config.time_integrator == MUSCL`, and M4's config left `time_integrator` at its default
+(`RK2_SSP`) -- `ValueError: Time integrator 0 not supported for split reconstruction. Only MUSCL is
+supported.` Confirmed via `finalize_config` that this auto-correction only fires for `SPHERICAL`
+geometry, not `CARTESIAN` (M4's geometry), so it has to be set explicitly. Added
+`time_integrator=MUSCL` alongside `split=SPLIT`. Confirmed via grep this is purely a
+reconstruction/predictor-step detail local to `_reconstruct_at_interface_split`
+(`config.time_integrator == RK2_SSP` is only otherwise checked in the *unsplit* path) -- doesn't
+interact with SN driving/cooling/gravity, which all run outside `_evolve_state_fv` regardless of
+integrator. This exact `split=SPLIT` + `time_integrator=MUSCL` + external-potential-gravity
+combination has never been exercised anywhere else in this codebase (grepped `pytests/` -- only one
+unrelated prior `MUSCL` usage, in the CWB shock-finder work) -- genuinely new territory, though the
+code-path analysis above gives good reason to expect it composes cleanly. Re-run in progress.
+
+## Where things stand (2026-09-15 continued to the deepest level yet, SILCC-ISM project M4 -- exact NaN mechanism confirmed: the unsplit scheme's combined multi-axis update goes negative-pressure, and per_stage_mode positivity protection is dead code for the FV solver)
+
+**User asked to instrument inside `_evolve_state_fv` itself. Added the same conditional
+`jax.debug.print`-behind-`jax.lax.cond` pattern at three points inside
+`_evolve_gas_state_unsplit_inner`** (`_finite_volume/_state_evolution/evolve_state.py`): right after
+each axis's reconstruction (checking that axis's left/right interface density/pressure), right after
+that axis's Riemann-solver flux (checking for NaN), and once after the full per-axis loop's combined
+conserved-state is converted back to a primitive state. All three removed again after use (`grep -n
+DEBUG` on the file returns nothing).
+
+**Exact mechanism, now fully confirmed rather than hypothesized:**
+
+1. **First bad value: a genuinely negative pressure (not yet NaN), appearing only *after* all three
+   axes' contributions are combined -- with every individual axis's reconstruction and Riemann flux
+   having been completely clean.** `min_rho=6.86e-4`, `min_p=-0.0604` (code units) right after
+   `primitive_state_from_conserved` at the end of the per-axis loop, while every per-axis debug gate
+   earlier in that same call stayed silent. This is the textbook multidimensional-unsplit-FV
+   positivity failure: this solver's unsplit scheme accumulates the x, y, and z flux-divergence
+   contributions into one conserved-state update before ever recovering/flooring the primitive state
+   (`conservative_states += conserved_change` inside the `for axis in range(...)` loop, primitive
+   recovery only once at the end) -- so even though no *single* axis's flux would have driven the
+   cell negative on its own, the *sum* of all three can, in a genuinely near-vacuum cell.
+2. **That negative-pressure state is not caught anywhere and feeds directly into the RK2_SSP
+   scheme's next stage evaluation** (`rk2_ssp`'s corrector call to the same `rhs`/
+   `_evolve_gas_state_unsplit_inner`). Reconstruction on the already-uniform bad cell just carries
+   the negative pressure through unchanged (confirmed: the *next* call's per-axis debug gate fires
+   on reconstruction too, with matching `min_p_l=min_p_r=-0.0532`, i.e. the same bad value, now
+   flagged since it was already present in the input this time).
+3. **The Riemann solver (HLLC), given that negative-pressure input, immediately produces `NaN`
+   fluxes on all three axes** (`any_nan_flux=True` on every axis this same call) -- almost certainly
+   `sqrt` of a negative argument in the sound-speed/wave-speed estimate, this codebase's own
+   documented NaN-hint category. From this point on the entire domain is `NaN` (matches every
+   downstream debug print and the outer per-snapshot log).
+
+**Why `positivity_config.default_positivity_protection=True` (tried and found ineffective two
+entries above) had *zero* effect is now fully explained, and it's a more fundamental gap than
+"clamping was too late": `PositivityConfig.per_stage_mode` (the field `default_positivity_
+protection` sets, meant to enforce positivity "inside every SSPRK/LSRK stage") is dead
+configuration for this solver path.** Grepped the whole codebase: `per_stage_mode` is read only by
+`astronomix/_finite_difference/_time_integrators/_ssprk.py` (the finite-difference SSPRK
+integrator) -- **never** by `astronomix/_integrators/_explicit_rk.py`'s `rk2_ssp` (the generic RK2
+driver `_evolve_gas_state_unsplit` actually uses) or anywhere in `_finite_volume/`. Enabling
+`default_positivity_protection` was therefore a true no-op for any finite-volume run, not merely an
+ineffective floor -- explaining the earlier bit-identical-run result completely (there was no
+per-stage clamp of any kind to ever engage, not just one that engaged too late). `per_step_mode`
+(the *other* field the same flag sets) is real and does run, but only once per full step in
+`_iteration_level_continuous_updates`, *before* that same step's own hydro evolve -- so it could
+only ever have clamped the *previous* step's output, not the intra-evolve negative pressure this
+mechanism produces mid-RK-stage inside the current step.
+
+**This reframes both earlier "ineffective fix" findings as actually being one and the same latent
+gap, now precisely diagnosed and directly fixable**: the finite-volume unsplit solver path has *no*
+positivity enforcement anywhere between combining the three axes' fluxes and the very next Riemann
+solve that consumes the result -- not because positivity protection is the wrong tool for this
+failure mode (as the earlier entries speculated), but because it was never wired up for this code
+path at all. This is a genuine, previously-unknown gap in the finite-volume solver, independent of
+SN driving, delayed cooling, or this milestone specifically -- any FV run (with or without gravity,
+with or without SN driving) that reaches a sufficiently rarefied multidimensional state could hit
+the same failure.
+
+**Not yet fixed -- a genuine choice of fix scope, per this module's established pattern.** Candidate
+directions, not yet discussed with the user: (a) a narrow, local fix -- clamp density/pressure to
+`params.minimum_density`/`minimum_pressure` right after `primitive_state_from_conserved` inside
+`_evolve_gas_state_unsplit_inner`, unconditionally (matches this file's existing per-axis
+Strang-split counterpart, `_evolve_state_along_axis`, which already checkifies -- but does not
+clamp -- pressure/density positivity at the same point); (b) the more general, "do what the config
+already claims to do" fix -- actually wire `config.positivity_config.per_stage_mode` into the FV
+unsplit path (and `rk2_ssp` generically), matching the FD SSPRK integrator's existing behavior, so
+`default_positivity_protection=True` stops being a silent no-op for FV; (c) narrower still --
+apply the fix only inside `rk2_ssp` itself (position-agnostic to split vs. unsplit, FV vs. FD),
+since that's the one shared piece of code every affected caller goes through.
+
+## Where things stand (2026-09-15 continued once more, SILCC-ISM project M4 -- VAN_ALBADA_PP silently rejected by a codebase-wide gravity guard; candidate (b) is a dead end as attempted)
+
+**The `VAN_ALBADA_PP` re-run never actually tested `VAN_ALBADA_PP`.** Output is byte-for-byte
+identical to *both* previous runs (MINMOD unprotected, MINMOD + positivity protection) -- and the
+run's own stdout explains why, right after config finalization:
+
+```
+Curiously, in self-gravitating systems, the VAN_ALBADA limiters seem to cause crashes.
+Setting MINMOD limiter for gravity.
+```
+
+Traced to `simulation_config.py`'s `finalize_config` (line ~836): `if config.gravity_config.gravity
+and (config.limiter != MINMOD): ... config = config._replace(limiter=MINMOD)` -- an unconditional,
+codebase-wide guard (pre-existing, not something this investigation added) that silently forces
+`MINMOD` whenever gravity is active (`self_gravity` **or** `external_potential`), based on an
+undocumented earlier finding that the `VAN_ALBADA`-family limiters are themselves unstable in
+gravitating systems. M4's `_base_config()` sets `external_potential=True` (it's a stratified column
+under an external potential), so `config.gravity_config.gravity` is `True` -- our `limiter=
+VAN_ALBADA_PP` request was silently discarded before the run started, explaining the exact
+bit-identical result.
+
+**This means candidate (b) (a positivity-preserving limiter) is not merely untried but structurally
+unavailable for M4 as configured** -- and, more broadly, for essentially this entire SILCC-ISM
+project, since M2 onward all use an external potential. Forcing the limiter past this guard (there
+is no config flag to opt back in -- it would need bypassing `finalize_config`'s override directly)
+would mean overriding a documented prior finding that this exact combination (`VAN_ALBADA`-family +
+gravity) is itself a known source of crashes, i.e. potentially trading this NaN for a different,
+previously-observed one rather than fixing it.
+
+**Not yet decided how to proceed -- genuinely reopened, since the two most standard stabilization
+knobs (post-hoc positivity floor, positivity-preserving limiter) are now respectively proven
+ineffective and structurally blocked.** Remaining candidates from the original menu: (c) reduce
+`params.C_cfl` (untried); (d) instrument one level deeper inside `_evolve_state_fv` to pin the exact
+substep before choosing further; new (e) deliberately bypass the gravity/limiter guard for a
+one-off test run, accepting the risk the guard describes, purely to see whether `VAN_ALBADA_PP`
+would have fixed *this* NaN (informative even if not adoptable as a permanent fix, given the guard).
+Paused to check in with the user given this reopens the decision. Full details: this entry plus the
+two entries above it.
+
+## Where things stand (2026-09-15 continued yet further, SILCC-ISM project M4 -- positivity protection tried and RULED OUT; switching to a positivity-preserving limiter)
+
+**User picked "enable positivity protection" (candidate (a) from the previous entry) as the first
+thing to try.** Added `positivity_config=PositivityConfig(default_positivity_protection=True)` to
+the M4 script's `_base_config()` (`limiter` left at `MINMOD`), re-ran end to end.
+
+**Result: no effect whatsoever -- the run is byte-for-byte identical to the unprotected run,
+snapshot by snapshot, all the way to the same NaN at the same snapshot 14.** Verified
+programmatically (diffed all 40 per-snapshot summary lines from both runs' captured output: 0
+differences). This is a real, informative negative result, not just "didn't help": if the
+between-stage/between-step conserved-state floor had ever actually engaged anywhere in the run
+(even far from the final crash, where it would be a harmless no-op numerically but could still, in
+principle, shift floating-point rounding), the two runs could not be bit-identical. Bit-identical
+through the *entire* trajectory is direct evidence the floor never had anything to clamp -- **the
+bad value responsible for the eventual NaN is produced strictly *inside* a single RK stage's
+reconstruction/Riemann-solve computation** (most likely: MINMOD reconstructs a negative pressure or
+density at a cell face in the now-rarefied gas, and HLLC's sound-speed calculation immediately turns
+that into a NaN via `sqrt` of a negative argument), **before the between-stage/between-step hard
+floor -- which only clamps the already-computed, already-stored conserved state -- ever gets a
+chance to act.** `positivity_config`'s post-hoc clamping is consequently the wrong category of tool
+for this specific failure mode; removed again from the M4 script (reverted the config addition and
+its now-unused `PositivityConfig` import) rather than leaving dead configuration in place.
+
+**Switched instead to candidate (b): a positivity-preserving limiter.** `_base_config()`'s
+`limiter` changed from `MINMOD` to `VAN_ALBADA_PP` (imported from
+`astronomix.option_classes.simulation_config`, not re-exported at the top-level `astronomix`
+package like `MINMOD` is). Unlike a post-hoc conserved-state floor, a positivity-preserving limiter
+constrains the *reconstruction* itself so a face value can never go negative in the first place --
+directly addresses the mechanism the bit-identical result above points to, rather than trying to
+clean up after it. Re-run in progress; not yet confirmed to fix (or fail to fix) the NaN.
+
+## Where things stand (2026-09-15 continued still further, SILCC-ISM project M4 -- new low-density NaN localized to the hydro evolve stage, not SN driving)
+
+**User asked to keep digging into the new low-density NaN from the previous entry.** Used the same
+instrumentation technique as every earlier mechanism in this investigation: temporary conditional
+`jax.debug.print`s (behind `jax.lax.cond`, gated on "any NaN or non-positive density/pressure
+present") inserted at three points in `time_integration.py`'s `_step` -- right after
+`_iteration_level_injections`, right after `_iteration_level_continuous_updates`, and right after
+the hydro evolve (`_evolve_state_fv`) -- plus one more in `sn_driving.py`'s `_inject_supernovae`,
+gated on `triggered`, printing the trigger site and the local weight-averaged ambient density. All
+four are temporary and have been fully removed again (confirmed via `grep -n DEBUG` on both files
+returning nothing).
+
+**Result: only 2 real SN triggers fired in this run before the NaN (not 3, unlike the previous
+tapered-shield attempt), both early and both at near-ambient density** -- trigger 1 at site
+`(36.26, 22.27, 142.57)` pc, ambient `n_H~9.90` (code density `0.32228`) -- **the identical site
+and density to the previous tapered-shield attempt's own trigger 1**, direct confirmation that the
+two runs are bit-identical up to the first trigger (expected: the uniform-vs-tapered shield
+formula only changes behavior once a trigger actually fires, see the entry above). Trigger 2 fired
+at a different site, `(15.22, 25.48, 146.85)` pc, also near-ambient (`n_H~10.9`, code density
+`0.3537`) -- a different site/time than the tapered-shield run's own trigger 2, as expected once
+the two runs' cooling-shield footprints diverge after trigger 1 and the dt/PRNG sequences drift
+apart. **Neither trigger is anywhere near the eventual NaN in either time or footprint.**
+
+**The NaN itself: first appears after the hydro evolve step, with injections and continuous
+updates both clean on that same step.** At the failing step (`t=2.606834230245266` code,
+`dt=1.158e-5` -- a very small, CFL-throttled step, and `~2.55e6` yr via
+`sn_cooling_delay_time`'s own yr-per-code-time conversion, consistent with the outer per-snapshot
+log's NaN window of `t~2.41e6` to `~2.59e6` yr from the previous entry), `_iteration_level_injections`
+and `_iteration_level_continuous_updates` both produce a fully finite, positive-density/pressure
+state -- the `[DEBUG after injections]`/`[DEBUG after continuous_updates]` gates never fire for this
+step -- but `_evolve_state_fv` (the FV flux/reconstruction/Riemann-solve pipeline) turns that clean
+input into an all-NaN state. **This rules out SN driving, delayed cooling, and K&I cooling as the
+proximate cause of this specific NaN** -- the corruption happens entirely inside the shared hydro
+evolve, acting on an ordinary (no fresh injection, no active shield) but very low-density state.
+
+**Leading hypothesis, well-supported by everything gathered so far but not yet independently
+confirmed by inspecting the evolve internals directly: a generic FV near-vacuum/positivity
+fragility, not anything specific to SN driving.** By this point the midplane has undergone a real,
+SN-driven blow-out (the previous entry's finding) down to `n_H_mid~0.43` and falling, well below
+the box's initial ambient `n_H=10` -- a genuinely new, rarefied regime no earlier M4 attempt
+(all of which failed via runaway *collapse* to *high* density) ever reached. This run's config
+(`_base_config()` in the M4 script) sets `limiter=MINMOD` (not positivity-preserving) and never
+touches `positivity_config` (`default_positivity_protection` defaults to `False`, so
+`per_step_mode`/`per_stage_mode` both stay `POSITIVITY_NONE` -- confirmed by reading
+`PositivityConfig`'s definition in `simulation_config.py`) -- i.e. **nothing in this run's
+configuration actually prevents a reconstructed face state or a Riemann-solved cell from going
+negative near vacuum.** This is exactly the failure signature `_raise_with_time_integration_hint`
+in `time_integration.py` already anticipates and has a built-in hint message for (NaN ->
+suggests enabling positivity protection, a positivity-preserving limiter, or a smaller CFL
+number) -- this run does not go through that hinted path today (`config.runtime_debugging` is
+`False` in the M4 script, so `checkify` never wraps the call and the hint is never printed), but
+the underlying stabilization knobs it names are directly applicable candidates here.
+
+**Not yet fixed or independently confirmed at the exact sub-step (which internal evolve substep --
+reconstruction, the Riemann solve, or the conservative-to-primitive recovery -- first produces the
+bad value) -- a genuine choice of which stabilization knob to try, per this module's established
+pattern.** Candidate directions, not yet discussed with the user: (a) turn on
+`positivity_config.default_positivity_protection=True` (the cheapest, most standard fix -- clamps
+density/pressure post-stage/post-step, no change to the reconstruction/Riemann-solve scheme
+itself); (b) switch `limiter` to a positivity-preserving one (e.g. `VAN_ALBADA_PP`, named directly
+in the codebase's own NaN hint); (c) reduce `params.C_cfl` so steps stay further inside the
+stability bound even as the column rarefies; (d) instrument one level deeper (inside
+`_evolve_state_fv`) to pin down the exact substep before picking a fix, since (a)-(c) are
+educated guesses from the failure signature, not a confirmed root cause at the sub-step level.
+
+## Where things stand (2026-09-15 continued further, SILCC-ISM project M4 -- tapered-shield fix applied and re-run: the fixed mechanism is confirmed gone, but a new, later, different-regime NaN appears)
+
+**User picked "uniform shield duration" (option (a) from the previous entry's three candidates):
+every cell inside the footprint (`weight` above the existing `1e-3` numerical cutoff) now gets the
+same, full, untapered `sn_cooling_delay_time`, instead of `weight`-scaled duration.** Implemented in
+`sn_driving.py`'s `_inject_supernovae` (the `delayed_cooling` block) -- `cooling_shield =
+jnp.maximum(cooling_shield, jnp.where(footprint_mask, triggered_delay, 0.0))` in place of the old
+`footprint_weight * triggered_delay`. Docstrings updated in both `sn_driving.py` (module docstring's
+"Delayed cooling" section and the inline comment at the block) and `sn_driving_options.py`
+(`sn_cooling_delay_time`'s field docstring) to explain why duration is deliberately *not* tapered
+the way the energy deposit is. Since `SNDrivingConfig.delayed_cooling` is a static (non-traced)
+config flag defaulting to `False`, this block is never even traced for any existing test
+(M3/M3.5, every CR-grey ladder item) -- confirmed via the jit static-argnames mechanism, not just
+asserted -- so no regression re-run was needed for those.
+
+**Re-ran the real M4 script (`m4_stratified_column_sn_driving_delayed_cooling.py`) end to end with
+the fix.** Same calibration as the previous attempt (`sn_cooling_delay_time=2457.36` yr, 50x the
+probed `t_cool=49.15` yr). Result: **the specific mechanism just fixed is confirmed gone -- no more
+single-cell hot spike stranded next to already-cold gas immediately after a shield lifts** -- but
+the run still goes to NaN, later, and via what looks like a materially different mechanism:
+
+- Snapshots 0-6 (`t=0` to `1.11e6` yr): quiet collapse, `n_H`(midplane) creeping `10.0 -> 12.1`,
+  matching M2's baseline exactly, no visible SN heating yet.
+- Snapshots 7-8 (`t=1.30e6`, `1.48e6` yr): collapse accelerates sharply, `n_H`(midplane) `25.2 ->
+  35.8` -- *denser than the previous attempt's own NaN point* (`n_H_mid=30.98` at the moment it
+  NaN'd) -- and the run does **not** NaN here, direct evidence the fixed mechanism is no longer
+  triggered even at comparable-or-higher density than before.
+- Snapshot 9-10 (`t=1.67e6`, `1.85e6` yr): `n_H`(midplane) drops sharply `35.8 -> 11.1 -> 2.6`,
+  `max(T)` at snapshot 10 ticks up to `1.001e4` K (modest, but a real, visible heating signature
+  coincident with the density collapse reversing) -- consistent with a real SN trigger firing near
+  peak density and driving a genuine blow-out/disruption of the collapsing midplane, i.e.
+  delayed cooling's mitigation doing real work this time, not just failing silently.
+- Snapshots 11-13 (`t=2.04e6` to `2.41e6` yr): `n_H`(midplane) continues falling `1.08 -> 0.64 ->
+  0.43` -- the midplane is now substantially *rarefied* relative to the initial `n_H=10`, a
+  qualitatively new regime no earlier M4 attempt reached (every prior attempt only ever showed
+  monotonic collapse toward higher density before NaNing).
+- Snapshot 14 (nominally `t~2.4-2.6e6` yr, the next snapshot after 13): domain-wide NaN, same
+  corrupted-`dt`/`current_time` signature as every earlier M4 NaN (all subsequent snapshots read
+  `t=0`, matching the pattern already seen in the momentum-injection investigation).
+
+**Not yet root-caused.** This is a later failure, in a low-density/rarefied regime never reached
+before, following what looks like a genuinely successful SN-driven disruption event -- a
+structurally different situation from the tapered-shield mechanism just fixed (which failed via a
+sharp hot/cold discontinuity right at a shield's end) or the original overcooling problem (thermal
+inertness). Plausible candidate causes, none checked yet: another SN trigger landing in the now
+very-low-density gas (where the same absolute injection radius/energy could be far more extreme
+relative to the ambient state, or where `n_0**(-0.17)`-style density scaling elsewhere in this
+module could misbehave at unexpectedly low density); the K&I cooling curve's own low-density
+behavior (M1's known "silent non-convergence to 98 K" failure mode was found reachable via a stale-
+`dt` pathway in M3.5's Finding 5 -- worth checking whether something analogous applies here even
+post-fix); or an ordinary CFL/rarefaction numerical limit unrelated to SN driving at all, now that
+the column has genuinely evacuated far below its initial density. No instrumentation has been added
+yet to distinguish these -- the same forced-trigger/`jax.debug.print`-behind-`jax.lax.cond` technique
+used for every earlier mechanism in this investigation would apply directly.
+
+**Paused here to check in with the user before starting a new open-ended investigation into this
+new mechanism**, per this module's established working pattern (see "Working pattern" section
+below) -- the tapered-shield fix just applied is a genuine, confirmed improvement (a qualitatively
+new, farther-progressing, real-blow-out outcome, not just the same failure moved later), but this is
+a new bug, not a continuation of the one just closed out, and deserves its own explicit go-ahead
+before consuming more GPU time on it.
+
+## Where things stand (2026-09-15 continued (root-caused), SILCC-ISM project M4 -- delayed cooling's NaN mechanism found: the taper unshields the wrong cells first)
+
+**Root-caused via the same instrumentation technique as the momentum-injection investigation:
+temporary conditional `jax.debug.print`s (behind `jax.lax.cond`, so the exact PRNG/dt trajectory
+from the entry below is reproduced bit-for-bit) in the unmodified real M4 run, gated on "a trigger
+just fired" and "any cell is still shielded" -- both removed again once the mechanism was
+confirmed.** Only **3** real SN triggers fired before the run NaN'd (not the `~16` statistically
+expected over the full window -- ordinary Poisson variance, not a bug, since the run never reaches
+`t_end`): `t=0.6876` code (`~672,300` yr), site `(36.26, 22.27, 142.57)` pc, local `n_H~9.91`
+(essentially the calibration density) -- shield ran its course cleanly, no problem. `t=1.7949` code
+(`~1,754,900` yr), site `(18.46, 15.98, 157.79)` pc, local `n_H~13.59` -- same, clean. `t=1.8879`
+code (`~1,846,300` yr, matching snapshot 10's recorded `1.328e7` K spike almost exactly), site
+`(13.48, 2.67, 100.13)` pc, local `n_H~3.78` -- **this is the trigger whose shield's end precedes
+the NaN.**
+
+**The calibration-mismatch half of the previous entry's hypothesis is directly refuted by the
+data, in the opposite direction from what was guessed.** Trigger 3's local ambient density
+(`n_H~3.78`) is *below*, not above, the `n_H=10` the delay was calibrated against -- and the K&I
+cooling time computed directly at the last-remaining shielded cell's own state right before its
+shield lifts (`T=1.523e7` K, `rho` code `0.1179`, i.e. `n_H~3.63`) is `~310` yr, comfortably
+*shorter* than its `~2457` yr shield, not longer -- so the delay was, if anything, generous here,
+not insufficient.
+
+**The real mechanism, confirmed by tracing trigger 3's shield cell-by-cell to its end: the tapered
+`cooling_shield = max(current, weight * sn_cooling_delay_time)` formula unshields the *coolest,
+tapered-edge* cells first and leaves the single *hottest* cell shielded longest -- exactly
+backwards from what numerical safety needs.** The shielded-cell count shrinks smoothly and
+monotonically from `7248` cells right after the trigger down to a single cell by `t=1.890374` code
+(`Δt~2435` yr later, matching the nominal `2457.36` yr delay for the peak-weight cell) -- and that
+last cell's pressure barely moves the entire time (`2.6716e4 -> 2.5117e4` code, `<6%` over its
+whole `~2435` yr shielded lifetime, confirming the shield mechanically does exactly what it's
+supposed to for that cell). But every other cell in the tapered footprint, having received a
+strictly *shorter* `weight * delay` by construction, exited its own shield well before this one --
+and this vicinity's K&I equilibrium is only `T_eq(n_H~3.78) = 512` K, `T_eq(n_H~9.9) = 161` K --
+so by the time the last cell's shield finally lifts, its neighbors have almost certainly already
+relaxed back down toward a few hundred K (not independently re-traced this session, but a direct
+consequence of their shorter shields plus a K&I cooling time that only gets faster at their higher
+tapered-edge densities). **The result at the moment of unshielding: a `~1.5e7` K spike compressed
+into what has narrowed to essentially one grid cell, immediately adjacent to gas already back near
+ambient equilibrium -- a far sharper, less-resolved discontinuity than existed right after the
+original, still-uniformly-hot injection.** This is a strong, mechanistically grounded candidate for
+the domain-wide NaN that follows a few hundred steps later (once cooling's implicit solve, or the
+hydro flux update consuming its output, has to handle that single extreme cell next to its already-
+cold neighbors) -- not independently confirmed at the exact failing step (the debug gate, keyed on
+"still shielded," went silent once the last cell's shield hit exactly `0` and only caught the
+NaN several hundred steps later, by which point `dt`/`current_time` were already NaN too).
+
+**Not a bug in the sense of an accounting error -- `_inject_supernovae`'s `max(current, weight *
+delay)` formula does exactly what it says -- but a real, previously-unrecognized design flaw: the
+same tapered `weight` that correctly scales the *energy* deposit (more energy at the site center,
+tapering to zero) is reused, unchanged, to also scale the *shield duration* -- but duration and
+energy don't want the same taper direction for numerical safety. The hottest cell is the one that
+most needs to stay protected at least as long as its cooler neighbors, not shed its protection
+last while everything around it has already cooled out from under it.** This finding supersedes
+the calibration-mismatch half of the previous entry's hypothesis; the spatial/tapered-boundary
+half was directionally right but the precise mechanism is now understood (it's not "frozen core
+vs. collapsing exterior," it's "the taper strips the mild edge of its shield first and abandons
+the extreme core alone").
+
+**Not yet fixed -- a genuine design decision (how to restructure the shield's spatial/temporal
+profile) with more than one defensible answer, per this module's established pattern of asking
+rather than picking unilaterally.** Candidate directions, not yet discussed with the user: (a) give
+every cell in the footprint the *same* (untapered, e.g. the center's) shield duration rather than
+scaling duration by `weight`, so the whole footprint unshields together; (b) unshield gradually
+by ramping the *cooling rate* back up over some tail window instead of a hard `shield>0` boolean
+gate, so there's no single-step jump from "no cooling" to "full-rate cooling" anywhere; (c) widen
+`sn_smooth_cells`/the injection footprint so the hottest region spans enough cells that even a
+tapered shield leaves a resolved, multi-cell hot region rather than a single-cell remnant by the
+time it unshields.
+
+## Where things stand (2026-09-15 continued, SILCC-ISM project M4 -- delayed cooling tried on the real run: NaNs again, earlier than the unmitigated baseline)
+
+**First real M4 run with `delayed_cooling=True` (this session, right after the isolated unit test
+below) still NaNs -- but differently from every earlier M4 attempt, and with a real, positive
+sign the mitigation itself is working as designed.** Ran
+`pytests/stratified_ism/m4_stratified_column_sn_driving_delayed_cooling.py` end to end
+(`T_END=2*T_DYN`, 40 snapshots, `sn_cooling_delay_time` auto-calibrated by the script's own
+`_probe_post_shock_cooling_time` at `DELAY_MULTIPLIER=50` -> `2457.36` yr, `t_cool=49.15` yr at
+the probed midplane post-shock state).
+
+**Positive sign: unlike the original pure-thermal M4 attempt (2026-09-14, "no visible
+energy-budget jump attributable to a supernova ... effectively thermally inert"), this run shows a
+real, sharp heating event survive the cooling.** `max(T)` at snapshot 10 (`t=1848435.3` yr,
+`n_H(midplane)=30.98`) jumps to `1.328e7` K from `~1.0-1.2e4` K at the surrounding snapshots --
+direct evidence a real SN trigger fired and delayed cooling kept its heat from being immediately
+radiated away, the mitigation doing what it was designed to do.
+
+**But the whole domain (not just the injection footprint) is NaN by the very next snapshot (`t`
+between `~1.85e6` and `~2.03e6` yr), and -- the important new number -- this happens roughly
+*twice as fast* as the pre-existing unmitigated-collapse NaN window this exact box/resolution/IC
+already has on record.** `stratified_column_thermal_collapse.py` (M2, identical `N_H_MIDPLANE=10`,
+`H_SCALE=50` pc, `N_XY=32`, `N_Z=256` setup, SN driving off) established via its own Check 4 that
+this setup NaNs from pure thermal-gravitational collapse alone somewhere between `1` and `2`
+dynamical times, reaching `n_H_mid=21.65` at `t=1.0 T_DYN`. This M4 run instead NaNs at only
+`~0.5 T_DYN`, already past `n_H_mid=30.98` -- denser, sooner, than the documented unmitigated
+baseline at *twice* that time. **This is a different result from the original 2026-09-14
+pure-thermal M4 attempt, which NaN'd "at a density and rough timescale comparable to M2's own
+unmitigated collapse"** (i.e. consistent with just the baseline happening on schedule, SN driving
+not visibly changing anything). Here, delayed cooling's real, working heat deposit appears to be
+actively accelerating the local collapse toward NaN rather than merely failing to prevent it -- a
+materially different, not yet root-caused, failure mode.
+
+**Leading hypothesis, not yet confirmed:** `sn_cooling_delay_time` is calibrated once at setup
+time by `_probe_post_shock_cooling_time`, against the *initial* ambient midplane density
+(`RHO_MIDPLANE_CODE`, `n_H=10`) -- but `sn_z_min`/`sn_z_max` only restricts *where* a trigger can
+land (within one scale height of the midplane), not *when*, so by the time a trigger actually
+fires (observed here at `n_H_mid` already `~31`, well into the collapse), the true local
+post-shock cooling time at that much higher ambient density is likely shorter than the value the
+fixed delay was calibrated against (K&I net cooling generally scales faster than linearly with
+density in this regime) -- so a delay tuned for `n_H=10` may substantially over-shield a trigger
+landing in already-collapsed, much denser gas. Separately (not mutually exclusive): the shield's
+spatially-tapered footprint (full delay at the site center, decaying to zero at the tapered edge,
+per-cell, Eulerian/non-advecting) holds a sharp boundary in place -- interior cells frozen at
+pre-cooling pressure while the surrounding gas keeps collapsing normally underneath/around it for
+the shield's full duration -- which could itself be numerically destabilizing independent of the
+calibration mismatch. Neither half of this hypothesis has been directly checked yet -- no
+per-step/per-site instrumentation was added to this run. The technique that resolved the
+momentum-injection investigation and this milestone's own unit test (below) would apply directly:
+force a trigger and step through the shield's decay by hand, this time watching the tapered
+boundary cells specifically, and compare the probe's calibration density against the actual local
+density at a real trigger site late in the collapse.
+
+**Not yet decided how to proceed -- a genuine design decision, per this module's established
+pattern of asking rather than picking unilaterally.**
+
+## Where things stand (2026-09-15, SILCC-ISM project M4 -- delayed cooling implemented and unit-tested, tried as an alternative to momentum injection)
+
+**User picked "delayed cooling" (a per-cell K&I cooling shutoff near a fresh injection, e.g.
+Thacker & Couchman 2000 / Stinson et al. 2006) instead of continuing to root-cause momentum
+injection's unresolved third NaN mechanism (see the 2026-09-14 (continued) entry below) -- tried
+as an alternative mitigation for the same overcooling finding, not a fix for that NaN.** Rationale:
+delayed cooling keeps the plain thermal deposit as-is (no large velocity kick), so it sidesteps
+that mechanism's catastrophic-cancellation/third-NaN issues entirely rather than needing to
+understand them. `momentum_injection`'s code is left in place (default off, still available).
+
+**Implementation: a new persistent per-cell "cooling shield" field, threaded through the loop
+exactly like the OU forcing field.** New `SNDrivingConfig.delayed_cooling` +
+`SNDrivingParams.sn_cooling_delay_time` (`sn_driving_options.py`). At a trigger, each cell's
+shield is extended to `max(current_shield, weight * sn_cooling_delay_time)` (the same tapered
+`weight` as the energy deposit, so the shield duration itself tapers off toward the footprint's
+edge) -- `_inject_supernovae` now takes and returns `cooling_shield`. `_iteration_level_continuous_
+updates`'s cooling block gates on `cooling_shield > 0` (shielded cells keep their pre-cooling
+pressure exactly; unshielded cells cool/heat normally) and decays the whole field by `dt` (floored
+at 0) every step, regardless of whether cooling itself is on. This needed a persistent carry across
+steps that isn't part of the advected hydro state -- the same shape of problem the OU forcing field
+already solves via `LoopState` -- so `cooling_shield` was added to `LoopState` (default `None`,
+like `forcing`) and threaded through every place `forcing`/`nbody_state` already go: `_step`,
+`_build_initial_loop_state` (+ new `_seed_cooling_shield`), `_run_segment`,
+`_time_integration_to_disk`, Orbax's `_orbax_storage.py` (`LoopCheckpoint`/`save_loop_checkpoint`/
+`load_loop_checkpoint`), and `setup_helpers/restart.py` -- so a disk-checkpoint restart doesn't
+silently drop the shield field, unlike leaving it half-wired would have. It is an Eulerian
+(grid-fixed), not Lagrangian (fluid-comoving) field -- it does not advect with the flow -- a
+documented simplification, defensible since the shield timescale is short relative to both a
+cell's flow-crossing time and the time between triggers in M4's regime.
+
+**Verified inert when off:** re-ran the full M3/M3.5 regression
+(`sn_driving_energy_conservation.py`, `sn_driving_with_cooling.py`) after every threading change --
+both pass unchanged, confirming the new carry-through is a byte-identical no-op at the default
+`delayed_cooling=False`.
+
+**A real bug found and fixed via this module's own isolated unit test (forced-trigger technique,
+same as the momentum-injection investigation used), before it could contaminate the real M4
+run:** the raw tanh `weight` used for the footprint never reaches exact `0.0` far from the site
+(just an exponentially small tail) -- but the cooling gate is a hard `cooling_shield > 0.0`
+boolean, so an un-floored tail spuriously suppressed cooling for one step across the *entire*
+domain, not just near the footprint (caught directly: a control cell far from the site showed
+`cooling_shield ~ 6.7e-8 > 0` and identical pressure before/after an otherwise-cooling-active
+step). Fixed in `_inject_supernovae` by flooring the weight to exactly `0.0` below a `1e-3` cutoff
+before multiplying by the delay time, so `cooling_shield` itself is exactly `0.0` outside a
+well-defined footprint and the boolean gate is a correct proxy everywhere.
+
+**Isolated unit test (not a committed pytest -- a scratch verification, mirroring the "forced
+trigger" technique used for the momentum-injection root-causing) confirms the mechanism end to
+end**, at M1's own stiff calibration point (`n_H=10 cm^-3`, `T=1e4` K, K&I `t_cool~3438` yr in this
+setup): (1) a forced trigger (`sn_rate` set astronomically high so `trigger_probability` clips to 1
+regardless of the PRNG draw) sets a tapered, spatially-localized shield (max `~0.066` code units at
+the site vs. the nominal `sn_cooling_delay_time=0.070`, bounded by, not equal to, the nominal value
+since no discrete grid cell sits exactly at the tanh's center); (2) a cooling call at the shielded
+site leaves its pressure *exactly* unchanged (`rtol=1e-10`), the shield decays by exactly `dt`, and
+an unshielded far cell is genuinely acted on by cooling/heating at the same call (K&I nets heating
+below the thermally-unstable branch, so the sign isn't guaranteed -- what matters is that it's
+*not* a no-op, proving the shielded-cell result is a real gate); (3) once the shield fully decays
+to `0` (floored, confirmed exactly), cooling/heating resumes acting on that cell. **Mechanism
+verified as designed; not yet tried against the real M4 stratified-column run** (the full-run
+attempt, calibrating `sn_cooling_delay_time` against the ~60 yr midplane post-shock cooling time
+measured in the 2026-09-14 M4 entry below, is the natural next step).
+
+## Where things stand (2026-09-14 continued, SILCC-ISM project M4 -- momentum injection implemented, third NaN partially investigated, root cause still open)
+
+**User picked "inject momentum directly" (Kim & Ostriker 2015) to fix the overcooling finding
+below.** New `SNDrivingConfig.momentum_injection` + `SNDrivingParams.sn_momentum_coefficient`/
+`sn_momentum_density_reference` (`astronomix/_modules/_sn_driving/sn_driving.py`/
+`sn_driving_options.py`): a radial velocity kick over the same tapered footprint as the thermal
+deposit, normalized so the mass-weighted radial momentum equals K&O15's fitted
+`p_terminal = 2.8e5 Msun*km/s * (sn_energy/1e51 erg) * n_0**(-0.17)` (`n_0` the *local*,
+weight-averaged pre-injection ambient density -- this column's density varies too much for a
+single fixed reference to be appropriate). Verified M3/M3.5 still pass bit-identically (neither
+sets `momentum_injection`).
+
+**Second real finding: pure momentum injection (zero thermal deposit) NaN'd even faster than the
+pure-thermal version it replaced.** Root-caused via an isolated unit test (forced trigger, same
+technique as the overcooling investigation): peak velocity kick ~693 km/s in cold ambient gas
+(`T~160` K, `c_s~1-2` km/s) leaves the conserved total energy completely kinetic-dominated --
+recovering the tiny internal energy back out of `E_total - 0.5*rho*v^2` is a catastrophic-
+cancellation computation that reliably produces negative/NaN pressure. **Fixed** with a new
+`SNDrivingParams.sn_momentum_thermal_floor_fraction` (started at `0.01`): a small nonzero fraction
+of the normal thermal deposit retained alongside the momentum kick, purely for numerical
+stability (not a physical model) -- confirmed via the same unit test: no more negative pressure,
+Mach number at the peak-kick cell drops from undefined/effectively-infinite to `~15.8`,
+post-kick temperature `~82,254` K (sensible "warm shell" scale, not pathologically cold).
+
+**Third real finding, not yet fixed: even with the thermal floor, the full run still NaNs -- but
+via a genuinely different, later mechanism.** Fine-grained snapshot diagnostics (150 snapshots
+over the first `~1` Myr) show: a real trigger fires cleanly at `t=0.672` Myr (`T_max` jumps to
+`4.59e4` K, `|v|_max` jumps to `~467` km/s, exactly as expected); the following `~29` closely-
+spaced snapshots show **smooth, physically sensible relaxation** -- `T_max` declining monotonically
+toward a `~2.51e4` K plateau, `|v|_max` declining smoothly toward `~457` km/s, the hot/fast region
+visibly advecting through adjacent grid cells (consistent with a real, moving shock, not a stuck
+degenerate cell) -- then the *very next* snapshot abruptly NaNs, with no gradual runaway visible
+beforehand. This does not match either of the first two findings' signatures (no catastrophic
+early spike, no periodic-edge proximity established) -- likely a Riemann-solver/reconstruction
+edge case specific to the steep velocity gradient a kick this size produces, or a CFL/dt-recompute
+subtlety specific to velocity-dominated (vs. thermal-dominated) perturbations, but **not yet
+root-caused**.
+
+**User asked to keep root-causing. Investigation continued, found a real methodological trap plus
+strong (but not fully conclusive) evidence on the mechanism, then paused again -- see below.**
+
+**Methodological trap found: `return_snapshots`'s `dt_max` cap, and even just changing `t_end`
+under `exact_end_time=True`, silently perturb the real dt sequence and therefore which PRNG draws
+`_inject_supernovae` consumes and when -- meaning "the same run at finer snapshot resolution" is
+not actually the same run.** Concretely: the original checkpoint (`NUM_SNAPSHOTS=40`,
+`T_END=2*T_DYN~=7.56`) has `dt_max` cap `~=0.189`, well above the natural CFL dt (`~0.0118`) --
+uncapped, this is the "authentic" dt-schedule. Every "zoom in" attempt used a shorter `T_END` with
+more snapshots, capping `dt_max` below the natural value and changing the step sequence (confirmed
+directly: a 150-snapshot rerun found a *different* trigger, at a different site/time, than the
+authentic 40-snapshot run). Even a plain `t_end`-truncated replay (no snapshots at all, just
+`exact_end_time=True` clamping `dt` near the requested endpoint) turned out to perturb the
+sequence too -- a truncated run targeting a time *after* the real trigger found *no* trigger at
+all in the same window. **Lesson for future sessions: to faithfully replay a specific adaptive-dt
+run's exact trajectory, do not change `num_snapshots`, `return_snapshots`, or `t_end` relative to
+the original -- any of these can silently change the dt sequence and hence which stochastic events
+fire.** The only reliable way to isolate a specific step found here: extract the exact per-step
+`time`/`dt` values from a debug trace of the *unmodified* original config (via temporary
+`jax.debug.print` in `_step`/`_inject_supernovae`, removed after use), then separately replay a
+single step at that exact known `dt` via `config.fixed_timestep=True`/`num_timesteps=1` starting
+from a state obtained by running the *original, unmodified* config out to the exact target `t_end`
+(exact_end_time's clamp reliably lands on a requested `t_end` regardless of intermediate step
+boundaries, unlike snapshot-based bisection).
+
+**Using that clean, unperturbed debug trace (original 40-snapshot config), found the exact trigger
+and the exact suspect step:** trigger fires during the step starting at `t=0.676070`, site
+`[36.26, 22.27, 142.57]` pc -- **only 1.24 pc from the x=37.5 pc periodic edge**, well inside the
+6 pc injection radius. Post-injection `dt` correctly collapses to `~1.28e-6` (the fix working as
+intended) and recovers smoothly over ~30 tiny steps up to `~7.9e-6`, with `T_max`/`|v|_max` both
+*declining* the whole time (no runaway). The very next step's incoming state (estimated `dt` before
+that step's own injection check) is already NaN -- so the corruption happens during the hydro
+evolve of the step starting at `t=0.6877708538752518`, `dt=7.931805785265837e-06`.
+
+**Attempted to isolate that exact step by taking a clean state at the prior boundary and
+single-step-replaying just that one evolve -- it came back completely clean (no NaN, sane
+pressure, `|v|_max~3.6`), NOT reproducing the crash.** Root cause: this "clean state" extraction
+itself used a `t_end`-truncated replay (see the methodological trap above) that took 60 steps to
+reach the same real time the authentic run took ~77 steps to reach, meaning the trigger never
+fired in this replay at all -- confirmed by zero `triggered=True` in its own 60-step debug trace.
+The single-step "replay" was therefore replaying an untriggered ambient step, not the real suspect
+step. **This specific isolation attempt is inconclusive, not negative** -- it didn't rule out the
+hypothesis, it just failed to test it due to the trap above.
+
+**Directly tested the leading hypothesis (periodic x-wrap momentum collision, M3.5 finding-3-style
+but via velocity convergence instead of thermal pile-up) by manually computing the momentum-kick
+field at the exact real trigger site, bypassing the PRNG entirely.** Result: **not confirmed, and
+actually weighs against this specific mechanism.** The vx profile along the site's x-column is
+smooth throughout: one sign flip exactly at the injection site (expected, symmetric outward push)
+and a second sign flip at the antipodal point on the periodic ring (`x~17.5` pc, `37.5 - 36.26 +
+17.5`-ish), which is the real collision point a periodic radial kick must produce -- but the
+injection weight there is negligible (`~3e-5`, since the 6 pc radius is far short of the ~18.75 pc
+antipodal distance), so that collision is numerically harmless at this specific site/radius. No
+sudden multi-hundred-km/s discontinuity between adjacent cells was found anywhere in the profile.
+**This doesn't rule out periodic wrapping in general** (a site much closer to the edge, or a larger
+radius, could still make the antipodal collision land inside significant weight) -- it just rules
+it out for *this specific* trigger.
+
+**Status: paused again, third time this investigation, to check in with the user** -- per this
+module's own established working pattern (see "Working pattern established across this module's
+sessions" below). Genuine progress made (the exact trigger/step identified, one strong hypothesis
+tested and weighed against, a real methodological pitfall documented for future sessions) but the
+precise failure mechanism is still not pinned down. All temporary debug instrumentation
+(`jax.debug.print` calls added to `time_stepping/time_integration.py`'s `_step` and
+`_modules/_sn_driving/sn_driving.py`'s `_inject_supernovae`) has been removed; both files are back
+to only the permanent momentum-injection changes from earlier in this entry. M4 itself remains an
+exploratory scratchpad script, not a committed pytest.
+
+## Where things stand (2026-09-14, SILCC-ISM project M4 -- BLOCKED on a real overcooling finding, not started as a committed pytest yet)
+
+**First M4 attempt (M0b+M1+M3 combined, CR off) reuses M2's exact stratified+cooling column
+(`stratified_column_thermal_collapse.py`: 37.5x37.5x300 pc, `h=50` pc, `N_XY=32`/`N_Z=256`,
+one-shot local-equilibrium IC) with episodic SN driving added.** Two design decisions made with
+the user before implementing, both grounded in real numbers, not guessed:
+
+1. **SN rate:** literature SILCC-project areal rates (Girichidis/Walch et al., SILCC-II/III
+   papers, ~1-1.5e-4 SNe/Myr/pc^2 over a 500x500 pc box) scaled down to M2's much smaller
+   37.5x37.5 pc footprint give only ~1 SN every ~6 Myr -- comparable to or longer than M2's own
+   collapse timescale (NaN by 1-2 dynamical times, `T_DYN~3.7` Myr, without SN driving). User
+   picked: keep M2's box, deliberately boost the rate (~10x the area-scaled literature value,
+   targeting ~8 expected triggers per `T_DYN`) rather than widen the box toward literature scale
+   (much more expensive) -- a documented small-box compensation, consistent with this project's
+   "target scaling relations, not exact numbers" design decision (#4 in DESIGN.md's SILCC-ISM
+   section).
+2. **SN site placement:** `_inject_supernovae` draws sites uniformly over the *whole* box; since
+   this column's density falls off sharply away from the midplane, most random sites would land
+   in tenuous, numerically-expensive envelope gas rather than the astrophysically relevant
+   midplane. User picked: add a new, backward-compatible `SNDrivingParams.sn_z_min`/`sn_z_max`
+   z-restriction (default +/-inf = unrestricted, bit-identical to today's formula at that default
+   -- verified M3/M3.5 still pass unchanged after this change), and M4 restricts sites to +/-1
+   scale height (`|z-z0|<50` pc) around the midplane.
+
+**Injection radius calibrated via a pre-run probe** (mirroring M3.5's own calibration practice)
+across the column's actual density range (midplane `n_H=10` down to envelope `~0.1`): picked
+`sn_injection_radius=6` pc (~5.1 grid cells) as a compromise between numerical gentleness
+(`T_hot~8.1e6` K at the midplane -- comparable order of magnitude to M3.5's own successful
+`n_H=100`/`4` pc calibration point) and keeping the footprint a modest fraction (~16% of the
+half-width) of the 37.5 pc box.
+
+**Result: the first full run NaN'd within the checkpoint window (`T_END=2*T_DYN`), at a density
+(`n_H_max~197`) and rough timescale comparable to M2's own unmitigated collapse -- SN driving did
+not visibly change the outcome.** Snapshot instrumentation (fine time resolution, both a 40- and a
+100-snapshot rerun) ruled out the two more mundane explanations first: (1) the domain-wide (not
+localized) nature of the NaN rules out a periodic x/y-wrap self-collision (M3.5's own still-open
+finding 3) as the cause; (2) an isolated unit test, calling `_inject_supernovae` directly with
+M4's exact config and a forced (guaranteed) trigger, deposited *exactly* the expected thermal
+energy (`50291442.16` code units, matching `sn_energy` to full precision) -- ruling out a bug in
+the injection function or the new z-range code.
+
+**Root cause, confirmed with a direct calculation: real, severe "overcooling."** Domain-total
+energy tracked at fine time resolution (both a coarse 40-snapshot full run and a fine
+100-snapshot short run, different PRNG step sequences via different snapshot-driven `dt_max`
+caps) never showed *any* visible energy-budget jump attributable to a supernova, despite ~1-5.6
+expected triggers across the two runs combined. Directly computed the K&I cooling time at the
+midplane injection's own post-shock state (`n_H=10`, `T_hot~8.1e6` K, using `ki_net_rate`):
+**`~60.5` yr** -- roughly 200-3000x shorter than any reasonable snapshot cadence (`~11,600` yr at
+finest) and a tiny fraction of a single hydro dynamical time (`T_DYN~3.7e6` yr). SN driving's
+correctly-deposited thermal energy is radiating away via K&I cooling almost immediately after
+each real trigger, before it can do meaningful PdV work or drive turbulent support -- so at this
+resolution/density/injection-radius combination, SN driving is effectively thermally inert, and
+the column collapses essentially as in M2's baseline. **This is real, well-documented ISM-
+simulation physics** (the classic "overcooling problem," e.g. Katz 1992), not a numerical bug --
+confirmed via an independent, from-first-principles cooling-time calculation, not just inferred
+from the run's behavior.
+
+**Not yet fixed -- a genuine design decision with more than one defensible answer, per this
+module's established pattern, presented to the user rather than picked unilaterally.** Standard
+literature mitigations: inject momentum directly instead of (or alongside) thermal energy (e.g.
+Kim & Ostriker 2015's terminal-momentum prescription); temporarily suppress cooling near a fresh
+injection site for some delay time; increase the injection radius/resolution until the immediate
+post-shock cooling time is no longer catastrophically short (this project's `radius=6` pc,
+`N_XY=32` combination is likely too under-resolved for this to work without a much bigger
+radius/box, per the earlier radius-calibration table); or boost `sn_energy` non-physically far
+beyond `1e51` erg so enough survives cooling to matter. **No shared simulation code changed this
+session beyond the `sn_z_min`/`sn_z_max` addition** (`_sn_driving/sn_driving_options.py`,
+`sn_driving.py`) -- M4 itself is not yet a committed pytest, still an exploratory script in this
+session's scratchpad.
+
 ## Where things stand (2026-09-14, stale-dt-at-injection bug -- FIXED)
 
 **M3.5's Finding 5 (stale `dt` reused across injection/cooling/hydro-evolve on a triggering
@@ -1865,9 +2765,26 @@ See "What's done" and "Verified" below for details.
 16. ~~Ladder item 11 (SNR expanding into a uniform then a clumpy medium)~~ -- done (2026-09-11);
     see "Where things stand (2026-09-11, ladder item 11 -- DONE, SNR into uniform/clumpy medium)"
     above for the full design, calibrated numbers, and the clumps-matter signature's (counter-
-    intuitive) sign. **Next: ladder item 12** (reproduce a published grey CR-ISM result as a
-    code-comparison anchor, e.g. a SILCC-style stratified box, Girichidis et al. 2016; Simpson et
-    al. 2016) -- the ladder's integration/physical group (items 9-11) is now fully complete.
+    intuitive) sign. The ladder's integration/physical group (items 9-11) is now fully complete.
+17. ~~Ladder item 12 (SILCC-ISM project: reproduce a published grey CR-ISM result as a
+    code-comparison anchor, Girichidis et al. 2016 / Simpson et al. 2016 style stratified box)~~ --
+    **all milestones (M0a, M0b, M1, M2, M3, M3.5, M4) done (2026-09-15).** M4, the last and
+    longest-running milestone (episodic SN driving + K&I cooling combined, evolved to `t_end~
+    7.39e6` yr), needed three real fixes before it would run stably: the tapered-shield NaN in
+    `delayed_cooling` (root-caused and fixed), the FV unsplit-solver near-vacuum positivity floor
+    (root-caused and fixed), and -- the fix that finally let the full run complete -- the new
+    opt-in `CoolingConfig.subcycle_stiff_cooling`, which stopped M1's own `dt_cool` CFL guard
+    (a domain-wide minimum) from stalling the whole simulation whenever one persistently
+    fast-cooling diffuse cell exists anywhere in the domain. See "Where things stand (2026-09-15,
+    later same day: SILCC-ISM project M4 -- DONE...)" above and DESIGN.md's "Resolved: SILCC-ISM
+    project M4" section for the full account. **Note: M2, M3.5, and M4 all run with CR-grey off
+    (`cosmic_ray_grey_config` default) -- only M3's own pytest turns `grey_cosmic_rays=True` on,
+    and only in one of its two compared configs, for a narrow cr-on/cr-off energy-conservation
+    cross-check, not sustained CR transport within the stratified-column setting.** These
+    milestones built and stress-tested the stratified-column + cooling + SN-driving *scaffold*
+    the eventual CR-ISM comparison needs; actually running grey CR transport/feedback throughout
+    this setting and comparing against the literature result is separate, not-yet-started
+    follow-up work.
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 

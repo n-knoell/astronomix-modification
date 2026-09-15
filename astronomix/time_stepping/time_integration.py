@@ -110,11 +110,22 @@ class LoopState(NamedTuple):
             ``_advance_nbody_state`` jointly with the hydro update each step,
             or ``None`` when the N-body solver (config.nbody_config.nbody) is
             inactive.
+        cooling_shield: The persistent per-cell "time remaining shielded"
+            field (same padded spatial shape as one state channel, e.g.
+            density), or ``None`` when
+            ``config.sn_driving_config.delayed_cooling`` is inactive.
+            Extended at a fresh SN-driving trigger's footprint in
+            ``_iteration_level_injections`` and consumed/decayed in
+            ``_iteration_level_continuous_updates`` to temporarily suppress
+            K&I cooling near recent injections (see
+            ``SNDrivingConfig.delayed_cooling``'s docstring). Threaded
+            exactly like ``forcing`` above.
     """
     primitive_state: Any
     key: Any
     forcing: Any = None
     nbody_state: Any = None
+    cooling_shield: Any = None
 
 
 def _raise_with_time_integration_hint(error: Exception, config: SimulationConfig):
@@ -538,16 +549,33 @@ def _seed_nbody_state(config, params):
     return None
 
 
-def _build_initial_loop_state(primitive_state, config, params, restart_state=None):
+def _seed_cooling_shield(primitive_state, config, registered_variables):
+    """Seed the persistent per-cell delayed-cooling shield field, zeroed
+    (unshielded) everywhere, for a fresh run -- or ``None`` when
+    ``config.sn_driving_config.delayed_cooling`` is inactive.
+
+    Shaped like a single (padded) state channel, matching how
+    ``_inject_supernovae``/``_iteration_level_continuous_updates`` index it.
+    """
+    if config.sn_driving_config.delayed_cooling:
+        return jnp.zeros_like(primitive_state[registered_variables.density_index])
+    return None
+
+
+def _build_initial_loop_state(
+    primitive_state, config, params, registered_variables, restart_state=None
+):
     """Construct the initial loop carry for an (already padded) state.
 
-    When ``restart_state`` is given, its PRNG key, persistent OU forcing field
-    and N-body state are reused so a resumed run continues the same
-    trajectory; otherwise they are seeded from ``config.random_seed`` /
-    ``params.nbody_params.nbody_state``. The OU forcing (when active) needs a
-    persistent solenoidal field, and the N-body state (when active) needs the
-    phase-space state of every body; otherwise those carry slots stay ``None``
-    and cost nothing.
+    When ``restart_state`` is given, its PRNG key, persistent OU forcing
+    field, N-body state and cooling-shield field are reused so a resumed run
+    continues the same trajectory; otherwise they are seeded from
+    ``config.random_seed`` / ``params.nbody_params.nbody_state`` / zeroed.
+    The OU forcing (when active) needs a persistent solenoidal field, the
+    N-body state (when active) needs the phase-space state of every body,
+    and the cooling shield (when delayed cooling is active) needs a
+    per-cell timer; otherwise those carry slots stay ``None`` and cost
+    nothing.
     """
     if restart_state is not None:
         return LoopState(
@@ -555,11 +583,13 @@ def _build_initial_loop_state(primitive_state, config, params, restart_state=Non
             restart_state.key,
             restart_state.forcing,
             restart_state.nbody_state,
+            restart_state.cooling_shield,
         )
 
     key0, forcing0 = _seed_key_and_forcing(config, params)
     nbody_state0 = _seed_nbody_state(config, params)
-    return LoopState(primitive_state, key0, forcing0, nbody_state0)
+    cooling_shield0 = _seed_cooling_shield(primitive_state, config, registered_variables)
+    return LoopState(primitive_state, key0, forcing0, nbody_state0, cooling_shield0)
 
 
 def _estimate_cfl_dt(primitive_state, config, params, helper_data, registered_variables, time):
@@ -693,6 +723,7 @@ def _integrate_core(
         key = state.key
         forcing = state.forcing
         nbody_state = state.nbody_state
+        cooling_shield = state.cooling_shield
 
         # determine the time step size
         if not config.fixed_timestep:
@@ -742,9 +773,9 @@ def _integrate_core(
 
         # Lump-sum injections (stellar wind, episodic SN driving, grey-CR
         # diffusive shock injection): apply first, at the pre-injection dt.
-        key, primitive_state = _iteration_level_injections(
+        key, primitive_state, cooling_shield = _iteration_level_injections(
             primitive_state, key, dt, config, step_params, helper_data_pad,
-            registered_variables, time + dt,
+            registered_variables, time + dt, cooling_shield,
         )
 
         # Re-estimate dt from the post-injection state before cooling/
@@ -772,9 +803,9 @@ def _integrate_core(
             )
 
         # per-step continuous-rate modules, at the final dt
-        key, forcing, primitive_state = _iteration_level_continuous_updates(
+        key, forcing, primitive_state, cooling_shield = _iteration_level_continuous_updates(
             primitive_state, key, forcing, dt, config, step_params, helper_data_pad,
-            registered_variables, time + dt,
+            registered_variables, time + dt, cooling_shield,
         )
 
         # evolve the state
@@ -789,7 +820,7 @@ def _integrate_core(
                 helper_data_pad, registered_variables,
             )
 
-        return dt, LoopState(primitive_state, key, forcing, nbody_state)
+        return dt, LoopState(primitive_state, key, forcing, nbody_state, cooling_shield)
 
     def _record_snapshot(time, state, store, idx):
         """Record snapshot ``idx`` (the requested diagnostics)."""
@@ -949,7 +980,7 @@ def _time_integration(
 
     if initial_loop_state is None:
         initial_loop_state = _build_initial_loop_state(
-            primitive_state, config, params
+            primitive_state, config, params, registered_variables
         )
 
     _, loop_state, snapshot_store, num_iterations = _integrate_core(
@@ -1004,6 +1035,7 @@ def _run_segment(
     init_key,
     init_forcing,
     init_nbody_state,
+    init_cooling_shield,
 ):
     """Integrate one segment for the disk-checkpointing (TO_DISK) driver.
 
@@ -1016,13 +1048,15 @@ def _run_segment(
     segment end is itself a checkpoint), so no snapshot buffers are allocated.
 
     Returns ``(t_final, primitive_state_unpadded, key, forcing, nbody_state,
-    num_iterations)``.
+    cooling_shield, num_iterations)``.
     """
     original_shape = primitive_state.shape
     primitive_state = _prepare_padded_state(
         primitive_state, config, params, registered_variables
     )
-    initial_loop_state = LoopState(primitive_state, init_key, init_forcing, init_nbody_state)
+    initial_loop_state = LoopState(
+        primitive_state, init_key, init_forcing, init_nbody_state, init_cooling_shield
+    )
     t_final, loop_state, _, num_iterations = _integrate_core(
         config,
         params,
@@ -1041,6 +1075,7 @@ def _run_segment(
         loop_state.key,
         loop_state.forcing,
         loop_state.nbody_state,
+        loop_state.cooling_shield,
         num_iterations,
     )
 
@@ -1083,15 +1118,30 @@ def _time_integration_to_disk(
         primitive_state = state
 
     # The carry between segments is the unpadded state plus the stochastic
-    # bits (PRNG key, OU forcing) and the N-body state. On a restart these
-    # come from the checkpoint.
+    # bits (PRNG key, OU forcing), the N-body state and the delayed-cooling
+    # shield field. On a restart these come from the checkpoint.
     if restart_state is not None:
-        key, forcing, nbody_state = (
+        key, forcing, nbody_state, cooling_shield = (
             restart_state.key, restart_state.forcing, restart_state.nbody_state,
+            restart_state.cooling_shield,
         )
     else:
         key, forcing = _seed_key_and_forcing(config, params)
         nbody_state = _seed_nbody_state(config, params)
+        # primitive_state here is unpadded; cooling_shield must match the
+        # *padded* shape _run_segment's loop actually indexes it against
+        # (see _seed_cooling_shield's docstring) -- pad a throwaway copy
+        # (ghost values don't matter, only the shape) rather than running
+        # the full _prepare_padded_state (which also fills boundary
+        # conditions, unneeded just for a shape).
+        shield_shape_state = (
+            _pad(primitive_state, config)
+            if config.boundary_handling != PERIODIC_ROLL
+            else primitive_state
+        )
+        cooling_shield = _seed_cooling_shield(
+            shield_shape_state, config, registered_variables
+        )
 
     # Segment config: snapshots stay off (each segment end *is* a checkpoint)
     # and ON_DEVICE so the segment runner does not recurse into this driver.
@@ -1151,7 +1201,10 @@ def _time_integration_to_disk(
                 )
 
             with mesh_ctx, pallas_mesh_context(pallas_mesh):
-                t_final, primitive_state, key, forcing, nbody_state, num_iterations = run_segment_jit(
+                (
+                    t_final, primitive_state, key, forcing, nbody_state,
+                    cooling_shield, num_iterations,
+                ) = run_segment_jit(
                     primitive_state,
                     segment_config,
                     segment_params,
@@ -1160,6 +1213,7 @@ def _time_integration_to_disk(
                     key,
                     forcing,
                     nbody_state,
+                    cooling_shield,
                 )
 
             cumulative_iterations = cumulative_iterations + num_iterations
@@ -1172,6 +1226,7 @@ def _time_integration_to_disk(
             store_state = primitive_state
             store_forcing = forcing
             store_nbody_state = nbody_state
+            store_cooling_shield = cooling_shield
             if sharding is not None:
                 store_state = jax.device_put(primitive_state, sharding)
                 if forcing is not None:
@@ -1187,6 +1242,11 @@ def _time_integration_to_disk(
                     store_forcing = jax.device_put(forcing, forcing_sharding)
                 if nbody_state is not None:
                     store_nbody_state = jax.device_put(nbody_state, sharding)
+                if cooling_shield is not None:
+                    # Same convention as nbody_state above: reuses the
+                    # primitive-state sharding even though its rank differs
+                    # (no leading variable axis).
+                    store_cooling_shield = jax.device_put(cooling_shield, sharding)
 
             save_loop_checkpoint(
                 checkpointer,
@@ -1196,6 +1256,7 @@ def _time_integration_to_disk(
                 key=key,
                 forcing=store_forcing,
                 nbody_state=store_nbody_state,
+                cooling_shield=store_cooling_shield,
                 num_iterations=cumulative_iterations,
             )
 

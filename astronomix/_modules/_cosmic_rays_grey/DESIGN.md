@@ -879,6 +879,73 @@ periodic box or the old box-centered deterministic test, land close enough to th
 for real mass to leave the domain; confirmed via boundary-face density, not a bug). Full numbers:
 PROGRESS.md's 2026-09-14 entry; full narrative: that pytest's own module docstring.
 
+## Resolved: SILCC-ISM project M4 (SN driving + K&I cooling + long-run stability, 2026-09-15)
+
+M4 combines M2's stratified column, M3's episodic SN driving and the delayed-cooling
+overcooling mitigation (tapered-shield NaN root-caused and fixed earlier the same day) and the
+FV unsplit-solver near-vacuum positivity floor (also fixed earlier the same day) -- but the real
+run still stalled indefinitely (simulation time frozen while the GPU stayed pinned near 100%
+utilization) rather than completing or NaN-ing. Root-caused via a throttled `jax.debug.callback`
+probe (temporary, removed once done) inside `time_stepping/time_integration.py`'s `_step`: at the
+stall, `rho_min` was ~100x *above* the positivity floor (ruling out "cells stuck at the cold
+floor," the leading hypothesis when the previous session paused) and the stalled cell's derived
+temperature (`~7591` K at `n_H~0.1 cm^-3`) was ordinary warm diffuse gas, not floor-temperature
+gas.
+
+**Actual mechanism: `_finite_volume/_timestep_estimation/_timestep_estimator.py`'s `_cfl_time_step`
+has a cooling-time term (`dt_cool`, added at M1 as a guard against `update_temperature_implicit`'s
+naive fixed-point iteration diverging for a stiff `dt` -- see "Resolved: SILCC-ISM project M1"
+above) that is a *domain-wide minimum*.** M4's SN-driven blow-out continuously produces diffuse,
+recently-shocked-then-unshielded cells sitting in the K&I curve's fast-cooling regime; once the
+run reaches that regime, one such cell anywhere pins the *entire* simulation's `dt` to its own
+local cooling time, indefinitely -- a real stall, mechanistically unrelated to the positivity-floor
+NaN this and the previous several sessions were chasing.
+
+**Fix: `CoolingConfig.subcycle_stiff_cooling`, new, opt-in (default `False` -- every existing
+config/test unaffected).** When set: `update_pressure_by_cooling` (`_cooling.py`) calls a new
+`update_temperature_implicit_subcycled` instead of the plain `update_temperature_implicit`, and
+`_cfl_time_step` skips its `dt_cool` term entirely (the global hydro `dt` no longer needs to be
+bounded by cooling stiffness, since the cooling update now absorbs it internally). Two designs
+were tried:
+
+1. **A fixed sub-step count, sized once from the state's *initial* relaxation rate
+   (`jax.lax.fori_loop`, each sub-step a full `update_temperature_implicit` fixed-point solve).**
+   Matched the calibrated M1 stiff-guard test case well (`5939` K vs. the fine-ODE reference's
+   `5855` K, 1.4% error, vs. the naive single-step call's `10068` K / 72% error), but a
+   1000x-more-extreme synthetic case (further from equilibrium, so the trajectory gets stiffer than
+   its own starting rate predicts) diverged badly (`78324` K vs. a `160.5` K reference) -- the fixed
+   count under-resolves the later, stiffer part of the trajectory, and an under-resolved fixed-point
+   sub-step can itself fail to converge, compounding across every later sub-step.
+2. **Used instead: an adaptive `jax.lax.while_loop`** re-deriving the safe local sub-step size
+   (`dt_sub * rate <= 0.1`, from the *current* state, every sub-step) and accumulating elapsed time
+   up to the full `time_step`, using plain explicit (forward-Euler) sub-steps rather than chained
+   fixed-point solves -- once a sub-step is kept inside the stability target, explicit is simpler
+   and sidesteps the fixed-point's own non-convergence risk. Re-validated: mild case `5536` K (5.4%
+   error), 1000x-extreme case `147.4` K (8.2% error, vs. the fixed-count design's ~490x overshoot)
+   -- degrades gracefully rather than diverging as the stiffness ratio grows.
+   `max_substeps=20000` bounds worst-case cost; timed on an M4-grid-shaped (`32x32x256`) field:
+   `0.002s` at the mild calibrated stiffness, `0.069s` at a 1000x ratio (close to what the real
+   stalled cell implied), `1.85s` only at a deliberately-extreme `1e5x` synthetic stress test well
+   beyond what the real run ever demanded.
+
+Verified `ki_cooling_thermal_relaxation.py` (M1) and `sn_driving_with_cooling.py` (M3.5) both
+still pass unchanged (`subcycle_stiff_cooling` defaults `False`) before spending GPU time on the
+real run. With `subcycle_stiff_cooling=True` set in the M4 script's `CoolingConfig`, the real
+run -- GPU-pinned, progress bar monitored end-to-end, any run stuck at a fixed percentage for 3+
+minutes auto-killed -- completed cleanly through the full `t_end` (`~7.39e6` yr, all 40
+snapshots), no NaNs, no stall, clearing both this and the previous session's documented stall
+points. The resulting trajectory shows genuine repeated SN-driven disruption/re-collapse cycles:
+midplane `n_H` swings between `~20-35` cm^-3 (collapsed) and `~0.001-0.4` cm^-3 (blown out)
+several times over the run, with coincident `max(T)` spikes to `1e7-1e8` K at each disruption --
+the qualitative behavior M4 was scoped to demonstrate (episodic SN driving able to disrupt and
+re-trigger collapse, rather than M2's baseline monotonic overcooling collapse). Diagnostic plot:
+`pytests/stratified_ism/pics/m4_stratified_column_sn_driving_delayed_cooling.svg`. Full numbers
+and the two implementation attempts' detail: PROGRESS.md's 2026-09-15 (later same day) entry.
+
+`subcycle_stiff_cooling` is a generally-useful fix, not M4-specific -- worth reaching for again in
+any future module that can locally drive the K&I curve into its fast-cooling regime for an
+extended stretch, not just SN driving.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

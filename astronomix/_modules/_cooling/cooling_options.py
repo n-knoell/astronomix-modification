@@ -122,6 +122,22 @@ class CoolingConfig(NamedTuple):
     cooling_method: int = IMPLICIT_COOLING
     cooling_curve_config: CoolingCurveConfig = CoolingCurveConfig()
 
+    # Opt-in (default off, so every existing test/config is unaffected):
+    # subdivide IMPLICIT_COOLING's per-step fixed-point solve into several
+    # smaller sub-steps sized to the local cooling relaxation time, instead
+    # of relying on _cfl_time_step's dt_cool term to keep the *global* hydro
+    # dt inside the fixed-point iteration's convergence radius everywhere on
+    # the grid. dt_cool (added for gap #3, see
+    # pytests/stratified_ism/ki_cooling_thermal_relaxation.py) is correct
+    # but was found (SILCC-ISM M4, 2026-09-15) to stall a run indefinitely
+    # whenever *some* cell somewhere is persistently in a fast-cooling state
+    # (e.g. diffuse SN-blown-out gas) -- one such cell caps the entire
+    # simulation's dt near its own local cooling time forever, since dt_cool
+    # is a domain-wide minimum. Subcycling keeps that stiffness local to the
+    # cooling update itself, so _cfl_time_step can stop bounding the global
+    # dt by it (see its subcycle_stiff_cooling branch).
+    subcycle_stiff_cooling: bool = False
+
 
 class CoolingParams(NamedTuple):
     """Runtime cooling parameters (composition, temperature floor, curve)."""

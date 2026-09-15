@@ -48,7 +48,8 @@ def restart_from_latest_checkpoint(
         :func:`~astronomix.time_stepping.time_integration.time_integration`,
         ``params`` has ``t_start`` set to the checkpoint time, and
         ``restart_state`` is the :class:`LoopState` carrying the PRNG key, OU
-        forcing field and N-body state to pass via ``restart_state=``.
+        forcing field, N-body state and delayed-cooling shield field to pass
+        via ``restart_state=``.
 
     Example::
 
@@ -68,6 +69,7 @@ def restart_from_latest_checkpoint(
         key=checkpoint.key,
         forcing=checkpoint.forcing,
         nbody_state=checkpoint.nbody_state,
+        cooling_shield=checkpoint.cooling_shield,
     )
     return checkpoint.primitive_state, params, restart_state
 

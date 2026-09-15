@@ -300,7 +300,16 @@ def _cfl_time_step(
     # stops at max_iter regardless of whether tol was reached). Bound dt by
     # the fastest (smallest) local relaxation time anywhere on the grid,
     # mirroring dt_visc/dt_relax's C_CFL-scaled convention.
-    if config.cooling_config.cooling:
+    # subcycle_stiff_cooling (see CoolingConfig's docstring): when set, the
+    # implicit solve itself subdivides into several sub-steps sized to the
+    # local cooling time, so the stiffness this dt_cool term exists to guard
+    # against is handled inside update_pressure_by_cooling instead -- no
+    # longer needing to bound the *global* dt by whatever single cell
+    # anywhere on the grid is cooling/heating fastest (found, SILCC-ISM M4,
+    # 2026-09-15, to stall a run indefinitely whenever some cell is
+    # persistently in a fast-cooling state, since this term is a domain-wide
+    # minimum).
+    if config.cooling_config.cooling and not config.cooling_config.subcycle_stiff_cooling:
         cooling_params = params.cooling_params
         density = primitive_state[registered_variables.density_index]
         pressure = primitive_state[registered_variables.pressure_index]

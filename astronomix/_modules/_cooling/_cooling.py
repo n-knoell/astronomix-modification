@@ -627,6 +627,82 @@ def update_temperature_implicit(
     return T_final
 
 
+@partial(jax.jit, static_argnames=("cooling_curve_config", "max_substeps"))
+def update_temperature_implicit_subcycled(
+    density: FIELD_TYPE,
+    temperature: FIELD_TYPE,
+    time_step: float,
+    hydrogen_mass_fraction: float,
+    metal_mass_fraction: float,
+    gamma: float,
+    cooling_curve_config: CoolingCurveConfig,
+    cooling_curve_params: COOLING_CURVE_TYPE,
+    max_substeps: int = 20000,
+) -> FIELD_TYPE:
+    """Adaptive explicit subcycling of the cooling relaxation, in place of a
+    single stiff call to ``update_temperature_implicit`` (see
+    ``CoolingConfig.subcycle_stiff_cooling``'s docstring for why this
+    exists).
+
+    A fixed a-priori sub-step count sized to the *initial* rate (tried
+    first) fails badly whenever the relaxation rate changes a lot across
+    the full ``time_step`` -- e.g. cooling from 1e4 K towards a ~160 K
+    equilibrium at ``dt`` several thousand times the initial cooling time:
+    the initial rate underestimates how stiff the trajectory gets as T
+    keeps dropping, so a fixed sub-step count sized to it under-resolves
+    the later, stiffer part and produces a wildly wrong (physically
+    nonsensical) result (checked directly -- got ~78000 K against a
+    ~160 K reference). Re-deriving the safe local step from the *current*
+    state every sub-step (a `jax.lax.while_loop` accumulating elapsed
+    time, same "domain-wide minimum local timescale" idea as the CFL
+    condition itself, just re-evaluated adaptively rather than once per
+    hydro step) tracks the trajectory's actual stiffness throughout.
+    Explicit (not fixed-point) sub-steps are used deliberately: once the
+    sub-step is kept inside the local stability/accuracy target below,
+    plain forward Euler is both simpler and more predictable than
+    chaining many more fixed-point solves (each with its own,
+    not-fully-eliminated non-convergence risk).
+    """
+    # dt_sub * rate <= this each sub-step: comfortably inside forward
+    # Euler's linear-stability limit (dt*rate < 2) while still keeping
+    # sub-step count (hence cost) reasonable for the mildly-stiff, common
+    # case -- calibrated against the reference ODE solution in
+    # pytests/stratified_ism/ki_cooling_thermal_relaxation.py's stiff test
+    # case (~14.5x the local cooling time): matches the fine reference to
+    # ~1% there.
+    substep_target = 0.1
+
+    def _rate(T):
+        dT_dt = dtemperature_dt(
+            density, T, hydrogen_mass_fraction, metal_mass_fraction,
+            gamma, cooling_curve_config, cooling_curve_params,
+        )
+        return dT_dt, jnp.max(jnp.abs(dT_dt) / jnp.maximum(jnp.abs(T), 1e-30))
+
+    def cond_fun(state):
+        i, elapsed, _ = state
+        return (i < max_substeps) & (elapsed < time_step)
+
+    def body_fun(state):
+        i, elapsed, T = state
+        dT_dt, rate = _rate(T)
+        sub_dt = jnp.minimum(substep_target / jnp.maximum(rate, 1e-30), time_step - elapsed)
+        return (i + 1, elapsed + sub_dt, T + dT_dt * sub_dt)
+
+    _, elapsed_final, T_final = jax.lax.while_loop(
+        cond_fun, body_fun, (0, jnp.zeros_like(time_step), temperature)
+    )
+
+    # If max_substeps was exhausted before covering the full time_step
+    # (only for pathologically stiff cases well beyond anything calibrated
+    # here), take the remaining time in one last explicit step rather than
+    # silently under-integrating -- less accurate than more sub-steps
+    # would be, but bounded and not divergent the way the fixed-a-priori
+    # scheme was.
+    dT_dt_final, _ = _rate(T_final)
+    return T_final + dT_dt_final * (time_step - elapsed_final)
+
+
 @partial(jax.jit, static_argnames=("cooling_config", "registered_variables"))
 def update_pressure_by_cooling(
     primitive_state: STATE_TYPE,
@@ -673,16 +749,28 @@ def update_pressure_by_cooling(
     )
 
     if cooling_config.cooling_method == IMPLICIT_COOLING:
-        new_temperature = update_temperature_implicit(
-            density,
-            temperature,
-            time_step,
-            hydrogen_mass_fraction,
-            metal_mass_fraction,
-            gamma,
-            cooling_curve_config,
-            cooling_params.cooling_curve_params,
-        )
+        if cooling_config.subcycle_stiff_cooling:
+            new_temperature = update_temperature_implicit_subcycled(
+                density,
+                temperature,
+                time_step,
+                hydrogen_mass_fraction,
+                metal_mass_fraction,
+                gamma,
+                cooling_curve_config,
+                cooling_params.cooling_curve_params,
+            )
+        else:
+            new_temperature = update_temperature_implicit(
+                density,
+                temperature,
+                time_step,
+                hydrogen_mass_fraction,
+                metal_mass_fraction,
+                gamma,
+                cooling_curve_config,
+                cooling_params.cooling_curve_params,
+            )
     elif cooling_config.cooling_method == EXPLICIT_COOLING:
         new_temperature = update_temperature_explicit(
             density,
