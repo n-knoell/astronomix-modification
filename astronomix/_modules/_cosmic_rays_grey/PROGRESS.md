@@ -4,6 +4,22 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-16: M0a/M0b/M2/M3 regression check against the M4-added FV-unsplit positivity floor -- clean, no residual gap)
+
+Before this, the positivity floor added in `_evolve_gas_state_unsplit_inner` during M4 (see the
+2026-09-15 entry below) had only ever been checked as a no-op against M4's own script -- it was
+never re-run against the earlier milestones' own pytests, despite being an *unconditional* change
+to shared FV evolve code. User asked for this to be closed out before starting M5. Re-ran all
+four of M0a/M0b/M2/M3's own pytests (`bc_smoke_test.py`, `stratified_hydrostatic_column.py`,
+`stratified_column_thermal_collapse.py`, `sn_driving_energy_conservation.py`), GPU-pinned,
+individually: **all four pass clean** -- no tracebacks, no assertion failures (these are plain
+`assert`-based scripts, not pytest, so a silent clean exit at 100% progress is the pass signal),
+consistent with the floor's default `minimum_density`/`minimum_pressure=1e-14` being far below
+any density these tests' own physics reaches. This closes the one previously-unverified item from
+the M0a-M4 unresolved-issues audit; the FV self-gravity "not well-balanced" bias (M0a/M0b, still
+open) and `update_temperature_implicit`'s naive fixed-point solver (M1, still open, worked around
+but not repaired by `subcycle_stiff_cooling`) remain the two real open gaps carried into M5.
+
 ## Where things stand (2026-09-15, later same day: SILCC-ISM project M4 -- DONE. Root cause of the stall was cooling stiffness, not the positivity floor at all; fixed via opt-in adaptive cooling subcycling; full run completes cleanly through `t_end`)
 
 **Picked up exactly where the previous session paused (the problem-scale-floor run that stalled
@@ -93,10 +109,13 @@ before being noticed and killed. Fix: assign shell variables like `LOG=...` on t
 (so they execute in the foreground/current shell) before backgrounding only the actual long-running
 command.
 
-**M4 is now the ladder's SILCC-ISM project (item 12) fully complete through its planned
-milestones (M0a through M4).** `subcycle_stiff_cooling` is a generally-useful opt-in fix (not
-M4-specific) worth keeping in mind for any future module that can locally drive the K&I curve
-into its fast-cooling regime for an extended stretch, not just SN driving.
+**M4 is now done, completing milestones M0a through M4 of the ladder's SILCC-ISM project (item
+12); M5 (the CR-on code-comparison anchor against Girichidis et al. 2016: mass-loading factor,
+outflow velocity, CR-vs-gas pressure scale height) and M6 (optional MHD + anisotropic-diffusion
+stretch, Simpson et al.'s SN-placement comparison) remain, not yet started.**
+`subcycle_stiff_cooling` is a generally-useful opt-in fix (not M4-specific) worth keeping in mind
+for any future module that can locally drive the K&I curve into its fast-cooling regime for an
+extended stretch, not just SN driving.
 
 ## Where things stand (2026-09-15 continued to session's end, SILCC-ISM project M4 -- the problem-scale positivity floor no longer NaNs quickly, but the run stalls/hangs instead -- a new, unresolved, unrelated-looking problem; session paused here)
 
@@ -2766,10 +2785,11 @@ See "What's done" and "Verified" below for details.
     see "Where things stand (2026-09-11, ladder item 11 -- DONE, SNR into uniform/clumpy medium)"
     above for the full design, calibrated numbers, and the clumps-matter signature's (counter-
     intuitive) sign. The ladder's integration/physical group (items 9-11) is now fully complete.
-17. ~~Ladder item 12 (SILCC-ISM project: reproduce a published grey CR-ISM result as a
-    code-comparison anchor, Girichidis et al. 2016 / Simpson et al. 2016 style stratified box)~~ --
-    **all milestones (M0a, M0b, M1, M2, M3, M3.5, M4) done (2026-09-15).** M4, the last and
-    longest-running milestone (episodic SN driving + K&I cooling combined, evolved to `t_end~
+17. Ladder item 12 (SILCC-ISM project: reproduce a published grey CR-ISM result as a
+    code-comparison anchor, Girichidis et al. 2016 / Simpson et al. 2016 style stratified box) --
+    **milestones M0a through M4 done (2026-09-15); M5 (the CR-on code-comparison anchor) and M6
+    (optional MHD/anisotropic-diffusion stretch) remain, not yet started.** M4, the
+    longest-running milestone so far (episodic SN driving + K&I cooling combined, evolved to `t_end~
     7.39e6` yr), needed three real fixes before it would run stably: the tapered-shield NaN in
     `delayed_cooling` (root-caused and fixed), the FV unsplit-solver near-vacuum positivity floor
     (root-caused and fixed), and -- the fix that finally let the full run complete -- the new
@@ -2782,9 +2802,9 @@ See "What's done" and "Verified" below for details.
     and only in one of its two compared configs, for a narrow cr-on/cr-off energy-conservation
     cross-check, not sustained CR transport within the stratified-column setting.** These
     milestones built and stress-tested the stratified-column + cooling + SN-driving *scaffold*
-    the eventual CR-ISM comparison needs; actually running grey CR transport/feedback throughout
-    this setting and comparing against the literature result is separate, not-yet-started
-    follow-up work.
+    the eventual CR-ISM comparison needs; M5 (actually running grey CR transport/feedback
+    throughout this setting and comparing against the literature result) and M6 are the
+    remaining, not-yet-started milestones.
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 
