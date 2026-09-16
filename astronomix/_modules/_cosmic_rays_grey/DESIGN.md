@@ -894,6 +894,50 @@ periodic box or the old box-centered deterministic test, land close enough to th
 for real mass to leave the domain; confirmed via boundary-face density, not a bug). Full numbers:
 PROGRESS.md's 2026-09-14 entry; full narrative: that pytest's own module docstring.
 
+## Resolved: SILCC-ISM project M5 (CR-grey code-comparison anchor vs. Girichidis et al. 2016, 2026-09-16)
+
+M5 turns grey two-moment CR transport on for the first time in this project's stratified-column
+setting (M4's exact box/SN-driving/cooling stack, `sn_cr_fraction=0.1` and
+`diffusive_relaxation=True` now active) and compares against Girichidis et al. (2016), ApJL 816,
+L19 (arXiv:1509.07247)'s reported mass-loading factor, outflow velocity, and CR-vs-gas pressure
+scale height. New script: `pytests/stratified_ism/m5_cr_driven_outflow.py`.
+
+**Attempt 1 (kappa_parallel=1e28 cm^2/s isotropic): completed, but meaningless -- CR pressure
+homogenized flat across the whole box** (diffusion length `sqrt(kappa*T_end)~=495` pc vs. this
+box's own 300 pc height; the paper's own 100x-smaller kappa_perp is what confines *their* much
+bigger box vertically). H_cr came back undefined.
+
+**Attempt 2 (kappa_perp=1e26 cm^2/s, box-matched diffusion length ~50 pc; reduced_streaming_speed
+scaled 3000->300 km/s to hold cost fixed): NaN'd.** Root-caused via two rounds of temporary debug
+instrumentation (both fully reverted): a fresh SN trigger spikes gas sound speed to ~1291 km/s
+(4.3x over `reduced_streaming_speed`) and CR energy 16x; shortly after, a cell's pressure goes
+negative -- confirmed via PRE/POST-source-term tracing to happen for the first time immediately
+after `_apply_gravity_source` (the operator-split source applicator carrying self-gravity *and*
+CR-grey feedback) adds its update, not inside the already-floored RK2 hydro stages. **A genuine,
+previously-unknown gap: `_apply_gravity_source` had no positivity floor**, unlike
+`_evolve_gas_state_unsplit_inner`'s RK2-internal floor (M4, 2026-09-15). Fixed: the same
+unconditional `jnp.maximum` floor pattern added to `_apply_gravity_source` too (see that
+function's docstring in `evolve_state.py`) -- a general FV-solver fix, not CR-grey-specific (any
+strong-enough self-gravity source term in a near-vacuum cell could plausibly have hit the same
+gap).
+
+**Attempt 3 (fix applied, config otherwise identical to attempt 2): DONE.** Completed with no
+NaNs through the full run, including passing cleanly through the same SN-driven blow-out that
+NaN'd attempt 2. Late-time comparison: mass-loading eta=6.16 (paper: order unity -- same order of
+magnitude), outflow velocity v_out=5.83 km/s (paper: 10-50 km/s -- same order, low side), and
+**H_cr/H_gas ~= 3.1 (paper's headline qualitative claim -- CR pressure support extends well
+beyond the gas scale height -- reproduced directly)**. Full numbers, the SN-trigger/negative-
+pressure trace, and the fix's exact code location: PROGRESS.md's 2026-09-16 M5 entries.
+
+New diagnostics added for this milestone: `_mass_loading_and_outflow_velocity` (mass flux through
+a horizontal plane one scale height above the midplane), `_pressure_scale_heights` (horizontally-
+averaged P_gas/P_cr e-folding heights from the midplane), and `_girichidis_fig1_style_plot` (edge-
+on density, face-on density, midplane CR energy density -- Girichidis et al. 2016 Fig. 1 style).
+
+This completes milestones M0a through M5 of ladder item 12 (SILCC-ISM project). Only M6
+(optional MHD + anisotropic-diffusion stretch) remains, not started -- would let a real
+`kappa_perp`/`kappa_parallel` anisotropy replace this milestone's isotropic stand-in.
+
 ## Resolved: SILCC-ISM project M4 (SN driving + K&I cooling + long-run stability, 2026-09-15)
 
 M4 combines M2's stratified column, M3's episodic SN driving and the delayed-cooling

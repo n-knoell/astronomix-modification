@@ -112,6 +112,33 @@ def _apply_gravity_source(
     primitive_state = primitive_state_from_conserved(
         conserved_state, gamma, config, registered_variables
     )
+
+    # Positivity floor (2026-09-16): unlike _evolve_gas_state_unsplit_inner's
+    # RK2 hydro stages (floored since M4, 2026-09-15), this operator-split
+    # source-term addition -- self-gravity, and since CR-grey feedback was
+    # wired through the same "gravity_source" path, also the CR
+    # pressure-gradient/adiabatic-work/relaxation terms -- had no positivity
+    # protection at all. Confirmed via debug instrumentation against a real
+    # SILCC-ISM M5 run: pressure stayed positive through every RK2-floored
+    # hydro stage, then went negative for the first time immediately after
+    # this function's own conserved-state addition, in an already-thin-
+    # pressure near-vacuum cell (see PROGRESS.md's 2026-09-16 M5 entry for
+    # the full trace). Same unconditional jnp.maximum pattern as that fix,
+    # not gated on config.positivity_config.per_stage_mode for the same
+    # reason (dead code for this solver path).
+    primitive_state = primitive_state.at[registered_variables.density_index].set(
+        jnp.maximum(
+            primitive_state[registered_variables.density_index],
+            params.minimum_density,
+        )
+    )
+    primitive_state = primitive_state.at[registered_variables.pressure_index].set(
+        jnp.maximum(
+            primitive_state[registered_variables.pressure_index],
+            params.minimum_pressure,
+        )
+    )
+
     if config.boundary_handling == GHOST_CELLS:
         primitive_state = _boundary_handler(
             primitive_state, config, registered_variables, params
