@@ -56,23 +56,38 @@ hydro CFL condition picked; near a strongly-heating/cooling state that
 ``dt`` can exceed the local instantaneous cooling time by an order of
 magnitude or more (checked directly below: at ``n_H=10 cm^-3``, ``T=1e4``
 K, the instantaneous cooling time is ~3438 yr). The plan's expectation was
-that the module's default ``IMPLICIT_COOLING`` (fixed-point) integrator
-would handle this gracefully -- **checked directly and found false**:
-``update_temperature_implicit``'s naive fixed-point iteration
-(``T_new = T + dT/dt(T_new)*dt``) does not converge for ``dt`` this large
+that the module's default ``IMPLICIT_COOLING`` integrator would handle
+this gracefully -- **originally checked directly and found false**:
+``update_temperature_implicit``'s original naive fixed-point iteration
+(``T_new = T + dT/dt(T_new)*dt``) did not converge for ``dt`` this large
 relative to the local relaxation time, and ``jax.lax.while_loop`` simply
-stops at ``max_iter=50`` regardless of whether ``tol`` was reached --
-silently returning a wrong temperature with no error.
-``test_ki_cooling_cfl_guard`` confirms this failure mode directly, then
-confirms the fix: a new cooling-aware ``dt_cool`` term in
+stopped at ``max_iter=50`` regardless of whether ``tol`` was reached --
+silently returning a wrong (and, at more extreme stiffness, wildly
+unphysical -- e.g. ``6.8e6`` K at 100x this ``dt``) temperature with no
+error. **Fixed 2026-09-16: ``update_temperature_implicit`` now solves the
+same backward-Euler equation via Newton's method instead** (see its own
+docstring in ``_cooling.py``) -- this eliminates the silent-divergence
+failure mode entirely (confirmed convergent, residual ~1e-12, in ~12
+iterations even at ratios where the old solver diverged to nonsense), but
+does **not** eliminate all error at large ``dt``: even an exactly-solved
+single backward-Euler step is only first-order accurate in time, so
+real (bounded, physically-sensible) truncation error remains at
+intermediate stiffness (see ``test_ki_cooling_cfl_guard``'s updated
+docstring for calibrated numbers). ``test_ki_cooling_cfl_guard`` confirms
+both the historical failure mode (now fixed) and the still-real accuracy
+motivation for a cooling-aware ``dt_cool`` term in
 ``_finite_volume/_timestep_estimation/_timestep_estimator.py``'s
 ``_cfl_time_step`` (mirroring the existing ``dt_visc``/``dt_relax``
 pattern, gated on ``config.cooling_config.cooling`` so it is a no-op for
-every existing non-cooling test) now bounds ``dt`` by the fastest local
-relaxation time on the grid, preventing the hydro loop from ever handing
-the implicit solver a dt this stiff in the first place. Repairing the
-fixed-point iteration itself (e.g. Newton's method) would be a larger,
-separate change, out of scope here.
+every existing non-cooling test), which bounds ``dt`` by the fastest local
+relaxation time on the grid -- **still worth keeping even with Newton**,
+since it's now an accuracy safeguard rather than a divergence safeguard.
+SILCC-ISM project milestone M4 (2026-09-15) additionally needed to
+decouple cooling stiffness from the *global* hydro ``dt`` entirely (one
+persistently fast-cooling cell was stalling a whole simulation) via a
+separate, opt-in ``CoolingConfig.subcycle_stiff_cooling`` mechanism, kept
+as-is and unaffected by the Newton fix (it uses its own adaptive explicit
+sub-stepping, not ``update_temperature_implicit`` internally).
 
 **A third real finding, this one a test-setup pitfall worth flagging for any
 future cooling test:** this codebase's cooling module defines ``n_H =
@@ -385,52 +400,66 @@ def test_ki_cooling_relaxation(
 
 
 def test_ki_cooling_cfl_guard(
-    naive_failure_rel_err_min: float = 0.3,
+    newton_rel_err_max: float = 0.22,
+    newton_vs_old_naive_rel_err_max: float = 0.3,
     guarded_dt_ratio_max: float = 0.5,
     guarded_dt_match_rel_tol: float = 1e-4,
 ):
-    """Confirms the stiff-dt failure mode (gap #3) and the CFL guard fixing it.
+    """Confirms the stiff-dt behavior of the (now Newton-based) implicit
+    solver (gap #3, and its 2026-09-16 fix), plus the CFL guard's continued
+    accuracy role.
 
     At ``n_H=10 cm^-3``, ``T=1e4`` K (a hot cell suddenly at high density --
     e.g. freshly-shocked or freshly-injected ejecta), the instantaneous
-    cooling time is ~3438 yr (checked directly below). **A real finding**:
-    calling ``update_temperature_implicit`` directly with a single ``dt=5e4``
-    yr step (~14.5x that cooling time -- a genuinely stiff step, well beyond
-    what the previously cooling-unaware hydro CFL condition would know to
-    avoid) does **not** converge to the correct answer -- its naive
-    fixed-point iteration (``T_new = T + dT/dt(T_new)*dt``) diverges for
-    ``dt`` this large relative to the local relaxation time, and
-    ``jax.lax.while_loop`` just stops at ``max_iter=50`` regardless of
-    whether ``tol`` was reached, silently returning a wrong temperature.
-    This is why ``_finite_volume/_timestep_estimation/_timestep_estimator.py``'s
-    ``_cfl_time_step`` now includes a cooling-aware ``dt_cool`` term
-    (mirroring the existing ``dt_visc``/``dt_relax`` pattern) rather than
-    trusting the implicit solver to handle an arbitrarily large dt -- fixing
-    the fixed-point iteration itself (e.g. Newton's method) is a larger,
-    separate change, out of scope here.
+    cooling time is ~3438 yr (checked directly below). **Original finding
+    (2026-09-11):** calling ``update_temperature_implicit`` with a single
+    ``dt=5e4`` yr step (~14.5x that cooling time) did not converge -- its
+    then-naive fixed-point iteration (``T_new = T + dT/dt(T_new)*dt``)
+    diverged for ``dt`` this large, and ``jax.lax.while_loop`` just stopped
+    at ``max_iter=50`` regardless of whether ``tol`` was reached, silently
+    returning a wrong temperature (``10068`` K vs. the reference's ``5855``
+    K here; far worse -- literally millions of percent off, e.g. ``6.8e6``
+    K -- at higher stiffness ratios, checked separately). **Fixed
+    2026-09-16: ``update_temperature_implicit`` now solves the same
+    backward-Euler equation via Newton's method** (see its docstring in
+    ``_cooling.py``). Part 1 below now confirms the *opposite* premise from
+    before: Newton converges cleanly here (residual ~1e-12) and gets
+    materially closer to the reference than the old naive result did, but
+    **not exactly right** -- a single, however-exactly-solved backward-Euler
+    step is still only first-order accurate in time, so real truncation
+    error remains at this stiffness (``rel. err ~0.187`` here, vs. the old
+    naive result's ``0.72``). Part 2 confirms ``_cfl_time_step``'s
+    ``dt_cool`` term (mirroring the existing ``dt_visc``/``dt_relax``
+    pattern) still meaningfully shrinks ``dt`` at this same stiff state,
+    correctly sized to the local cooling time -- worth keeping even with
+    Newton, since its role is now accuracy (bounding truncation error) more
+    than the divergence-safety it was originally added for.
 
-    Part 1 confirms the failure is real (the naive single large step
-    disagrees with an independent, finely-resolved reference by a large,
-    unambiguous margin). Part 2 confirms the fix: ``_cfl_time_step``, given
-    this exact stiff state, returns a ``dt`` far smaller than the naive
-    hydro-only estimate, correctly sized to the local cooling time (not just
-    "some smaller number").
-
-    Calibrated 2026-09-11: instantaneous cooling time ``~3438`` yr (dt is
-    ~14.5x this); the naive single-step implicit call gives ``10068`` K vs.
-    the reference's ``5855`` K (rel. err ``0.72``, tol has >2.4x margin).
-    ``_cfl_time_step``'s guarded dt is ``0.4296x`` the pure-hydro dt (tol
-    has ~14% margin -- this is a fully deterministic ratio, not a noisy
-    measurement, so this margin is real); it matches ``C_cfl *`` the
-    independent instantaneous-cooling-time estimate to ``~1.4e-15`` (exact
-    at float64, as expected -- both are the same single-uniform-cell
-    calculation by construction) -- tol left much looser (``1e-4``) to
-    tolerate backend/precision differences on other machines.
+    Calibrated 2026-09-16 (Part 1 renumbered from the original naive-failure
+    calibration): Newton's single-step result is ``6951`` K vs. the
+    reference's ``5855`` K (rel. err ``0.187``, tol has ~15% margin) --
+    dramatically closer than the old naive solver's ``10068`` K (rel. err
+    ``0.72``), demonstrating the fix, though not exact. ``_cfl_time_step``'s
+    guarded dt is ``0.4296x`` the pure-hydro dt (tol has ~14% margin -- this
+    is a fully deterministic ratio, not a noisy measurement, so this margin
+    is real); it matches ``C_cfl *`` the independent instantaneous-cooling-
+    time estimate to ``~1.4e-15`` (exact at float64, as expected -- both are
+    the same single-uniform-cell calculation by construction) -- tol left
+    much looser (``1e-4``) to tolerate backend/precision differences on
+    other machines.
 
     Args:
-        naive_failure_rel_err_min: Min relative error the naive single-step
-            call must show against the reference, confirming Part 1's
-            failure mode is real (not accidentally already fine).
+        newton_rel_err_max: Max relative error the (now Newton-based)
+            single-step call may show against the reference at this stiff
+            dt -- confirms Newton converges to something reasonably close,
+            not that it is exact (it isn't, by construction of a single
+            large backward-Euler step).
+        newton_vs_old_naive_rel_err_max: Max relative error allowed,
+            expressed as a fraction of the old naive solver's own
+            historical error (``0.72``, hardcoded from the 2026-09-11
+            calibration since that solver no longer exists to call
+            directly) -- confirms Newton is a real, substantial
+            improvement, not just "still wrong but slightly different."
         guarded_dt_ratio_max: Max allowed ratio of the cooling-guarded dt to
             the pure-hydro dt at this stiff state -- confirms the guard is
             actually active and materially reducing dt.
@@ -459,7 +488,9 @@ def test_ki_cooling_cfl_guard(
 
     cooling_curve_config = CoolingCurveConfig(cooling_curve_type=KOYAMA_INUTSUKA_NET_COOLING)
 
-    # --- Part 1: confirm the naive single-large-step failure is real. ---
+    # --- Part 1: confirm Newton converges to something reasonably close
+    # (not exact -- see docstring) at this stiff dt, and is a real,
+    # substantial improvement over the old naive solver's historical result.
     t_implicit_code = update_temperature_implicit(
         jnp.array(rho_code), jnp.array(t_init_code), dt_code, X_H, Z_METAL, GAMMA,
         cooling_curve_config, KI_PARAMS,
@@ -469,14 +500,27 @@ def test_ki_cooling_cfl_guard(
     ode_solution = integrate_isochoric_relaxation(n_h_cgs, t_init_kelvin, dt_years, MU, MU_H, GAMMA)
     t_reference_kelvin = float(ode_solution.y[0, -1])
 
-    naive_rel_err = abs(t_implicit_kelvin - t_reference_kelvin) / t_reference_kelvin
-    assert naive_rel_err > naive_failure_rel_err_min, (
-        f"Expected the naive single-large-step implicit call to fail "
-        f"visibly (rel. err > {naive_failure_rel_err_min}) at this stiff "
-        f"dt, but got rel. err {naive_rel_err:.4e} (implicit="
+    newton_rel_err = abs(t_implicit_kelvin - t_reference_kelvin) / t_reference_kelvin
+    assert newton_rel_err < newton_rel_err_max, (
+        f"Newton-based update_temperature_implicit should converge to "
+        f"within {newton_rel_err_max} rel. err of the reference at this "
+        f"stiff dt, but got rel. err {newton_rel_err:.4e} (implicit="
         f"{t_implicit_kelvin:.2f} K, reference={t_reference_kelvin:.2f} K) "
-        f"-- if the fixed-point iteration has since been made more robust, "
-        f"this assertion (and this test's premise) should be revisited."
+        f"-- either a real regression in the solver, or this stiff test "
+        f"point's own truncation error grew for an unrelated reason and "
+        f"the calibration needs revisiting."
+    )
+
+    # Hardcoded from the 2026-09-11 calibration of the old naive fixed-point
+    # solver (no longer callable directly -- see this test's docstring) --
+    # confirms Newton is a substantial, not marginal, improvement.
+    old_naive_rel_err = 0.71966
+    assert newton_rel_err < newton_vs_old_naive_rel_err_max * old_naive_rel_err, (
+        f"Expected Newton's rel. err ({newton_rel_err:.4e}) to be well "
+        f"below {newton_vs_old_naive_rel_err_max}x the old naive solver's "
+        f"historical rel. err ({old_naive_rel_err}) at this same stiff "
+        f"state -- if this fails, the Newton fix is not actually improving "
+        f"on the old behavior here."
     )
 
     # --- Part 2: confirm _cfl_time_step's new dt_cool term catches this. ---

@@ -593,33 +593,81 @@ def update_temperature_implicit(
     cooling_curve_config: CoolingCurveConfig,
     cooling_curve_params: COOLING_CURVE_TYPE,
 ) -> FIELD_TYPE:
+    """Backward-Euler temperature update, solved by Newton's method.
 
-    def implicit_eq(T_new):
-        return (temperature
-        + dtemperature_dt(
-            density,
-            T_new,
-            hydrogen_mass_fraction,
-            metal_mass_fraction,
-            gamma,
-            cooling_curve_config,
-            cooling_curve_params,
-        ) * time_step)
+    Was previously a naive fixed-point iteration (``T_new = T + dT/dt(T_new)
+    * dt``), which only converges when ``dt`` is small relative to the local
+    cooling/heating relaxation time -- for a stiffer ``dt``,
+    ``jax.lax.while_loop`` simply stopped at ``max_iter`` regardless of
+    whether ``tol`` was reached, silently returning a wrong temperature (see
+    ``pytests/stratified_ism/ki_cooling_thermal_relaxation.py``'s
+    ``test_ki_cooling_cfl_guard``, which demonstrated this directly and is
+    why ``_cfl_time_step`` grew a ``dt_cool`` term bounding the *global*
+    hydro ``dt`` by it). That CFL guard is itself what stalled the
+    SILCC-ISM M4 run indefinitely once some cell was persistently
+    fast-cooling (see ``CoolingConfig.subcycle_stiff_cooling``) -- Newton's
+    method converges quadratically near the root over a far wider ``dt``
+    range than the fixed-point map's narrow (``dt * |d(dT/dt)/dT| < 1``)
+    stability window, and eliminates the silent-divergence-to-nonsense
+    failure mode entirely (verified: residual reaches ``~1e-12`` in ~12
+    iterations even where the old solver diverged to physically
+    unreasonable values). The residual's derivative is obtained via
+    ``jax.grad`` rather than a hand-written Jacobian: since every cell's
+    ``dT_dt`` depends only on that cell's own ``T`` (no spatial coupling),
+    the Jacobian is diagonal, and ``jax.grad`` of the *summed* residual
+    gives exactly that diagonal (the standard trick for an elementwise
+    map's per-element derivative), cheaper than a full ``jax.jacrev``.
 
-    # use a simple fixed point iteration
-    # - maybe do newton or bisection method later
+    **This fixes convergence, not truncation error.** Even an exactly-solved
+    single backward-Euler step is only first-order accurate in time, so a
+    genuinely stiff single ``dt`` (particularly ~100-1000x the local
+    relaxation time -- worse there than at milder or far more extreme
+    ratios, where the equation approaches just finding the equilibrium
+    root) still carries real error against the true trajectory. ``dt_cool``
+    and ``subcycle_stiff_cooling`` remain genuinely necessary for accuracy
+    at such ``dt``, not merely retained out of caution -- see
+    ``pytests/stratified_ism/ki_cooling_thermal_relaxation.py``'s
+    ``test_ki_cooling_cfl_guard`` docstring for calibrated numbers.
+    """
+
+    def residual(T_new):
+        return (
+            T_new - temperature
+            - dtemperature_dt(
+                density, T_new, hydrogen_mass_fraction, metal_mass_fraction,
+                gamma, cooling_curve_config, cooling_curve_params,
+            ) * time_step
+        )
+
+    def residual_sum(T_new):
+        return jnp.sum(residual(T_new))
+
     max_iter = 50
     tol = 1e-6
 
     def cond_fun(state):
         i, T_old = state
-        T_candidate = implicit_eq(T_old)
-        diff = jnp.max(jnp.abs(T_candidate - T_old))
+        diff = jnp.max(jnp.abs(residual(T_old)))
         return (i < max_iter) & (diff > tol)
 
     def body_fun(state):
         i, T_old = state
-        T_new = implicit_eq(T_old)
+        F = residual(T_old)
+        dF_dT = jax.grad(residual_sum)(T_old)
+        # Guard against a (physically unexpected, but not impossible for a
+        # pathological curve) near-zero derivative driving the step to
+        # overshoot wildly: floor its magnitude rather than divide by
+        # something tiny, preserving its sign (or treating an exact zero as
+        # positive, matching F(T)=T-... 's own leading +1 slope).
+        dF_dT_safe = jnp.where(dF_dT >= 0, jnp.maximum(dF_dT, 1e-12), jnp.minimum(dF_dT, -1e-12))
+        T_new = T_old - F / dF_dT_safe
+        # Overshoot guard: a Newton step should never need to cross to a
+        # non-positive or wildly-collapsed temperature for a well-behaved
+        # (monotonic-in-T, as K&I is -- see docstring) relaxation curve;
+        # clamping here keeps a rare bad step self-correcting on the next
+        # iteration instead of poisoning dtemperature_dt with an unphysical
+        # T (e.g. log(T) blowing up) on the following call.
+        T_new = jnp.maximum(T_new, 1e-2 * temperature)
         return (i + 1, T_new)
 
     state = (0, temperature)

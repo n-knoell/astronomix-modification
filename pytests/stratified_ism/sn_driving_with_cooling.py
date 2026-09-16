@@ -521,16 +521,17 @@ def _synthetic_post_injection_pressure(config: SimulationConfig, gas_pressure_am
 def _naive_vs_guarded_check(
     rho_code: float, t_kelvin: float, n_h_cgs: float,
     dt_guarded: float, dt_hydro_only: float, naive_dt_code: float,
-    naive_failure_rel_err_min: float, guarded_dt_ratio_max: float,
+    newton_rel_err_max: float, guarded_dt_ratio_max: float,
     guarded_dt_match_rel_tol: float, guarded_step_rel_tol: float,
     label: str,
 ):
-    """Shared M1-style "naive dt fails, guarded dt is smaller and correctly
-    sized" check, factored out so both M1's own calibration point and this
-    module's SN-driving-wired check use exactly the same logic.
+    """Shared M1-style "naive dt has real (bounded) error, guarded dt is
+    smaller and correctly sized" check, factored out so both M1's own
+    calibration point and this module's SN-driving-wired check use exactly
+    the same logic.
 
-    Mirrors M1's own two-part structure exactly: Part 1 (the naive-failure
-    demonstration) uses an *externally chosen* ``naive_dt_code`` -- standing
+    Mirrors M1's own two-part structure exactly: Part 1 (the stiff-dt
+    accuracy check) uses an *externally chosen* ``naive_dt_code`` -- standing
     in for what a real simulation's shared, domain-wide ``dt`` could well be
     if other regions of a larger, more varied box have gentler CFL
     requirements than this particular stiff cell -- not this cell's own
@@ -539,9 +540,19 @@ def _naive_vs_guarded_check(
     cooling time, not many times larger -- confirmed directly: at M1's own
     (n_H=10, T=1e4 K) point, the natural pure-hydro CFL dt is ``~3557`` yr,
     barely above the ``~3438`` yr cooling time, nowhere near M1's own
-    deliberately-chosen ``5e4`` yr naive-failure dt). Part 2 (guard active
+    deliberately-chosen ``5e4`` yr stiff-dt point). Part 2 (guard active
     and correctly sized) does use ``_cfl_time_step``'s own
     ``dt_guarded``/``dt_hydro_only`` pair, exactly as M1's test does.
+
+    Historically (before 2026-09-16) ``update_temperature_implicit`` used a
+    naive fixed-point iteration that diverged at this dt (this function's
+    ``naive_dt_code`` param name is a holdover from that era, not renamed to
+    avoid rippling through every caller) -- it's since been replaced by a
+    Newton solve (see ``_cooling.py``'s docstring), which converges cleanly
+    here but still carries real first-order truncation error at this
+    stiffness (see M1's ``test_ki_cooling_cfl_guard`` docstring for the full
+    account and calibrated numbers -- this is the exact same physical state,
+    so the same ``~0.187`` rel. err applies).
     """
     n_tot_cgs = n_h_cgs * MU_H / MU
     instantaneous_t_cool_years = (
@@ -557,10 +568,11 @@ def _naive_vs_guarded_check(
     )
     t_naive_kelvin = float(t_naive_code) / KI_PARAMS.code_temperature_per_kelvin
     naive_rel_err = abs(t_naive_kelvin - t_reference_naive_kelvin) / t_reference_naive_kelvin
-    assert naive_rel_err > naive_failure_rel_err_min, (
-        f"{label}: expected the naive dt ({naive_dt_years:.4g} yr) to fail "
-        f"visibly (rel. err > {naive_failure_rel_err_min}), got "
-        f"{naive_rel_err:.4e} (naive={t_naive_kelvin:.2f} K, "
+    assert naive_rel_err < newton_rel_err_max, (
+        f"{label}: expected the Newton-based implicit solve at this stiff "
+        f"dt ({naive_dt_years:.4g} yr) to stay within {newton_rel_err_max} "
+        f"rel. err of the reference, got {naive_rel_err:.4e} "
+        f"(implicit={t_naive_kelvin:.2f} K, "
         f"reference={t_reference_naive_kelvin:.2f} K)."
     )
 
@@ -652,12 +664,12 @@ def test_sn_blast_evolves_cleanly_pre_cooling(min_shell_compression: float = 1.5
 
 def test_cooling_guard_engages_for_sn_driving(
     naive_dt_years: float = 5.0e4,
-    naive_failure_rel_err_min: float = 0.3,
+    newton_rel_err_max: float = 0.22,
     guarded_dt_ratio_max: float = 0.5,
     guarded_dt_match_rel_tol: float = 1e-3,
     guarded_step_rel_tol: float = 0.25,
 ):
-    """M1's naive-fails/guard-fixes check, reusing M1's own calibration point
+    """M1's stiff-dt/guard-fixes check, reusing M1's own calibration point
     (n_H=10 cm^-3, T=1e4 K -- a plausible shocked/compressed-shell state) but
     wired through *this module's* own ``_cooling_config``/``_cooling_params``
     (the actual objects ``test_sn_injection_with_cooling_stability`` below
@@ -672,14 +684,14 @@ def test_cooling_guard_engages_for_sn_driving(
     ``test_sn_injection_with_cooling_stability``'s own run.
 
     Args:
-        naive_dt_years: The externally-imposed ``dt`` used to demonstrate
-            the naive fixed-point failure -- same value as M1's own
+        naive_dt_years: The externally-imposed ``dt`` used to exercise the
+            stiff-dt case -- same value as M1's own
             ``test_ki_cooling_cfl_guard`` (``5e4`` yr, ``~14.5x`` the
             instantaneous cooling time at this state) -- see
             ``_naive_vs_guarded_check`` docstring for why this must be
             externally chosen rather than derived from this state's own
             (much smaller) natural CFL dt.
-        naive_failure_rel_err_min, guarded_dt_ratio_max,
+        newton_rel_err_max, guarded_dt_ratio_max,
         guarded_dt_match_rel_tol: See ``_naive_vs_guarded_check``; same
             roles and same calibrated magnitudes as M1's
             ``test_ki_cooling_cfl_guard`` (this is physically the same
@@ -717,7 +729,7 @@ def test_cooling_guard_engages_for_sn_driving(
     naive_dt_code = (naive_dt_years * u.yr).to(CODE_UNITS.code_time).value
     _naive_vs_guarded_check(
         rho_code, T_GUARD_CHECK_KELVIN, N_H_GUARD_CHECK_CGS, dt_guarded, dt_hydro_only, naive_dt_code,
-        naive_failure_rel_err_min, guarded_dt_ratio_max, guarded_dt_match_rel_tol, guarded_step_rel_tol,
+        newton_rel_err_max, guarded_dt_ratio_max, guarded_dt_match_rel_tol, guarded_step_rel_tol,
         label=f"SN-driving-wired guard check (n_H={N_H_GUARD_CHECK_CGS} cm^-3, T={T_GUARD_CHECK_KELVIN} K)",
     )
 

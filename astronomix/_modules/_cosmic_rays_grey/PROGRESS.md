@@ -4,6 +4,69 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-16, later: M1's naive fixed-point cooling solver replaced with Newton's method -- fixes silent divergence, does NOT eliminate all truncation error; two dependent regression tests updated)
+
+User asked for a proposed solution to the M0a-M4 audit's item 2 (`update_temperature_implicit`'s
+naive fixed-point iteration, still-open even after `subcycle_stiff_cooling`), then to implement
+and verify it. Proposed and implemented Newton's method in place of the fixed-point map
+(`_cooling.py`): `F(T) = T - T_old - dT/dt(T)*dt = 0`, solved via Newton steps using `jax.grad`
+for the (diagonal, since cooling has no spatial coupling) Jacobian, with an overshoot guard
+(`T_new` floored at `1e-2 * T_old`) against a pathological curve driving a step negative.
+
+**Verified via direct comparison against the naive solver across a wide stiffness range (same
+`n_H=10, T=1e4` K calibration point as M1's own test, varying `dt`):**
+
+| dt/tau ratio | reference | naive (old) | Newton (new) |
+|---|---|---|---|
+| 14.5x (M1 calibration) | 5854.8 K | 10068.3 K (72.0% err) | 6951.0 K (18.7% err) |
+| 100x | 160.5 K | 16832.4 K (10386% err) | 444.2 K (176.7% err) |
+| 1000x | 160.5 K | 78324.0 K (48692% err) | 182.7 K (13.8% err) |
+| 1e5x | 160.5 K | 6.84e6 K (4.26e6% err) | 160.7 K (0.13% err) |
+| 1e7x | 160.5 K | 6.83e8 K (4.26e8% err) | 160.5 K (0.001% err) |
+
+**Two real, honest findings, not just "fixed it":**
+1. **The silent-divergence failure mode is genuinely gone.** Directly traced the Newton
+   iteration (separate diagnostic script, not committed) at the 100x/1000x points: residual
+   converges to `~1e-12` in ~12 iterations every time -- Newton is *not* failing to converge the
+   way the old fixed-point did; it's finding the exact root of the implicit equation every time.
+   The old solver, by contrast, doesn't just lose some accuracy at high stiffness -- it diverges
+   to physically nonsensical values (millions of percent error, e.g. `683` million K at 1e7x).
+2. **Newton does NOT eliminate truncation error at large dt, and this is expected, not a bug.**
+   Even an *exactly*-solved single backward-Euler step is only first-order accurate in time -- at
+   intermediate stiffness (~100-1000x the local cooling time) a single such step still carries
+   real error, which is *worse* in this awkward middle zone than either the mild (<15x, near the
+   naive solver's own old convergence radius) or extreme (>1e5x, where the equation approaches
+   just finding the equilibrium root directly) regimes. This means `_cfl_time_step`'s `dt_cool`
+   term and `CoolingConfig.subcycle_stiff_cooling` remain genuinely necessary for *accuracy*, not
+   merely retained out of caution -- Newton's fix is complementary to them, not a replacement.
+   `update_temperature_implicit_subcycled` (M4's mechanism) is unaffected either way: it uses its
+   own adaptive explicit sub-stepping, not `update_temperature_implicit` internally.
+
+**Fixing this surfaced two existing regression tests whose entire premise was "the naive solver
+fails visibly at this exact stiff point" -- both updated, not just patched to pass:**
+- `pytests/stratified_ism/ki_cooling_thermal_relaxation.py`'s `test_ki_cooling_cfl_guard`: Part 1
+  now asserts Newton's error is both small in absolute terms (`<0.22`, calibrated with margin
+  around the observed `0.187`) and a real, substantial improvement over the old naive solver's
+  historical error (hardcoded `0.71966` from the original 2026-09-11 calibration, since that
+  solver no longer exists standalone to call). Module-level and function docstrings rewritten to
+  narrate old-failure-then-fix rather than presenting the failure as current behavior.
+- `pytests/stratified_ism/sn_driving_with_cooling.py`'s `_naive_vs_guarded_check` /
+  `test_cooling_guard_engages_for_sn_driving`: same physical calibration point (this test wires
+  M1's exact state through this module's own config objects), same fix, `naive_failure_rel_err_min`
+  renamed `newton_rel_err_max` throughout (default `0.22`, same as M1's). **This one was caught
+  only by actually re-running the test** -- editing `_cooling.py` alone would have silently broken
+  it, since its assertion is a near-exact duplicate of M1's, factored into a shared helper but not
+  otherwise cross-referenced by any static check.
+
+**Regression-verified after the fix, GPU-pinned, individually:** M1's `ki_cooling_thermal_relaxation.py`
+(updated test, passes), M2's `stratified_column_thermal_collapse.py` (unchanged test, passes --
+confirms Newton doesn't perturb this milestone's own real run), M3.5's `sn_driving_with_cooling.py`
+(updated test, passes after the fix above). M3's `sn_driving_energy_conservation.py` not
+re-checked -- confirmed via grep it never references `cooling_config` at all (cooling off by
+default), so `update_temperature_implicit` is never called there. M0a/M0b don't use cooling
+either. M4 itself not re-run (see above: its cooling path is architecturally independent of this
+change).
+
 ## Where things stand (2026-09-16: M0a/M0b/M2/M3 regression check against the M4-added FV-unsplit positivity floor -- clean, no residual gap)
 
 Before this, the positivity floor added in `_evolve_gas_state_unsplit_inner` during M4 (see the

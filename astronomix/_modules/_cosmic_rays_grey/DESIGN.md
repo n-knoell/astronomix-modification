@@ -615,15 +615,30 @@ representative densities, plus the `P_eq(n_H)` non-monotonicity from the simulat
 converged points (matches the independent reference to <1%).
 
 **Real finding #2 (gap #3, confirmed not assumed): `update_temperature_implicit`'s naive
-fixed-point iteration fails at a genuinely stiff dt, silently.** At `n_H=10 cm^-3`, `T=1e4` K
+fixed-point iteration failed at a genuinely stiff dt, silently.** At `n_H=10 cm^-3`, `T=1e4` K
 (instantaneous cooling time `~3438` yr), a single implicit step at `dt=5e4` yr (~14.5x that
-cooling time) gives `10068` K vs. the true `5855` K -- `jax.lax.while_loop` just stops at
-`max_iter=50` regardless of `tol`, no error. Fixed by adding a cooling-aware `dt_cool` term to
-`_finite_volume/_timestep_estimation/_timestep_estimator.py`'s `_cfl_time_step` (mirroring the
-existing `dt_visc`/`dt_relax` pattern: `C_cfl / max_over_grid(|dT/dt|/T)`, gated on
-`config.cooling_config.cooling` so every existing non-cooling test is unaffected by construction).
-Repairing the fixed-point iteration itself (e.g. Newton's method) would be a separate, larger
-change -- out of scope here; the guard prevents the hydro loop from ever handing it a dt this stiff.
+cooling time) gave `10068` K vs. the true `5855` K -- `jax.lax.while_loop` just stopped at
+`max_iter=50` regardless of `tol`, no error. First mitigated by adding a cooling-aware `dt_cool`
+term to `_finite_volume/_timestep_estimation/_timestep_estimator.py`'s `_cfl_time_step`
+(mirroring the existing `dt_visc`/`dt_relax` pattern: `C_cfl / max_over_grid(|dT/dt|/T)`, gated on
+`config.cooling_config.cooling` so every existing non-cooling test is unaffected by construction),
+which prevented the hydro loop from ever handing the solver a dt this stiff.
+
+**Solver itself fixed 2026-09-16 (SILCC-ISM M4-audit follow-up): `update_temperature_implicit`
+now solves the same backward-Euler equation via Newton's method** (`jax.grad` for the diagonal
+Jacobian -- cooling has no spatial coupling, so a cell's `dT/dt` depends only on its own `T`).
+Verified this eliminates the silent-divergence failure mode entirely (Newton's residual converges
+to `~1e-12` in ~12 iterations at ratios where the old solver diverged to physically nonsensical
+values, e.g. millions-of-percent error) -- but **does not eliminate all truncation error**: even
+an exactly-solved single backward-Euler step is only first-order accurate, so real error persists
+at intermediate stiffness (100-1000x the local cooling time, worse there than at either milder or
+much more extreme ratios). `dt_cool` (above) and the separate `CoolingConfig.subcycle_stiff_cooling`
+mechanism (SILCC-ISM M4, see below) therefore remain genuinely necessary for accuracy, not
+superseded by the Newton fix. Two existing regression tests whose premise was "the naive solver
+fails visibly here" had to be rewritten accordingly (M1's `test_ki_cooling_cfl_guard` and M3.5's
+`test_cooling_guard_engages_for_sn_driving`, a near-duplicate check through this module's own
+config path). Full before/after numbers across five stiffness ratios: PROGRESS.md's 2026-09-16
+"naive fixed-point cooling solver replaced" entry.
 
 **Real finding #3 (test-setup pitfall, worth remembering for future cooling tests): `n_H =
 density/mu_H` is this codebase's convention** (`get_particle_number_density`), so building a
