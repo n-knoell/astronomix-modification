@@ -4,7 +4,182 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Where things stand (2026-09-16, latest: SILCC-ISM project M5 -- first real CR-grey-transport run, blocked by a new NaN mechanism, root cause confirmed via instrumentation)
+## Where things stand (2026-09-17, later: ladder item 14 -- synchrotron + IC SED vs. naima, DONE)
+
+**Item 14 turned out not to actually be blocked by the plan's "electron treatment" design
+decision (Sec. 6) after all** -- checked explicitly before starting, same scoping logic as item
+13: that decision only gates *deriving* an electron population from the CR-grey/proton simulation
+state, not validating the emission formula against a directly-specified, known one (item 14's own
+literal wording: "for a known electron population"). Proceeded without it, deferring it (and
+line-of-sight integration to a map) to item 15, same as item 13 did for the analogous proton-side
+questions.
+
+**New module**: `astronomix/_modules/_cosmic_rays_grey/cr_grey_emission_leptonic.py` --
+`GreyElectronSpectrum` (mirrors `cr_grey_emission.GreyProtonSpectrum` exactly) plus JAX ports of
+`naima.radiative.Synchrotron` (Aharonian, Kelner & Prosekin 2010) and `naima.radiative.
+InverseCompton`'s isotropic-thermal-seed case (Khangulyan, Aharonian & Kelner 2014) -- only the
+isotropic-thermal-seed IC case, covering naima's CMB/FIR/NIR presets plus custom diluted
+gray-bodies; anisotropic/tabulated seeds deferred.
+
+**New pytest**: `pytests/cosmic_rays_grey/cr_synchrotron_ic_emission.py`. Validated against naima
+for the naima-tutorial-style ECPL electron population (amplitude `1e33`/eV at `E_0=1` TeV,
+`alpha=2.0`, `e_cutoff=100` TeV), across 60 photon energies log-spaced 1 ueV-1 TeV, restricted to
+energies within `1e-30` of each spectrum's own peak (both fall off exponentially past cutoff;
+comparing floating-point noise `>100` orders of magnitude below the peak isn't meaningful): **max
+relative error `4.7e-14`** (synchrotron, 100 uG) and **`3.7e-8`** (IC on CMB) -- both comfortably
+inside the `1e-6` tolerance. Re-verified across several field strengths/spectral shapes and all
+three seed presets plus a diluted 20 K gray body: every case `<4e-8`. Differentiability smoke
+check (both channels): finite, nonzero gradients throughout.
+
+**Two real bugs caught, both the same underlying mistake (a positivity floor sized for the wrong
+quantity's scale) manifesting two different ways:**
+1. **Synchrotron's forward values were wrong by ~15-20 orders of magnitude, silently (no crash,
+   no NaN) -- both curves looked SED-shaped, just at the wrong scale.** `jnp.maximum(x, _TINY)`
+   with this module's shared `_TINY=1e-30` (sized for `cr_grey_emission.py`'s dimensionless
+   quantities) clobbered `cs1_1`/`e_c_erg`, two CGS-erg-scale quantities that legitimately sit at
+   `~1e-17` to `~1e-51`. Fixed by flooring `B` itself (the only genuinely-zero-able input) once,
+   at the top, instead of the derived erg-scale products.
+2. **Inverse Compton's forward values were already correct (`~1e-14` agreement) but `jax.grad`
+   gave `NaN`.** `1.0 - (1.0 - 1e-30)` rounds to exactly `1.0` in float64 -- the intended clip was
+   silently a no-op, so `1-z` could hit an exact `0.0` in the unphysical (masked-to-zero-output)
+   region, and `jnp.where` differentiating both branches let `0 * NaN = NaN` contaminate the whole
+   gradient despite a perfectly correct forward pass. Fixed by flooring `(1-z)` directly rather
+   than deriving it from a clipped `z`.
+
+**General lesson**: `_TINY=1e-30` is only safe for dimensionless, order-unity quantities -- any
+new physics formula with its own natural scale needs its own appropriately-scaled floor. Full
+write-up: DESIGN.md's "Resolved: synchrotron + inverse-Compton emission (ladder item 14, Phase C,
+2026-09-17)" section.
+
+**Next up: item 15 (end-to-end SNR-molecular-cloud case, now unblocked -- items 13 and 14 both
+done) -- or item 12's M6 clumpiness gap, per user direction.**
+
+## Where things stand (2026-09-17, ladder item 13 -- pion-decay SED vs. naima, DONE. Phase C started)
+
+Ladder item 12 (SILCC-ISM project, M0a-M6) is done, with one flagged, deliberately-left-open gap
+(M6's clumpiness comparison, see the 2026-09-16 entry below -- user chose to leave it and move on
+rather than spend more GPU time closing it). **Item 13 starts Phase C** (differentiable emission
+operators, plan Sec. 3): "Pion-decay SED for a known proton population vs naima."
+
+**New module**: `astronomix/_modules/_cosmic_rays_grey/cr_grey_emission.py` -- a JAX
+reimplementation of `naima.radiative.PionDecay`'s analytic (non-lookup-table) implementation of
+Kafexhiu et al. (2014)'s p-p -> pi0 -> gamma parametrization, plus `GreyProtonSpectrum` (an
+exponential-cutoff power-law proton spectrum matching naima's `ExponentialCutoffPowerLaw`
+parameter-for-parameter -- the plan's grey "particle-spectrum object"). `naima` was installed
+into the dev venv (`pip install naima`) as a validation-only dependency (not declared in
+`pyproject.toml`, matching this module's `pytest` non-dependency).
+
+**New pytest**: `pytests/cosmic_rays_grey/cr_pion_decay_emission.py`. Validated directly against
+naima (`useLUT=False`, forcing naima's own analytic formula rather than a cached fit to it) for
+the naima-tutorial-style ECPL proton population (amplitude `1e36`/eV at `E_0=1` TeV, `alpha=2.1`,
+`e_cutoff=30` TeV, `nh=2.5`/cm^3), across 40 photon energies log-spaced 100 MeV-100 TeV: **max
+relative error `3.4e-13`, median `5.0e-15`** -- essentially floating-point-exact agreement, not
+just "close." Re-verified across all four Monte Carlo high-energy models (Pythia8/Geant4/SIBYLL/
+QGSJET), with and without the nuclear-enhancement factor, and several different spectral shapes:
+every case agrees to `<5e-12`. Also a differentiability smoke check (`jax.grad` of the total
+summed photon rate w.r.t. every spectrum field plus gas density: finite and nonzero everywhere
+tested).
+
+**One real bug caught before the comparison ever ran, not obvious in advance:** the first
+version silently returned `NaN` for every photon energy. Root cause: JAX's float32 default
+overflows (`>3.4e38`) given this ladder item's own physical scale -- a *total* particle-count
+proton-spectrum amplitude (`~1e36`/eV, the plan's own "known proton population" convention, not
+a volumetric density) integrated over a `~1.2` GeV-`10` PeV proton-energy grid -- well before
+precision would matter at all. Fixed via `jax.config.update("jax_enable_x64", True)` in the
+pytest (same fix `cr_gradient_check.py`, item 16, already uses for an unrelated reason). Worth
+remembering for item 15: any future code path carrying a *total* (not volumetric) CR
+particle-count normalization needs `jax_enable_x64` too.
+
+**Deliberately deferred, not attempted this ladder item:** deriving a spectrum's normalization
+from a simulation cell's local `e_cr` field, and line-of-sight integration to a map (item 15's
+job); the leptonic (electron) emission operators (item 14 -- turned out not to actually need the
+plan's still-open "electron treatment" design decision, Sec. 6, resolved either; see the
+2026-09-17 "later" entry above). Full design write-up, including the exact regime-priority
+reconstruction needed to port naima's numpy-boolean-mask-assignment code into
+`jax.grad`-compatible `jnp.where` form: DESIGN.md's "Resolved: pion-decay emission (ladder item
+13, Phase C, 2026-09-17)" section.
+
+**Ladder item 12's SILCC-ISM project is done except one flagged gap (M6, below); items 13 and 14
+(Phase C) are now both done too -- see the 2026-09-17 "later" entry above for item 14. Next up:
+item 15 (end-to-end SNR-cloud case, now unblocked), or closing item 12's M6 clumpiness gap, per
+user direction.**
+
+## Where things stand (2026-09-16, SILCC-ISM project M6 -- Simpson et al. (2016) SN-placement comparison, done; one real comparison gap flagged, not yet closed)
+
+M6 was left as an open "and/or" in the original plan (MHD + anisotropic CR diffusion, or Simpson
+et al. (2016)'s SN-placement comparison, or both) -- user picked the SN-placement branch only.
+
+**New infrastructure**: `SNDrivingConfig.density_weighted_placement` (default `False`, fully
+backward-compatible) + a new `_draw_density_weighted_site` helper in `_modules/_sn_driving/
+sn_driving.py` -- Simpson et al. (2016)'s "density peak" placement mode, per-cell trigger
+probability `propto rho ** SNDrivingParams.sn_density_weighting_power` (default `1.5`, their own
+local-SFR proxy `sfr_i ~ m_i/t_ff,i ~ rho_i^1.5` on this codebase's fixed-volume grid), implemented
+as `jax.random.categorical` sampling over eligible (interior, z-range-restricted) cells rather than
+`_inject_supernovae`'s existing continuous-uniform draw. `interior_mask` construction was hoisted
+to the top of `_inject_supernovae` (previously computed only for the post-site deposit-weight
+normalization) so both placement modes can share it and the density-weighted draw never lands on a
+ghost cell.
+
+**New script**: `pytests/stratified_ism/m6_sn_placement_comparison.py` -- reuses M5 attempt 3's
+exact box/cooling/CR-grey-transport setup (kappa_perp=1e26 cm^2/s, reduced_streaming_speed=300
+km/s) **at M5 attempt 3's own resolution (32x256)**, deliberately decoupled from
+`m5_cr_driven_outflow.py`'s own current state (that script now holds an unrun, 8x-resolution
+"attempt 4" per a separate, still-pending user request) -- only `density_weighted_placement=True`
+changes. Two new diagnostics added, targeting Simpson et al.'s specific qualitative claims (not
+metrics from the paper itself, independently chosen): `_midplane_clumpiness` (std(log10(rho)) at
+the midplane face-on slice, a "smooth vs. clumpy" proxy) and `_outflow_pressure_budget` (mean
+P_gas/P_cr/ram-pressure at the outflow reference height, a "pressure-driven vs. ballistic" proxy).
+Smoke-tested (8x64, short t_end, boosted SN rate) before the real run -- clean, no crashes, density
+-weighted draw visibly landing near the high-density midplane as expected.
+
+**Real run: completed with no NaNs through the full t_end (7.39e6 yr, all 40 snapshots).**
+Late-time (last quarter of valid snapshots) comparison, M6 (density-weighted) vs. M5 attempt 3
+(random, already on record, not rerun):
+
+| Quantity | M6 (density-weighted) | M5 attempt 3 (random) | Simpson et al. (2016) |
+|---|---|---|---|
+| Mass-loading eta | 7.77 | 6.16 | comparable between modes |
+| Outflow velocity | 21.3 km/s | 5.83 km/s | both reach >50 km/s (their units/scale) |
+| H_gas | 28.54 pc | 28.41 pc | -- |
+| H_cr | 115.97 pc | 86.81 pc | -- |
+| Midplane clumpiness | 0.467 (time-varying, 0-0.75) | **not measured** | density-weighted -> smoother |
+| P_cr vs. P_ram at outflow height | P_cr=52.2 > P_ram=33.0 | **not measured** | density-weighted -> pressure-driven (P_cr >~ P_ram) |
+
+**Two real findings, not just "it ran":**
+1. **Mass-loading is genuinely comparable between the two placement modes (7.77 vs. 6.16, same
+   order of magnitude)** -- directly matches Simpson et al.'s own headline finding that mass
+   loading is placement-mode-insensitive even though the driving mechanism differs.
+2. **The outflow pressure budget confirms the "pressure-driven" signature on its own terms**: CR
+   pressure (52.2) exceeds ram pressure (33.0) at the reference height in the density-weighted run
+   -- consistent with Simpson et al.'s claim that density-weighted placement drives a
+   pressure-dominated (not ballistic/kinetic-dominated) outflow. This comparison doesn't need M5's
+   own number to be meaningful (P_cr vs. P_ram is evaluated within the same run).
+
+**One real, honest gap: the clumpiness comparison is incomplete.** `_midplane_clumpiness` and
+`_outflow_pressure_budget` were built for this milestone and never retroactively run against M5
+attempt 3's own states -- and M5's snapshot states were never persisted to disk (only diagnostics/
+plots), so there is no saved data to compute them from after the fact. M6's own clumpiness is
+itself far from uniformly low (0 early, rising to a peak ~0.75 around snapshots 10-11 as density
+builds up between triggers, settling to ~0.3-0.5 in the tail) -- a real, self-regulating
+feedback-loop signature (high density -> high trigger probability -> disruption -> lower density)
+worth noting on its own, but without M5's own number there is no way to confirm Simpson et al.'s
+specific "smoother than random placement" claim quantitatively from this run alone. **Not yet
+closed** -- would need a fresh run of M5's exact random-placement config with these same two new
+diagnostics added (another ~43 min run at this resolution), not yet done, paused to report and
+ask the user rather than spend more GPU time unprompted.
+
+**Also worth flagging: outflow velocity differs a lot more than mass-loading (21.3 vs. 5.83 km/s,
+~3.6x) and the raw per-snapshot v_out for M6 spikes considerably higher still (up to 35.98 km/s at
+snapshot 37)** -- Simpson et al.'s own framing ("both reach significant velocities above 50 km/s")
+doesn't map cleanly onto a single-number ratio like this given our very different absolute box
+scale from theirs; reported as an observation, not matched against a specific literature number.
+
+Diagnostic plots: `pics/m6_sn_placement_comparison.svg` (6-panel time series: midplane density,
+peak T, outflow velocity, mass loading, clumpiness, pressure budget), `pics/
+m6_structure_girichidis_fig1_style.svg` (same Girichidis-2016-style structure plot as M5, labeled
+for this milestone's config).
+
+## Where things stand (2026-09-16, SILCC-ISM project M5 -- first real CR-grey-transport run, blocked by a new NaN mechanism, root cause confirmed via instrumentation)
 
 New script `pytests/stratified_ism/m5_cr_driven_outflow.py`, M4's exact stratified-column +
 SN-driving + delayed-cooling + subcycled-cooling stack with grey two-moment CR transport turned
@@ -3049,6 +3224,30 @@ See "What's done" and "Verified" below for details.
     the eventual CR-ISM comparison needs; M5 (actually running grey CR transport/feedback
     throughout this setting and comparing against the literature result) and M6 are the
     remaining, not-yet-started milestones.
+18. ~~Ladder item 12 (SILCC-ISM project)~~ -- done (2026-09-16), M0a through M6, with one
+    deliberately-left-open gap (M6's clumpiness comparison vs. M5 -- M5's states were never saved
+    to disk, so this needs a fresh M5-random-placement rerun with M6's diagnostics added to close;
+    user chose to leave it and move on rather than spend more GPU time unprompted). See the
+    2026-09-16 "M6" and "M5" entries above for the full account.
+19. ~~Ladder item 13 (pion-decay SED for a known proton population vs. naima, Phase C's first
+    item)~~ -- done (2026-09-17): new `cr_grey_emission.py` (JAX port of naima's Kafexhiu et al.
+    (2014) implementation) validated to floating-point precision against naima itself. See the
+    2026-09-17 entry above and DESIGN.md's "Resolved: pion-decay emission (ladder item 13, Phase
+    C, 2026-09-17)" section for the full account, including the float32-overflow NaN bug caught
+    along the way and the naima-numpy-mask-to-jnp.where regime-priority reconstruction.
+20. ~~Ladder item 14 (synchrotron + IC SED for a known electron population vs. naima)~~ -- done
+    (2026-09-17): new `cr_grey_emission_leptonic.py` (JAX ports of naima's Synchrotron/
+    InverseCompton implementations) validated against naima to `<4e-8` relative error across
+    several spectral shapes/field strengths/seed fields. Turned out not to actually need the
+    plan's "electron treatment" decision (Sec. 6) resolved first -- see the 2026-09-17 "later"
+    entry above and DESIGN.md's "Resolved: synchrotron + inverse-Compton emission (ladder item
+    14, Phase C, 2026-09-17)" section, including two real bugs caught (a positivity floor sized
+    for the wrong quantity's scale, in two different guises).
+21. **Next: item 15 (end-to-end SNR-molecular-cloud case, now unblocked -- items 13 and 14 both
+    done) -- needs the electron-treatment decision (Sec. 6) resolved for real this time, since
+    item 15 actually has to derive an electron population from the CR-grey/proton state, not just
+    validate a formula against a known one; or close item 12's M6 clumpiness gap (18, above) --
+    whichever the user prioritizes.**
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 

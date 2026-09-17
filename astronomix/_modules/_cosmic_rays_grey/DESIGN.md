@@ -1005,6 +1005,188 @@ and the two implementation attempts' detail: PROGRESS.md's 2026-09-15 (later sam
 any future module that can locally drive the K&I curve into its fast-cooling regime for an
 extended stretch, not just SN driving.
 
+## Resolved: pion-decay emission (ladder item 13, Phase C, 2026-09-17)
+
+Ladder item 13 starts Phase C (differentiable emission operators, plan Sec. 3) -- the first ladder
+item after the SILCC-ISM project (item 12, M0a-M6). Scope, per the plan's own wording ("Pion-decay
+SED for a known proton population vs naima"): a standalone physics-formula check, decoupled from
+any running simulation -- given an externally-specified proton spectrum and target gas density,
+does this module's photon-spectrum formula match `naima`'s reference implementation of Kafexhiu et
+al. (2014)? Wiring emission into the running simulation (a spectrum normalized from a cell's local
+`e_cr`, line-of-sight integration to a map) is left to ladder item 15, per the plan's own staging.
+
+**New module:** `astronomix/_modules/_cosmic_rays_grey/cr_grey_emission.py`. `GreyProtonSpectrum`
+(a `NamedTuple`: `amplitude`, `e_0`, `alpha`, `e_cutoff`, `beta`) is the plan's grey "particle-
+spectrum object" (Sec. 3: "normalization from e_cr, slope, cutoff") -- an exponential-cutoff
+power law in total proton energy, deliberately matching naima's `ExponentialCutoffPowerLaw`
+parameter-for-parameter so a naima particle distribution built with the same numbers gives the
+same `J(E)`. `pion_decay_photon_spectrum` (and its naima-unit-convention sibling,
+`pion_decay_photon_spectrum_per_ev`) is a line-for-line JAX port of `naima.radiative.PionDecay`'s
+analytic (non-lookup-table) implementation of Kafexhiu et al. (2014): the inelastic p-p cross
+section (Eq. 1), the low/mid/high-energy inclusive pi0-production cross sections and their
+model-parameter tables (Tables IV, V, VII, all four Monte Carlo high-energy models), the
+kinematic `Egmax`/`Xg` shape function (Eqs. 9-11), the ISM nuclear-enhancement factor (Sec. IV),
+and naima's own log-log trapezoidal proton-spectrum integration (`trapz_loglog`) -- reimplemented,
+not called, since `naima` is a validation dependency only (installed in the dev venv, not an
+astronomix runtime dependency).
+
+**Reimplementation strategy, since naima's own code uses numpy boolean-mask assignment
+(`array[where(cond)] = ...`) for its five-or-so Tp/Egamma regime splits, which isn't
+`jax.grad`-compatible as written:** every branch is evaluated unconditionally across the whole
+input domain and combined with nested `jnp.where` in the same priority order naima's sequential
+mask assignment implies (a later, narrower-`Tp` condition's branch wins over an earlier, wider
+one wherever both apply -- confirmed by hand from naima's source that this, not the literal
+per-regime boundaries the code comments suggest, is the *net* effective regime map, e.g. Table V's
+nominal "20 < Tp <= 100" Geant4 regime is actually only used up to `Tp <= Etrans[hiEmodel]`
+because the later `Tp > Etrans` assignment overwrites it for `Etrans < Tp <= 100`). Every
+`sqrt`/`log`/fractional power in every branch is floored against invalid domains (negative
+arguments from floating-point rounding right at a regime boundary, or from evaluating a branch's
+formula outside the input range where it's actually valid) with a `1e-30` floor -- this module's
+established "every branch must be finite everywhere so `jnp.where`'s backward pass doesn't
+differentiate through a NaN in an unselected branch" pattern (`cr_pressure_speed_floor`,
+`dsa_efficiency_kang_ryu_2013`). One analytically-derived case worth noting for future reference:
+`Xg` (Eq. 11's kinematic shape variable) never needs a *lower*-bound clip in principle (`Yg`,
+`Ygmax >= m_pi` for any positive energy, by the Y-substitution's own construction, so `Xg >= 0`
+always) -- naima itself only clips the upper bound (`Xg > 1 -> 1`); this port clips both
+defensively anyway, since the floors elsewhere can perturb `Xg` by a tiny amount right at the
+edges.
+
+**Validated against naima directly (`pytests/cosmic_rays_grey/cr_pion_decay_emission.py`),
+essentially to floating-point precision, not just "close":** for the naima-tutorial-style ECPL
+proton population (amplitude `1e36`/eV at `E_0=1` TeV, `alpha=2.1`, `e_cutoff=30` TeV) against a
+`2.5`/cm^3 target density, across 40 photon energies log-spaced from 100 MeV to 100 TeV, with
+`naima`'s own `useLUT=False` (forcing its analytic-formula path, not a cached fit to it, so the
+comparison is against the same underlying physics rather than naima's numerics) -- **max relative
+error `3.4e-13`, median `5.0e-15`**. Re-verified across all four Monte Carlo high-energy models
+(Pythia8/Geant4/SIBYLL/QGSJET), with and without the nuclear-enhancement factor, and several
+different `(alpha, e_cutoff)` spectral shapes: every case agrees to `<5e-12` relative error. This
+level of agreement (machine precision, not merely "same order of magnitude") is itself evidence
+the regime-priority reconstruction above is exactly right, not just approximately so -- a
+transcription bug in any single regime boundary would show up as a sharp, larger disagreement
+localized to that Tp/Egamma range, not a uniform floating-point-level residual across six decades
+of photon energy.
+
+**One real, non-obvious bug caught before the naima comparison ever ran:** the first version of
+this comparison silently returned `NaN` for every photon energy. Root cause: `astronomix` (and
+this reimplementation, importing only `jax.numpy`) defaults to JAX's 32-bit float precision, but
+this ladder item's own physical quantities span an enormous dynamic range for an entirely mundane
+reason -- the plan's chosen "known proton population" convention (a *total* particle-count
+spectrum, e.g. amplitude `~1e36`/eV, not a volumetric density) combined with the proton-energy
+integration grid spanning `~1.2` GeV to `10` PeV overflows `float32` outright (`>3.4e38`) partway
+through the log-log trapezoidal integration, well before any precision concern would matter --
+confirmed directly (isolated per-quantity NaN tracing) and fixed by enabling `jax_enable_x64`
+in the pytest, the same fix `cr_gradient_check.py` (item 16) already uses for an unrelated
+reason (FD-vs-AD precision). Worth remembering for ladder item 15 (the end-to-end SNR-cloud
+case): any future code path that carries a *total* (not volumetric) particle-count normalization
+alongside a wide proton-energy integration range will need `jax_enable_x64` too, not just
+differentiability-sensitive tests.
+
+**Differentiability smoke check** (the plan's own "gradients flow sim -> spectrum -> map" goal,
+Sec. 3): `jax.grad` of the total summed photon rate with respect to every `GreyProtonSpectrum`
+field plus the gas density is finite and nonzero everywhere tested -- a lighter check than ladder
+items 16/17's dedicated FD-vs-AD gradient tests (not yet extended to the emission operators as of
+this ladder item; item 13 itself only asks for the SED comparison).
+
+**Deliberately deferred to later ladder items, not attempted here:** deriving a spectrum's
+normalization from a simulation cell's `e_cr` (needs the still-open "spectral-interface contract"
+design decision, plan Sec. 6, though for the grey phase specifically the mapping is just matching
+`integral(E_kinetic * J(E) dE) = e_cr` for an assumed `alpha`/`e_cutoff` -- not attempted yet since
+nothing in this ladder item needed it); line-of-sight integration to a map/SED (item 15); the
+leptonic (electron) emission operators (item 14 -- turned out not to actually be blocked by the
+"electron treatment" decision after all, see that item's own entry below: the decision only gates
+*deriving* an electron population from the CR-grey/proton state, not validating the emission
+formula against a directly-specified one). `naima` was added to the dev venv (`pip install naima`)
+as a validation-only dependency, not declared in `pyproject.toml` (mirrors this module's `pytest`
+non-dependency, per PROGRESS.md's "Environment notes").
+
+## Resolved: synchrotron + inverse-Compton emission (ladder item 14, Phase C, 2026-09-17)
+
+Ladder item 14: "Synchrotron + IC SED for a known electron population vs naima." Same scoping
+logic as item 13 (previous section) applies and was checked explicitly before starting: the
+plan's open "electron treatment" decision (Sec. 6: fixed `K_ep` post-processing vs. a
+separately-evolved grey electron energy density) only gates *deriving* an electron population from
+the CR-grey/proton simulation state -- it does not gate validating the emission formula itself
+against a directly-specified, known electron spectrum, exactly as item 13 didn't need the
+"spectrum normalization from e_cr" question resolved either. So item 14 proceeded without that
+decision, deferring it (along with line-of-sight integration to a map) to item 15, same as item 13
+did for the analogous proton-side questions.
+
+**New module:** `astronomix/_modules/_cosmic_rays_grey/cr_grey_emission_leptonic.py`.
+`GreyElectronSpectrum` mirrors `cr_grey_emission.GreyProtonSpectrum` exactly (same
+exponential-cutoff-power-law fields), just for electrons. `synchrotron_photon_spectrum` is a JAX
+port of `naima.radiative.Synchrotron`'s implementation of the Aharonian, Kelner & Prosekin (2010)
+closed-form synchrotron-kernel approximation (`Gtilde`, AKP10 Eq. D7); `inverse_compton_photon_spectrum_planck`
+ports `naima.radiative.InverseCompton`'s isotropic-thermal-seed IC cross section (Khangulyan,
+Aharonian & Kelner 2014, Eq. 14, the `G34` kernel). Only the isotropic-thermal-seed IC case is
+ported (naima's anisotropic and monochromatic/tabulated seed-field cases are deferred to whichever
+later ladder item first needs them) -- covers naima's `"CMB"`/`"FIR"`/`"NIR"` presets plus any
+custom (possibly diluted, i.e. non-blackbody-normalized) gray-body seed. As with item 13, naima
+itself (not the plan's cited Blumenthal & Gould (1970)) is what's actually ported, since naima is
+the plan's own chosen validation reference and these are the algorithms it actually runs.
+
+**Validated against naima directly** (`pytests/cosmic_rays_grey/cr_synchrotron_ic_emission.py`):
+for the naima-tutorial-style ECPL electron population (amplitude `1e33`/eV at `E_0=1` TeV,
+`alpha=2.0`, `e_cutoff=100` TeV) across 60 photon energies log-spaced 1 ueV-1 TeV --
+**synchrotron (100 uG field): max relative error `4.7e-14`; inverse Compton (CMB seed): max
+relative error `3.7e-8`** (restricted to photon energies within `1e-30` of each spectrum's own
+peak -- see the pytest's own "Tolerance note" docstring for why: both spectra fall off
+exponentially past their cutoff, and comparing floating-point noise `>100` orders of magnitude
+below the peak isn't physically meaningful, the same judgment call ladder item 8's tolerance
+calibration made). Re-verified across several field strengths/spectral shapes (synchrotron) and
+all three seed-field presets plus a custom diluted 20 K gray body (IC): every case agrees to
+`<4e-8`. Also a differentiability smoke check (`jax.grad` of each channel's total summed photon
+rate w.r.t. every spectrum field, `B`, and seed temperature/density: finite and nonzero
+everywhere tested).
+
+**Two real, non-obvious bugs caught before this comparison was fully trustworthy -- both were the
+*same* underlying mistake (a positivity floor sized for the wrong quantity's scale) manifesting
+two different ways, not two unrelated bugs:**
+
+1. **Synchrotron's forward values were wrong by ~15-20 orders of magnitude, silently (no NaN, no
+   crash) -- traced to `jnp.maximum(x, _TINY)` guards on `cs1_1`/`e_c_erg`, two CGS-erg-scale
+   quantities that routinely sit at `~1e-17` to `~1e-51` for realistic photon energies/fields.**
+   This module's shared `_TINY = 1e-30` (`cr_grey_emission.py`) is sized for the *dimensionless*
+   quantities the hadronic-channel module actually uses it for -- reusing it here silently
+   clobbered every legitimate small-but-nonzero `cs1_1`/`e_c_erg` value up to a photon energy
+   where they finally exceeded `1e-30`, producing a completely different (wrong) curve shape, not
+   an obviously-broken one (both curves fell with photon energy, just at the wrong absolute scale
+   and rate) -- exactly the kind of bug a "does it look roughly SED-shaped" eyeball check would
+   miss, and only the direct naima cross-check caught. **Fixed:** floor `B` itself (the only input
+   quantity that can be legitimately exactly zero) once, at the top, instead of flooring either
+   downstream erg-scale product -- `photon_energy_erg`/`gam` are never zero by construction, so
+   `cs1_1`/`e_c_erg` need no floor of their own once `B` is floored.
+2. **Inverse Compton's forward values were correct (matched naima to `~1e-14`) but `jax.grad`
+   produced `NaN`.** Root cause: `z_safe = jnp.clip(z, _TINY, 1.0 - _TINY)` with the same
+   `_TINY = 1e-30` -- at float64's ~16-digit precision, `1.0 - (1.0 - 1e-30)` rounds to *exactly*
+   `1.0` (1e-30 is far below machine epsilon at scale 1), so the upper clip is silently a no-op
+   and `1 - z_safe` can land on an exact `0.0` for any `z` at or above 1 (the unphysical
+   `E_gamma >= E_electron` region, later masked to `0` in the *output* by this function's own
+   `jnp.where`). `1/(1-z_safe)` then genuinely diverges there -- the forward value stays correct
+   because the final `jnp.where` masks it, but `jnp.where` differentiates both branches
+   (`cr_pressure_speed_floor`'s own category of gotcha), and `0 * NaN = NaN` in IEEE754
+   contaminates the whole gradient even though that unphysical region's cotangent seed is exactly
+   zero. **Fixed:** compute `one_minus_z = jnp.clip(1.0 - z, 1e-10, 1.0)` directly instead of
+   deriving `(1-z)` from a clipped `z` -- avoids the float64 cancellation instead of trying to
+   patch around it, at a floor scale (`1e-10`) that actually survives subtraction at this scale.
+   (This also nudged the forward-value agreement from `~1e-14` to `~3.7e-8` -- still far inside
+   this pytest's `1e-6` tolerance -- since the floor now genuinely clips a thin sliver of
+   near-kinematic-edge phase space instead of computing it exactly via a cancellation that turned
+   out to be numerically unstable to begin with.)
+
+**General lesson for future ladder items, worth remembering:** this module's `_TINY = 1e-30`
+"universal" floor constant (`cr_grey_emission.py`) is only safe for genuinely dimensionless
+quantities of order unity or so -- any new physics formula with its own natural scale (CGS units,
+a near-unity kinematic ratio, etc.) needs its *own* appropriately-scaled floor, not a blind reuse
+of this one. Both bugs above were caught only by the direct naima cross-check (bug 1) and an
+explicit gradient-finiteness check (bug 2) -- neither would have been visible from inspecting the
+code or from a forward-value-only test in bug 2's case.
+
+**Deliberately deferred, not attempted this ladder item:** naima's anisotropic and
+monochromatic/tabulated-spectrum IC seed cases; Bremsstrahlung (mentioned in the plan as
+"optional"); deriving an electron population from the CR-grey/proton state (item 15, blocked on
+the electron-treatment decision after all, for *this* specific question); line-of-sight
+integration to a map (item 15).
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)
