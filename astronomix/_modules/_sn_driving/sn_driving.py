@@ -18,18 +18,25 @@ cooling or open boundaries conserves total (thermal + kinetic + CR) energy
 exactly except for these discrete deposits, which is what
 ``pytests/stratified_ism/sn_driving_energy_conservation.py`` checks.
 
-Site placement is drawn uniformly at random over the whole box ("random"
-placement, matching Girichidis et al. 2016's own comparison case and Simpson
-et al. 2016's "random" mode -- see DESIGN.md's SILCC-ISM section; "at density
-peaks" is a stretch M6 cross-check, not implemented here) and the injection
-footprint wraps periodically along any axis whose boundary is periodic (the
-box-scale minimum-image convention), so a site drawn near a periodic edge
-still gets its full, undistorted energy deposit. x/y are always uniform over
-the full box; z can optionally be restricted to
+Site placement is drawn uniformly at random over the whole box by default
+("random" placement, matching Girichidis et al. 2016's own comparison case
+and Simpson et al. 2016's "RAND" mode -- see DESIGN.md's SILCC-ISM section).
+``SNDrivingConfig.density_weighted_placement`` switches to Simpson et al.
+(2016)'s other mode instead: sites drawn from a density-weighted categorical
+distribution over eligible cells rather than uniformly (SILCC-ISM project
+milestone M6, ladder item 12's optional stretch cross-check) -- see
+``_draw_density_weighted_site``'s docstring for the derivation and mechanics.
+Either way, the injection footprint wraps periodically along any axis whose
+boundary is periodic (the box-scale minimum-image convention), so a site
+drawn near a periodic edge still gets its full, undistorted energy deposit.
 ``[SNDrivingParams.sn_z_min, sn_z_max]`` (default +/-inf, i.e. unrestricted)
--- added for milestone M4's tall, vertically-stratified box, where a real SN
+restricts site eligibility to that z range under either placement mode --
+added for milestone M4's tall, vertically-stratified box, where a real SN
 population should track the star-forming layer near the midplane rather than
-the whole column's tenuous envelope; see that field's docstring.
+the whole column's tenuous envelope; see that field's docstring. Under
+random placement x/y stay uniform over the full box; under density-weighted
+placement all three axes are implicitly restricted to wherever the weighted
+distribution actually puts mass.
 
 **Momentum injection (``SNDrivingConfig.momentum_injection``, added for M4):**
 at M4's box/resolution, K&I cooling time at a fresh deposit's own post-shock
@@ -131,6 +138,65 @@ def _periodic_delta(delta, box_length: float, is_periodic: bool):
     return delta - box_length * jnp.round(delta / box_length)
 
 
+def _draw_density_weighted_site(
+    pos_key,
+    primitive_state: STATE_TYPE,
+    helper_data: HelperData,
+    interior_mask,
+    z_lo: Union[float, Float[Array, ""]],
+    z_hi: Union[float, Float[Array, ""]],
+    weighting_power: Union[float, Float[Array, ""]],
+    registered_variables: RegisteredVariables,
+):
+    """Draw a trigger's site from a density-weighted categorical
+    distribution over eligible cells -- Simpson et al. (2016)'s "density
+    peak" SN-placement mode (SILCC-ISM project milestone M6), as an
+    alternative to ``_inject_supernovae``'s default uniformly-random site.
+
+    Simpson et al.'s own placement probability is proportional to a local
+    star-formation-rate proxy, ``sfr_i ~ m_i / t_ff,i`` (their Sec. 2), with
+    the free-fall time ``t_ff ~ rho^-0.5``. On this codebase's fixed-volume
+    Cartesian grid, cell mass is simply ``m_i = rho_i * cell_volume``, so
+    ``sfr_i ~ rho_i * sqrt(rho_i) = rho_i^1.5`` -- ``cell_volume`` is a
+    constant common factor across all cells and drops out of the normalized
+    probability, so it never needs to be computed here. ``weighting_power``
+    exposes that exponent (``SNDrivingParams.sn_density_weighting_power``,
+    default ``1.5``) as a tunable rather than hardcoding it.
+
+    Unlike the uniform mode's continuous draw, this returns an eligible
+    cell's own center exactly (categorical sampling over a discrete grid) --
+    Simpson et al.'s own SNe are likewise placed at a star-forming *cell*,
+    not an arbitrary continuum point.
+
+    Args:
+        pos_key: The PRNG key for this draw (already split off the caller's
+            key -- not advanced further here).
+        primitive_state: The (ghost-padded) primitive state, for density.
+        helper_data: The (ghost-padded) helper data, for cell centers.
+        interior_mask: Boolean array, ``True`` for real (non-ghost) cells.
+        z_lo: Lower z bound of eligibility (already clipped to the domain).
+        z_hi: Upper z bound of eligibility (already clipped to the domain).
+        weighting_power: Exponent applied to density in the per-cell weight.
+        registered_variables: The registered variables.
+
+    Returns:
+        The ``(x, y, z)`` center of the drawn cell.
+    """
+    rho = primitive_state[registered_variables.density_index]
+    z = helper_data.geometric_centers[..., 2]
+    eligible = interior_mask & (z >= z_lo) & (z <= z_hi)
+
+    # log(rho**power) = power*log(rho), rather than computing rho**power and
+    # then logging it -- avoids a spurious overflow for a large power at the
+    # (physically irrelevant) high end of this box's density range.
+    log_rho = jnp.log(jnp.maximum(rho, 1e-300))
+    logits = jnp.where(eligible, weighting_power * log_rho, -jnp.inf)
+
+    flat_index = jax.random.categorical(pos_key, logits.reshape(-1))
+    idx = jnp.unravel_index(flat_index, rho.shape)
+    return helper_data.geometric_centers[idx[0], idx[1], idx[2], :]
+
+
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
 def _inject_supernovae(
     key,
@@ -175,18 +241,49 @@ def _inject_supernovae(
     triggered = jax.random.bernoulli(trigger_key, trigger_probability)
 
     box_size = config.box_size
-    unit_site = jax.random.uniform(pos_key, shape=(3,))
-    # z is restricted to [sn_z_min, sn_z_max] (clipped to the domain); x/y
-    # stay uniform over the whole box. At the default +/-inf bounds this
-    # reduces to the unrestricted formula bit-for-bit -- see
-    # SNDrivingParams.sn_z_min/sn_z_max's docstring.
+
+    # helper_data/primitive_state here are ghost-padded (this function is
+    # called from _iteration_level_injections with helper_data_pad) --
+    # needed up front now, both to keep the density-weighted site draw below
+    # from ever landing on a ghost cell and, further down, to restrict the
+    # deposit weight itself to the interior (see that comment for why: a
+    # ghost cell's contribution would otherwise double-count real domain
+    # volume across a periodic wrap).
+    ngc = config.num_ghost_cells
+    num_cells = config.num_cells
+    density_shape = primitive_state[registered_variables.density_index].shape
+    interior_x = (jnp.arange(density_shape[0]) >= ngc) & (
+        jnp.arange(density_shape[0]) < num_cells.x + ngc
+    )
+    interior_y = (jnp.arange(density_shape[1]) >= ngc) & (
+        jnp.arange(density_shape[1]) < num_cells.y + ngc
+    )
+    interior_z = (jnp.arange(density_shape[2]) >= ngc) & (
+        jnp.arange(density_shape[2]) < num_cells.z + ngc
+    )
+    interior_mask = (
+        interior_x[:, None, None] & interior_y[None, :, None] & interior_z[None, None, :]
+    )
+
+    # z is restricted to [sn_z_min, sn_z_max] (clipped to the domain). At the
+    # default +/-inf bounds this reduces to the unrestricted formula
+    # bit-for-bit -- see SNDrivingParams.sn_z_min/sn_z_max's docstring.
     z_lo = jnp.maximum(sn_params.sn_z_min, 0.0)
     z_hi = jnp.minimum(sn_params.sn_z_max, box_size.z)
-    site = jnp.array([
-        unit_site[0] * box_size.x,
-        unit_site[1] * box_size.y,
-        unit_site[2] * (z_hi - z_lo) + z_lo,
-    ])
+
+    if config.sn_driving_config.density_weighted_placement:
+        site = _draw_density_weighted_site(
+            pos_key, primitive_state, helper_data, interior_mask, z_lo, z_hi,
+            sn_params.sn_density_weighting_power, registered_variables,
+        )
+    else:
+        # x/y stay uniform over the whole box.
+        unit_site = jax.random.uniform(pos_key, shape=(3,))
+        site = jnp.array([
+            unit_site[0] * box_size.x,
+            unit_site[1] * box_size.y,
+            unit_site[2] * (z_hi - z_lo) + z_lo,
+        ])
 
     delta = helper_data.geometric_centers - site
     boundary_settings = config.boundary_settings
@@ -209,33 +306,18 @@ def _inject_supernovae(
         1.0 - jnp.tanh((distance - sn_params.sn_injection_radius) / smooth_width)
     )
 
-    # helper_data/primitive_state here are ghost-padded (this function is
-    # called from _iteration_level_injections with helper_data_pad). Restrict
-    # the weight -- both the normalization sum and the actual deposit -- to
-    # the interior cells only: a ghost cell's contribution would otherwise
-    # double-count real domain volume across a periodic wrap (a site near an
-    # edge is close, in raw coordinates, to both the true interior cells on
-    # the far side *and* the near-side ghost cells that mirror them) and
-    # then vanish when the next boundary-condition application overwrites
-    # the ghost cells from the interior, silently losing that fraction of
-    # sn_energy. The interior deposit alone is exactly one cell per true
-    # domain volume element, so the boundary handler then correctly refreshes
-    # the ghost cells (whatever each axis's BC is) from the updated interior
-    # before any flux computation reads them.
-    ngc = config.num_ghost_cells
-    num_cells = config.num_cells
-    interior_x = (jnp.arange(weight.shape[0]) >= ngc) & (
-        jnp.arange(weight.shape[0]) < num_cells.x + ngc
-    )
-    interior_y = (jnp.arange(weight.shape[1]) >= ngc) & (
-        jnp.arange(weight.shape[1]) < num_cells.y + ngc
-    )
-    interior_z = (jnp.arange(weight.shape[2]) >= ngc) & (
-        jnp.arange(weight.shape[2]) < num_cells.z + ngc
-    )
-    interior_mask = (
-        interior_x[:, None, None] & interior_y[None, :, None] & interior_z[None, None, :]
-    )
+    # Restrict the weight -- both the normalization sum and the actual
+    # deposit -- to the interior cells only (interior_mask computed above): a
+    # ghost cell's contribution would otherwise double-count real domain
+    # volume across a periodic wrap (a site near an edge is close, in raw
+    # coordinates, to both the true interior cells on the far side *and* the
+    # near-side ghost cells that mirror them) and then vanish when the next
+    # boundary-condition application overwrites the ghost cells from the
+    # interior, silently losing that fraction of sn_energy. The interior
+    # deposit alone is exactly one cell per true domain volume element, so
+    # the boundary handler then correctly refreshes the ghost cells (whatever
+    # each axis's BC is) from the updated interior before any flux
+    # computation reads them.
     weight = weight * interior_mask
 
     cell_volume = config.grid_spacing**3

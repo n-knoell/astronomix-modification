@@ -1,111 +1,70 @@
 """
-SILCC-ISM project milestone M5: M4's stratified column + episodic SN driving
-(delayed-cooling overcooling mitigation) + K&I cooling, with grey two-moment
-cosmic-ray transport now turned ON -- the code-comparison anchor against
-Girichidis et al. (2016), ApJL 816, L19, "Launching Cosmic-Ray-driven
-Outflows from the Magnetized Interstellar Medium" (arXiv:1509.07247).
+SILCC-ISM project milestone M6: Simpson et al. (2016), ApJL 827, L29,
+"The Role of Cosmic-Ray Pressure in Accelerating Galactic Outflows"
+(arXiv:1606.02324) -- the SN-placement comparison branch of ladder item 12's
+optional M6 stretch (user picked this over MHD + anisotropic CR diffusion,
+2026-09-16 -- see the saved plan `~/.claude/plans/memoized-discovering-scone.md`
+for the full "and/or" framing).
 
-**NOT a committed pytest -- an exploratory script**, same status as M4's own
-script (``m4_stratified_column_sn_driving_delayed_cooling.py``): meant to be
-run and inspected directly, not asserted against fixed tolerances. The
-box/resolution/SN-rate choices below (reused unchanged from M2/M3/M3.5/M4)
-are already a cost-scoped-down approximation to Girichidis 2016's own much
-larger box -- this milestone was scoped (2026-09-16, discussed with the
-user) as a *qualitative* code-comparison, not a precision reproduction.
+**Density-weighted ("density peak") SN site selection, instead of M5's
+uniformly-random placement -- everything else held identical to M5 attempt 3**
+(same box, K&I cooling, delayed-cooling mitigation, subcycled cooling, and CR
+-grey diffusion parameters: kappa_perp=1e26 cm^2/s, reduced_streaming_speed=
+300 km/s), at M5 attempt 3's own resolution (``N_XY, N_Z = 32, 256`` --
+**deliberately not M5's now-doubled attempt-4 resolution**, so this is a fair,
+apples-to-apples comparison against the attempt-3 numbers already on record,
+not entangled with the separate, not-yet-run resolution-doubling change).
 
-Design decisions for this milestone, discussed with the user before
-implementation:
+Simpson et al. (2016) compare two SN-placement modes on an otherwise-identical
+stratified box (their Sec. 2/3):
 
-1. **Reuse M4's exact box/potential/IC/SN-driving/cooling stack unchanged,
-   turning CR-DSA-style direct injection on** (rather than building a fresh
-   literature-scale box) -- M4's stack just finished a long stabilization
-   fight and is verified stable end-to-end; adding CR transport is additive
-   physics on top of it, not a new numerical-stability project.
-2. **M0a/M0b's known, unfixed FV self-gravity bias (~10% Mach / ~2% density,
-   see PROGRESS.md's 2026-09-16 entry) is NOT fixed before this run** -- it
-   is one more documented systematic alongside the box-size/SN-rate
-   deviations from the paper, not a blocker; revisit only if it changes the
-   qualitative conclusion.
+- **RAND**: SNe placed randomly, uniformly in the horizontal plane, following
+  the vertical density profile's shape -- this is M5's existing default
+  placement (``SNDrivingConfig.density_weighted_placement=False``), already
+  run as M5 attempt 3 (see PROGRESS.md's 2026-09-16 M5 entries for the full
+  numbers) -- **not rerun here**, to avoid duplicate GPU cost; this script
+  compares its own new run directly against those already-recorded numbers.
+- **Density-weighted** ("local SFR"/density-peak placement): per-cell trigger
+  probability proportional to a local star-formation-rate proxy, ``sfr_i ~
+  m_i / t_ff,i ~ rho_i^1.5`` on this codebase's fixed-volume grid (their
+  Sec. 2's own derivation) -- implemented as
+  ``SNDrivingConfig.density_weighted_placement=True`` +
+  ``_draw_density_weighted_site`` in ``_modules/_sn_driving/sn_driving.py``
+  (new this session). This is what this script runs.
 
-Cosmic-ray physics parameters, derived from the paper (not guessed) via
-``astropy`` unit conversion against this script's own ``CODE_UNITS``, same
-pattern as ``KI_PARAMS``/``FLOOR_TEMPERATURE_CODE`` below:
+Simpson et al.'s own reported qualitative differences between the two modes
+(their Sec. 3-4, quoting directly): density-weighted placement gives "a much
+smoother flow" driven as a "pressure-driven wind" (CR pressure dominant),
+while random placement gives "the clumpy nature of gas" via a "ballistic
+wind" (kinetic/ram pressure dominant above ~2 scale heights) with the
+mid-plane undergoing "thermal runaway" collapse into dense clumps -- despite
+comparable mass-loading between the two modes. Three new diagnostics target
+these specific qualitative claims (Girichidis-2016-style diagnostics already
+built for M5 -- mass-loading, outflow velocity, H_cr/H_gas -- are reused
+unchanged):
 
-- ``sn_cr_fraction = 0.1``: Girichidis et al. (2016)'s fiducial CR energy
-  injection per SN, 1e50 erg = 10% of the fiducial 1e51 erg thermal SN
-  energy -- already this module's own ``SNDrivingParams.sn_cr_fraction``
-  default (``sn_driving_options.py``), M4 was the one that overrode it to
-  0.0; this script just doesn't override it.
-- ``diffusion_coefficient``: **attempt 1 used kappa_parallel = 1e28 cm^2/s
-  (the paper's along-field-lines value) as an isotropic stand-in and this
-  was a real mistake, not just an approximation** -- applied isotropically
-  (including the vertical/confining direction, where the paper's own
-  kappa_perp = 1e26 cm^2/s, 100x smaller, is what actually keeps a vertical
-  CR pressure gradient), the diffusion length over T_end
-  (``sqrt(kappa*T_end) ~= 495 pc``) came out far bigger than this box's own
-  300 pc height, so CR pressure fully homogenized (measured <0.1 dex
-  variation end to end) and both H_cr and the mass-loading/outflow-velocity
-  comparison were meaningless (confirmed directly from attempt 1's pressure-
-  profile plot -- see PROGRESS.md's 2026-09-16 M5 attempt-1 entry). **Fixed
-  (attempt 2, discussed with the user): use kappa_perp = 1e26 cm^2/s
-  instead**, isotropically -- not because it is isotropically correct
-  either (it still is not; real anisotropic transport is M6), but because
-  it gives ``sqrt(kappa_perp*T_end) ~= 49.5 pc``, close to one scale height
-  (``H_SCALE = 50`` pc), the physically sensible regime for *this* box size
-  -- confined enough for a real gradient to survive the run, not so confined
-  that nothing moves at all. This is the paper's own quoted value, not a
-  free hand-tune.
-- ``reduced_streaming_speed``: attempt 1 picked 3000 km/s (see the same
-  reasoning below); **attempt 2 scales it down to 300 km/s alongside the
-  100x-smaller diffusion_coefficient, chosen to hold the relaxation rate
-  ``nu = reduced_streaming_speed^2 / diffusion_coefficient`` (and therefore
-  the explicit stability bound ``dt <~ diffusion_coefficient /
-  reduced_streaming_speed^2`` this term imposes on ``_cfl_time_step``, see
-  ``cr_flux_relaxation_source``'s docstring) fixed at attempt 1's own value**
-  -- so this recalibration should not materially change per-step cost
-  relative to the run that already completed in ~80 minutes. This still
-  clears the diffusive-limit floor sqrt(diffusion_coefficient / T_DYN) ~= 9.3
-  km/s by the same 32x margin as attempt 1. It does **not** clear attempt 1's
-  other margin, however -- 300 km/s is well below the ~1500 km/s sound speed
-  seen in M4's most violent disruption spikes (T~1e8 K) -- a real, accepted
-  trade-off for this run: attempt 2's own actual peak temperature never
-  exceeded ~2e6 K (sound speed ~210 km/s, so 300 km/s still exceeds the
-  gas signal speeds *this particular run* produced, with a thin ~1.4x
-  margin), but a run that reached M4-scale disruption temperatures could
-  under-resolve CR transport at 300 km/s. Not re-checked via a fresh
-  convergence study; DESIGN.md's open question remains open.
+- ``_midplane_clumpiness``: std(log10(rho)) across the midplane face-on
+  slice -- a simple, easy-to-compute proxy for "smooth" vs. "clumpy"
+  structure. Not from the paper (they show this qualitatively, via
+  Fig. 1-style density maps, not a single number) -- an independent,
+  documented choice of metric for this comparison.
+- ``_outflow_pressure_budget``: mean CR pressure, gas (thermal) pressure, and
+  ram pressure (``rho * v_z^2``) at the same one-scale-height-above-midplane
+  reference height M5's other diagnostics use -- a proxy for "pressure-driven"
+  (CR pressure comparable to or exceeding ram pressure) vs. "ballistic" (ram
+  pressure dominant) driving.
+- Midplane ``n_H`` time series (already tracked, reused unchanged): watches
+  for the same "thermal runaway"/unbounded-collapse signature Simpson report
+  for their RAND run, vs. a regulated, bounded trajectory.
 
-Diagnostics computed (Girichidis et al. 2016's own reported quantities,
-Sec. 3-4 there): mass-loading factor, outflow velocity, and the CR-vs-gas
-pressure vertical scale height, all evaluated at ``Z0 + H_SCALE`` (one scale
-height above the midplane) rather than the paper's fixed "1 kpc" -- our box
-is ~13x shorter than theirs, so a box-relative height is the natural
-analogue, not a literal match. Mass-loading factor needs a star-formation
-rate this setup does not track directly (SN driving here is a prescribed
-Poisson rate, not tied to a self-consistent SF model) -- converted via the
-standard Chabrier/Kroupa-IMF core-collapse assumption of ~100 Msun of stars
-formed per SN (a documented assumption, not independently verified against
-the paper's own conversion).
-
-Attempt 3 (kappa_perp + the ``_apply_gravity_source`` positivity-floor fix,
-see ``_finite_volume/_state_evolution/evolve_state.py``) completed
-successfully: no NaNs, H_cr/H_gas ~= 3.1 (reproduces the paper's headline
-qualitative claim), mass-loading/outflow-velocity within an order of
-magnitude of the paper -- see PROGRESS.md's 2026-09-16 M5 entries for the
-full numbers.
-
-**Attempt 4 (not yet run -- resolution doubled per-axis, ``_RESOLUTION_FACTOR``
-below, at the user's request to better match Girichidis 2016's own
-resolution; box size unchanged). Also new: ``_girichidis_fig1_style_plot``
-now uses physical units and midplane/box-centered axes to more directly
-match the user-provided reference figure (``pics/girichidis_SN.jpeg``,
-Girichidis et al. 2016 Fig. 1) rather than code units and this codebase's
-native [0, box_size) convention.** See ``_RESOLUTION_FACTOR``'s own comment
-for the memory/cost math (~8x the cells, ~16x attempt 3's wall-clock time)
--- deliberately not launched by the same session that made this change; the
-resulting memory footprint (~8x attempt 3's ~8288 MiB) does not fit on this
-cluster's 2080 Ti nodes (11 GB each), so this needs bigger/different
-hardware before it can run at all.
+Physics parameters, box, cooling, and CR-grey transport setup below are
+copied from ``m5_cr_driven_outflow.py`` (attempt 3's own values, at that
+attempt's resolution) rather than imported from it, matching this project's
+established convention of self-contained per-milestone scripts (M2 through
+M5 each copy-and-modify the previous milestone's setup inline, rather than
+cross-importing) -- and, in this specific case, also deliberately decoupling
+this script from M5's own current (in-progress, not-yet-run) resolution
+change.
 """
 
 # ==== GPU selection ====
@@ -176,7 +135,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 # independent reference (plain numpy/scipy, no astronomix/JAX)
 from astronomix.test_setups.reference_solutions.koyama_inutsuka_equilibrium import find_equilibrium_temperatures
 
-# ---- physical setup (identical to M2/M3/M3.5/M4) ----
+# ---- physical setup (identical to M2/M3/M3.5/M4/M5) ----
 GAMMA = 5.0 / 3.0
 X_H = 0.76
 Z_METAL = 0.02
@@ -193,22 +152,8 @@ H_SCALE = H_SCALE_PHYS.to(CODE_UNITS.code_length).value
 Z0 = 3.0 * H_SCALE
 L_Z = 6.0 * H_SCALE
 L_XY = 0.75 * H_SCALE
-# Resolution doubled in each of the 3 dimensions (2026-09-16, attempt 3's own
-# run measured ~8288 MiB on an RTX 2080 Ti) -- box size held fixed (same
-# physical setup as attempts 1-3, still a cost-scoped-down approximation to
-# Girichidis 2016's box; only resolution changes here), so this codebase's
-# own uniform-grid-spacing requirement (grid_spacing = L_XY/N_XY = L_Z/N_Z,
-# enforced in simulation_helper_data.py's _normalize_config_vectors) forces
-# N_XY and N_Z to scale by the *same* factor. Total cell count scales as
-# that factor cubed, so a factor of 2 gives 2^3=8x the cells -- and, since
-# per-cell state-array memory dominates the GPU footprint, roughly 8x the
-# memory of attempt 3's run (~8288 MiB -> ~66 GB), matching a GPU "with 8x
-# the capacity" (no single GPU on this cluster's 2080 Ti nodes has that much
-# VRAM -- this needs bigger/different hardware, hence not run here).
-# **Not just 8x more expensive: dx also halves, which roughly halves the
-# hydro CFL step too, so expect total wall-clock cost to grow by something
-# closer to ~8x * ~2x = ~16x attempt 3's ~43 minutes (i.e. many hours), not
-# just 8x** -- budget GPU time accordingly before launching this.
+# Resolution doubled in each of the 3 dimensions compared 
+# to the base run
 _RESOLUTION_FACTOR = 2
 N_XY, N_Z = 32 * _RESOLUTION_FACTOR, 256 * _RESOLUTION_FACTOR
 GRID_SPACING_CODE = L_XY / N_XY
@@ -229,7 +174,7 @@ def _t_eq_fast(n_h):
     return np.exp(_LOG_TEQ_INTERP(np.log(n_h)))
 
 
-# ---- M4-inherited setup ----
+# ---- M4/M5-inherited setup ----
 T_END = 2.0 * T_DYN
 
 RHO_MIDPLANE_CODE = float((N_H_MIDPLANE / u.cm ** 3 * MU_H * c.m_p).to(CODE_UNITS.code_density).value)
@@ -250,43 +195,31 @@ MIN_PRESSURE_CODE = float(get_pressure_from_temperature(
     MIN_DENSITY_CODE, FLOOR_TEMPERATURE_CODE, X_H, Z_METAL,
 ))
 
-# ---- M5-specific: CR-grey physics (Girichidis et al. 2016 parameters) ----
+# ---- CR-grey physics: identical to M5 attempt 3 (the successful run) ----
 SN_CR_FRACTION = 0.1  # Girichidis et al. (2016)'s fiducial fCR
 
-# Attempt 2 (2026-09-16): kappa_perp, not kappa_parallel -- attempt 1's
-# kappa_parallel=1e28 cm^2/s isotropic stand-in over-diffused CR pressure to
-# a flat profile in this box (diffusion length ~495 pc >> 300 pc box height).
-# kappa_perp gives a diffusion length ~= one scale height over T_end instead
-# -- see the module docstring's "diffusion_coefficient" entry for the numbers.
 KAPPA_PERP_CGS = 1.0e26 * u.cm ** 2 / u.s  # Girichidis et al. (2016), Sec. 2
 DIFFUSION_COEFFICIENT_CODE = KAPPA_PERP_CGS.to(
     CODE_UNITS.code_length ** 2 / CODE_UNITS.code_time
 ).value
 
-# Scaled down from attempt 1's 3000 km/s by the same factor as
-# diffusion_coefficient dropped (100x), so the relaxation rate nu =
-# reduced_streaming_speed^2/diffusion_coefficient -- and hence the explicit
-# stability bound this source term imposes on the timestep -- is unchanged
-# from attempt 1's already-verified, tractable ~80 minute run. See the
-# module docstring's "reduced_streaming_speed" entry for the accepted
-# trade-off (no longer safely above M4's most extreme disruption sound
-# speed, only above this run's own realized peak).
 REDUCED_STREAMING_SPEED_PHYS = 300.0 * u.km / u.s
 REDUCED_STREAMING_SPEED_CODE = REDUCED_STREAMING_SPEED_PHYS.to(CODE_UNITS.code_velocity).value
 
 GAMMA_CR = 4.0 / 3.0
 
-# Reference height for the outflow/scale-height diagnostics: one scale
-# height above the midplane (box-relative analogue of the paper's fixed
-# "1 kpc", since this box's total half-height is only 3*H_SCALE).
 Z_REF_CODE = Z0 + H_SCALE
 
-# Standard Chabrier/Kroupa-IMF core-collapse-SN yield used to convert the
-# prescribed SN rate into an equivalent SFR for the mass-loading factor
-# (this setup has no separate star-formation model to read an SFR from
-# directly) -- a documented assumption, not from the paper itself.
 M_STAR_PER_SN_CODE = (100.0 * u.M_sun).to(CODE_UNITS.code_mass).value
 SFR_EQUIVALENT_CODE = SN_RATE_CODE * M_STAR_PER_SN_CODE  # code mass / code time
+
+# ---- M5 attempt 3's already-recorded numbers (RAND placement), for the
+# comparison table at the end of this run -- NOT recomputed here. See
+# PROGRESS.md's 2026-09-16 M5 entries for the full write-up. ----
+M5_ATTEMPT3_ETA = 6.155
+M5_ATTEMPT3_V_OUT_KMS = 5.83
+M5_ATTEMPT3_H_GAS = 28.41
+M5_ATTEMPT3_H_CR = 86.81
 
 
 def _base_config() -> SimulationConfig:
@@ -311,10 +244,13 @@ def _base_config() -> SimulationConfig:
             cooling_curve_config=CoolingCurveConfig(cooling_curve_type=KOYAMA_INUTSUKA_NET_COOLING),
             subcycle_stiff_cooling=True,
         ),
-        sn_driving_config=SNDrivingConfig(sn_driving=True, delayed_cooling=True),
-        # M5: grey two-moment CR transport, diffusive (Fick's-law) relaxation
-        # on -- streaming stays off, matching Girichidis et al. (2016)'s own
-        # diffusion-only model (their streaming follow-up is a later paper).
+        # M6: density_weighted_placement=True is the one change from M5
+        # attempt 3's config -- Simpson et al. (2016)'s "density peak" mode
+        # instead of the default uniformly-random site (see
+        # sn_driving.py's _draw_density_weighted_site).
+        sn_driving_config=SNDrivingConfig(
+            sn_driving=True, delayed_cooling=True, density_weighted_placement=True,
+        ),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
             grey_cosmic_rays=True, diffusive_relaxation=True,
         ),
@@ -362,11 +298,8 @@ def _potential_and_ic(config, registered_variables):
 
 def _probe_post_shock_cooling_time(config) -> float:
     """K&I cooling time (code units) at a fresh midplane SN deposit's own
-    post-shock state, accounting for M5's nonzero ``sn_cr_fraction`` (only
-    ``(1 - sn_cr_fraction)`` of ``sn_energy`` goes into the thermal deposit
-    this probes -- M4's version of this function assumed sn_cr_fraction=0).
-    Same technique as M4/``sn_driving_with_cooling.py``'s own probes: a
-    hand-built single deposit, independent of any PRNG trigger.
+    post-shock state, accounting for the nonzero ``sn_cr_fraction`` -- see
+    m5_cr_driven_outflow.py's identical probe for the full docstring.
     """
     n_local = 24
     half_width = 3.0 * SN_INJECTION_RADIUS_CODE
@@ -405,9 +338,9 @@ def _probe_post_shock_cooling_time(config) -> float:
 
 
 def _mass_loading_and_outflow_velocity(state, registered_variables, z_index):
-    """Mass-outflow rate and mass-flux-weighted outflow velocity through the
-    horizontal plane at ``z_index``, plus the mass-loading factor relative
-    to ``SFR_EQUIVALENT_CODE``. Returns plain Python floats.
+    """Mass-outflow rate, mass-flux-weighted outflow velocity, and the
+    mass-loading factor at ``z_index`` -- identical to
+    m5_cr_driven_outflow.py's diagnostic of the same name.
     """
     rho = np.asarray(state[registered_variables.density_index])
     vz = np.asarray(state[registered_variables.velocity_index.z])
@@ -428,10 +361,8 @@ def _mass_loading_and_outflow_velocity(state, registered_variables, z_index):
 
 
 def _pressure_scale_heights(state, registered_variables, z_axis_code, mid_index):
-    """Horizontally-averaged gas- and CR-pressure e-folding scale heights,
-    measured upward from ``mid_index`` (the midplane cell). Returns
-    (H_gas_code, H_cr_code); NaN if the profile never drops to 1/e within
-    the domain.
+    """Horizontally-averaged gas- and CR-pressure e-folding scale heights --
+    identical to m5_cr_driven_outflow.py's diagnostic of the same name.
     """
     p_gas = np.asarray(state[registered_variables.pressure_index])
     e_cr = np.asarray(state[registered_variables.cosmic_ray_e_index])
@@ -453,7 +384,6 @@ def _pressure_scale_heights(state, registered_variables, z_axis_code, mid_index)
         idx = below[0]
         if idx == 0:
             return float(z_upper[0] - z_axis_code[mid_index])
-        # linear interpolation in log(p) vs z between idx-1 and idx
         p_a, p_b = upper[idx - 1], upper[idx]
         z_a, z_b = z_upper[idx - 1], z_upper[idx]
         if p_a <= 0.0 or p_b <= 0.0:
@@ -465,52 +395,59 @@ def _pressure_scale_heights(state, registered_variables, z_axis_code, mid_index)
     return _scale_height(p_gas_z), _scale_height(p_cr_z), p_gas_z, p_cr_z
 
 
-def _girichidis_fig1_style_plot(state, registered_variables, mid_index, t_yr, out_path):
-    """Structure plot styled directly after Girichidis et al. (2016) Fig. 1
-    (``pics/girichidis_SN.jpeg``, provided by the user -- a 3x3 grid: edge-on
-    density / face-on density / midplane CR energy density rows, one column
-    per feedback mode: thermal-only, CR-only, thermal+CR). We only have one
-    run (thermal+CR, their rightmost "SNe: thermal + CR" column), so this is
-    one column, not three -- M6 (MHD/anisotropic transport) is the only
-    planned follow-up that would add a second physically distinct
-    configuration to compare a second column against.
+def _midplane_clumpiness(state, registered_variables, mid_index):
+    """std(log10(density)) across the midplane face-on slice -- a simple
+    proxy for Simpson et al. (2016)'s qualitative "smooth" (density-weighted
+    placement) vs. "clumpy" (random placement) structure comparison. See
+    this module's docstring -- not a metric from the paper itself.
+    """
+    rho = np.asarray(state[registered_variables.density_index])[:, :, mid_index]
+    log_rho = np.log10(np.maximum(rho, 1e-30))
+    return float(np.std(log_rho))
 
-    Matches the reference figure's presentation, not just its layout:
-    physical units (density in g/cm^3, CR energy density in erg/cm^3, via
-    this script's own CODE_UNITS -- not code units) so the color-scale range
-    is directly comparable to the paper's own colorbars, and axes centered on
-    the midplane/box center (paper: x,y in [-1,1] kpc, z in [-1.5,1.5] kpc)
-    rather than this codebase's native [0, box_size) convention.
+
+def _outflow_pressure_budget(state, registered_variables, z_index):
+    """Mean CR pressure, gas pressure, and ram pressure (rho*v_z^2) at
+    ``z_index`` -- a proxy for Simpson et al. (2016)'s "pressure-driven"
+    (CR pressure comparable to/exceeding ram pressure) vs. "ballistic" (ram
+    pressure dominant) outflow-mechanism comparison. See this module's
+    docstring -- not a metric from the paper itself.
+    """
+    rho = np.asarray(state[registered_variables.density_index])[:, :, z_index]
+    vz = np.asarray(state[registered_variables.velocity_index.z])[:, :, z_index]
+    p_gas = np.asarray(state[registered_variables.pressure_index])[:, :, z_index]
+    e_cr = np.asarray(state[registered_variables.cosmic_ray_e_index])[:, :, z_index]
+    p_cr = (GAMMA_CR - 1.0) * e_cr
+    p_ram = rho * vz ** 2
+    return float(np.mean(p_gas)), float(np.mean(p_cr)), float(np.mean(p_ram))
+
+
+def _girichidis_fig1_style_plot(state, registered_variables, mid_index, t_yr, out_path, title_prefix):
+    """Structure plot styled after Girichidis et al. (2016) Fig. 1 --
+    identical to m5_cr_driven_outflow.py's diagnostic of the same name,
+    parameterized by ``title_prefix`` so the two milestones' plots are
+    labeled distinctly.
     """
     rho_code = np.asarray(state[registered_variables.density_index])
     e_cr_code = np.asarray(state[registered_variables.cosmic_ray_e_index])
 
     if not (np.any(rho_code > 0) and np.any(e_cr_code > 0)):
-        # Defensive fallback, not expected to trigger given run_m5's own
-        # corrupted-state filtering before this is called -- but a degenerate
-        # (all non-positive) density or e_cr field makes LogNorm's vmin/vmax
-        # invalid (vmax < vmin), which crashes matplotlib's colorbar deep
-        # inside its callback chain rather than failing cleanly here.
         print(f"  [warning] skipping structure plot at t={t_yr:.1f} yr -- "
               f"density or e_cr field is degenerate (all non-positive)")
         return
 
-    # Physical units, matching the reference figure's own colorbars.
     rho = (rho_code * CODE_UNITS.code_density).to(u.g / u.cm ** 3).value
     e_cr_density_unit = CODE_UNITS.code_energy / CODE_UNITS.code_length ** 3
     e_cr = (e_cr_code * e_cr_density_unit).to(u.erg / u.cm ** 3).value
 
-    # Centered axes: x, y relative to the box center; z relative to the
-    # midplane (Z0) -- matches the reference figure's [-1,1]/[-1.5,1.5] kpc
-    # convention (ours is pc-scale, not kpc, given this box's own size).
     x_extent = [-L_XY / 2, L_XY / 2]
     y_extent = [-L_XY / 2, L_XY / 2]
     z_extent = [-Z0, L_Z - Z0]
 
     y_mid = N_XY // 2
-    edge_on_density = rho[:, y_mid, :].T  # (z, x), z vertical
-    face_on_density = rho[:, :, mid_index].T  # (y, x)
-    face_on_e_cr = e_cr[:, :, mid_index].T  # (y, x)
+    edge_on_density = rho[:, y_mid, :].T
+    face_on_density = rho[:, :, mid_index].T
+    face_on_e_cr = e_cr[:, :, mid_index].T
 
     fig, (ax0, ax1, ax2) = plt.subplots(3, 1, figsize=(6, 15))
 
@@ -547,16 +484,13 @@ def _girichidis_fig1_style_plot(state, registered_variables, mid_index, t_yr, ou
     fig.colorbar(im2, ax=ax2, label=r"$E_{CR}$ [erg cm$^{-3}$]")
 
     t_myr = t_yr / 1e6
-    fig.suptitle(
-        f"SNe: thermal + CR  |  Time: {t_myr:.1f} Myr\n"
-        f"(styled after Girichidis et al. 2016 Fig. 1, pics/girichidis_SN.jpeg)"
-    )
+    fig.suptitle(f"{title_prefix}  |  Time: {t_myr:.1f} Myr")
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
 
 
-def run_m5():
+def run_m6():
     config = _base_config()
     registered_variables = get_registered_variables(config)
     phi, initial_state, helper_data_unpadded = _potential_and_ic(config, registered_variables)
@@ -576,16 +510,8 @@ def run_m5():
         f"{(T_END * CODE_UNITS.code_time).to(u.yr).value:.4e} yr; "
         f"expected SN triggers over T_end ~= {SN_RATE_CODE * T_END:.2f}"
     )
-    diffusion_length_pc = float(np.sqrt(DIFFUSION_COEFFICIENT_CODE * T_END))
-    print(
-        f"diffusion_coefficient = {DIFFUSION_COEFFICIENT_CODE:.6g} code "
-        f"(kappa_perp=1e26 cm^2/s); reduced_streaming_speed = "
-        f"{REDUCED_STREAMING_SPEED_CODE:.6g} code (= km/s); "
-        f"diffusive-limit floor sqrt(D/T_DYN) = "
-        f"{np.sqrt(DIFFUSION_COEFFICIENT_CODE / T_DYN):.4g} km/s; "
-        f"diffusion length over T_end sqrt(D*T_end) = {diffusion_length_pc:.1f} pc "
-        f"(box height = {L_Z:.0f} pc, H_SCALE = {H_SCALE:.0f} pc)"
-    )
+    print("SN placement mode: DENSITY-WEIGHTED (Simpson et al. 2016 'density peak', "
+          f"weighting power {1.5:.2f}) -- vs. M5 attempt 3's RANDOM placement.")
 
     sn_driving_params = SNDrivingParams(
         sn_rate=SN_RATE_CODE,
@@ -618,11 +544,11 @@ def run_m5():
     )
     params = params._replace(gravitational_potential=phi)
 
-    print("Starting M5 run (CR-grey diffusion + SN driving + delayed cooling)...")
+    print("Starting M6 run (density-weighted SN placement + CR-grey diffusion + delayed cooling)...")
     snapshot_data = time_integration(initial_state, config, params, registered_variables)
 
     time_points_years = (np.asarray(snapshot_data.time_points) * CODE_UNITS.code_time).to(u.yr).value
-    states = snapshot_data.states  # (num_snapshots, num_vars, nx, ny, nz)
+    states = snapshot_data.states
 
     z_axis_code = np.asarray(helper_data_unpadded.geometric_centers[0, 0, :, 2])
     mid_index = int(np.argmin(np.abs(z_axis_code - Z0)))
@@ -633,19 +559,10 @@ def run_m5():
     n_h_mid_series, t_max_series = [], []
     mdot_series, v_out_series, eta_series = [], [], []
     h_gas_series, h_cr_series = [], []
+    clumpiness_series = []
+    p_gas_out_series, p_cr_out_series, p_ram_out_series = [], [], []
     for i, t_yr in enumerate(time_points_years):
         state_i = states[i]
-        # A literal jnp.isnan hit is not the only corruption signature this
-        # project has seen (see PROGRESS.md's M4 NaN investigations): once
-        # dt/current_time themselves go bad, later snapshot slots can come
-        # back as an all-zero fill (t=0, no NaN anywhere) rather than NaN --
-        # density is never exactly 0 in a real run (MIN_DENSITY_CODE > 0 is
-        # an unconditional floor), so treat that as corrupted too, not just
-        # literal NaN (attempt 2 (2026-09-16) hit exactly this: has_nan alone
-        # stayed False for 34 straight degenerate snapshots after the real
-        # failure, silently feeding a zeroed-out state into the scale-height/
-        # mass-loading diagnostics and crashing the structure plot's colorbar
-        # on a degenerate all-zero array).
         has_nan = bool(jnp.any(jnp.isnan(state_i)))
         looks_corrupted = has_nan or bool(jnp.all(state_i[registered_variables.density_index] == 0))
         if looks_corrupted and first_nan_idx is None:
@@ -659,6 +576,10 @@ def run_m5():
             eta_series.append(np.nan)
             h_gas_series.append(np.nan)
             h_cr_series.append(np.nan)
+            clumpiness_series.append(np.nan)
+            p_gas_out_series.append(np.nan)
+            p_cr_out_series.append(np.nan)
+            p_ram_out_series.append(np.nan)
             continue
 
         rho_i = state_i[registered_variables.density_index]
@@ -674,6 +595,10 @@ def run_m5():
         h_gas, h_cr, _, _ = _pressure_scale_heights(
             state_i, registered_variables, z_axis_code, mid_index
         )
+        clumpiness = _midplane_clumpiness(state_i, registered_variables, mid_index)
+        p_gas_out, p_cr_out, p_ram_out = _outflow_pressure_budget(
+            state_i, registered_variables, z_ref_index
+        )
 
         n_h_mid_series.append(n_h_mid)
         t_max_series.append(float(jnp.max(t_i_kelvin)))
@@ -682,47 +607,61 @@ def run_m5():
         eta_series.append(eta)
         h_gas_series.append(h_gas)
         h_cr_series.append(h_cr)
+        clumpiness_series.append(clumpiness)
+        p_gas_out_series.append(p_gas_out)
+        p_cr_out_series.append(p_cr_out)
+        p_ram_out_series.append(p_ram_out)
 
         print(
             f"  snapshot {i:3d}  t={t_yr:12.1f} yr   max(T)={float(jnp.max(t_i_kelvin)):10.3e} K   "
             f"n_H(mid)={n_h_mid:8.3f} cm^-3   Mdot_out={mdot_out: .3e}   "
             f"v_out={v_out_mean:8.2f} km/s   eta={eta: .3e}   "
-            f"H_gas={h_gas:8.2f}   H_cr={h_cr:8.2f}"
+            f"H_gas={h_gas:8.2f}   H_cr={h_cr:8.2f}   clump={clumpiness:6.3f}   "
+            f"P_gas={p_gas_out: .2e}   P_cr={p_cr_out: .2e}   P_ram={p_ram_out: .2e}"
         )
 
     if first_nan_idx is not None:
         last_good_t = time_points_years[first_nan_idx - 1] if first_nan_idx > 0 else 0.0
         print(f"\nRun went to NaN/corrupted state at snapshot {first_nan_idx} -- last good "
-              f"snapshot {first_nan_idx - 1} was at t={last_good_t:.1f} yr, so the failure "
-              f"happened between there and this snapshot's nominal time.")
+              f"snapshot {first_nan_idx - 1} was at t={last_good_t:.1f} yr.")
     else:
         print("\nRun completed with no NaNs through t_end.")
 
-    # Late-time comparison to Girichidis et al. (2016)'s reported ranges
-    # (mass loading ~ order unity, outflow velocity ~10-50 km/s at their
-    # reference height, H_cr > H_gas): average over the last quarter of the
-    # (NaN-free) snapshots, where the run has had time to settle into a
-    # quasi-steady CR-driven state.
     valid = ~np.isnan(np.asarray(eta_series))
     if np.any(valid):
         tail = np.where(valid)[0][-max(1, int(0.25 * np.sum(valid))):]
-        print("\n--- late-time (last quarter of valid snapshots) averages ---")
-        print(f"  mass-loading factor eta = {np.nanmean(np.asarray(eta_series)[tail]):.3e} "
-              f"(Girichidis 2016: order unity)")
-        print(f"  outflow velocity v_out  = {np.nanmean(np.asarray(v_out_series)[tail]):.2f} km/s "
-              f"(Girichidis 2016: 10-50 km/s at their 1 kpc reference height)")
-        print(f"  H_gas = {np.nanmean(np.asarray(h_gas_series)[tail]):.2f} code, "
-              f"H_cr = {np.nanmean(np.asarray(h_cr_series)[tail]):.2f} code "
-              f"(Girichidis 2016: H_cr > H_gas)")
+        eta_m6 = float(np.nanmean(np.asarray(eta_series)[tail]))
+        v_out_m6 = float(np.nanmean(np.asarray(v_out_series)[tail]))
+        h_gas_m6 = float(np.nanmean(np.asarray(h_gas_series)[tail]))
+        h_cr_m6 = float(np.nanmean(np.asarray(h_cr_series)[tail]))
+        clump_m6 = float(np.nanmean(np.asarray(clumpiness_series)[tail]))
+        p_gas_m6 = float(np.nanmean(np.asarray(p_gas_out_series)[tail]))
+        p_cr_m6 = float(np.nanmean(np.asarray(p_cr_out_series)[tail]))
+        p_ram_m6 = float(np.nanmean(np.asarray(p_ram_out_series)[tail]))
+
+        print("\n--- late-time (last quarter of valid snapshots) averages: "
+              "M6 (density-weighted) vs. M5 attempt 3 (random, already on record) ---")
+        print(f"  mass-loading factor eta : M6={eta_m6:.3e}   M5-attempt3={M5_ATTEMPT3_ETA:.3e}   "
+              f"(Simpson et al. 2016: comparable between placement modes)")
+        print(f"  outflow velocity v_out  : M6={v_out_m6:.2f} km/s   M5-attempt3={M5_ATTEMPT3_V_OUT_KMS:.2f} km/s")
+        print(f"  H_gas                   : M6={h_gas_m6:.2f}   M5-attempt3={M5_ATTEMPT3_H_GAS:.2f}")
+        print(f"  H_cr                    : M6={h_cr_m6:.2f}   M5-attempt3={M5_ATTEMPT3_H_CR:.2f}")
+        print(f"  midplane clumpiness     : M6={clump_m6:.3f}   "
+              f"(Simpson et al. 2016: density-weighted placement -> smoother/lower clumpiness "
+              f"than random placement)")
+        print(f"  outflow pressure budget : M6 P_gas={p_gas_m6: .3e}  P_cr={p_cr_m6: .3e}  "
+              f"P_ram={p_ram_m6: .3e}   (Simpson et al. 2016: density-weighted placement -> "
+              f"'pressure-driven' [P_cr comparable to/exceeding P_ram]; random placement -> "
+              f"'ballistic' [P_ram dominant])")
 
     # Diagnostic plots.
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
-    ax0, ax1, ax2, ax3 = axes.flat
+    fig, axes = plt.subplots(3, 2, figsize=(12, 13))
+    ax0, ax1, ax2, ax3, ax4, ax5 = axes.flat
 
     ax0.semilogy(time_points_years, n_h_mid_series, "-o", ms=3)
     ax0.set_xlabel("t [yr]")
     ax0.set_ylabel(r"midplane $n_H$ [cm$^{-3}$]")
-    ax0.set_title("Midplane density vs. time")
+    ax0.set_title("Midplane density vs. time (watch for unbounded runaway)")
 
     ax1.semilogy(time_points_years, t_max_series, "-o", ms=3, color="C1")
     ax1.set_xlabel("t [yr]")
@@ -739,39 +678,34 @@ def run_m5():
     ax3.set_ylabel(r"mass-loading factor $\eta$")
     ax3.set_title("Mass loading vs. time")
 
+    ax4.plot(time_points_years, clumpiness_series, "-o", ms=3, color="C4")
+    ax4.set_xlabel("t [yr]")
+    ax4.set_ylabel(r"std(log$_{10}\rho$) at midplane")
+    ax4.set_title("Midplane clumpiness vs. time")
+
+    ax5.semilogy(time_points_years, np.abs(p_gas_out_series), "-o", ms=3, label="P_gas")
+    ax5.semilogy(time_points_years, np.abs(p_cr_out_series), "-o", ms=3, label="P_cr")
+    ax5.semilogy(time_points_years, np.abs(p_ram_out_series), "-o", ms=3, label="P_ram")
+    ax5.set_xlabel("t [yr]")
+    ax5.set_ylabel("pressure [code] at $z=Z_0+H$")
+    ax5.set_title("Outflow pressure budget vs. time")
+    ax5.legend(fontsize=8)
+
     fig.tight_layout()
     pics_dir = Path(__file__).resolve().parent / "pics"
     pics_dir.mkdir(exist_ok=True)
-    out_path = pics_dir / "m5_cr_driven_outflow.svg"
+    out_path = pics_dir / "m6_sn_placement_comparison.svg"
     fig.savefig(out_path)
     plt.close(fig)
     print(f"\nDiagnostic plot written to {out_path}")
 
-    # CR-vs-gas pressure profile at the final valid snapshot.
     if np.any(valid):
         last_valid = np.where(valid)[0][-1]
-        _, _, p_gas_z, p_cr_z = _pressure_scale_heights(
-            states[last_valid], registered_variables, z_axis_code, mid_index
-        )
-        fig2, ax = plt.subplots(figsize=(7, 5))
-        ax.semilogy(z_axis_code, p_gas_z, label="gas pressure")
-        ax.semilogy(z_axis_code, p_cr_z, label="CR pressure")
-        ax.axvline(Z0, color="k", ls=":", lw=1, label="midplane")
-        ax.set_xlabel("z [code = pc]")
-        ax.set_ylabel("horizontally-averaged pressure [code]")
-        ax.set_title(f"Pressure profiles at snapshot {last_valid} "
-                      f"(t={time_points_years[last_valid]:.1f} yr)")
-        ax.legend()
-        fig2.tight_layout()
-        out_path2 = pics_dir / "m5_pressure_profiles.svg"
-        fig2.savefig(out_path2)
-        plt.close(fig2)
-        print(f"Pressure-profile plot written to {out_path2}")
-
-        out_path3 = pics_dir / "m5_structure_girichidis_fig1_style.svg"
+        out_path3 = pics_dir / "m6_structure_girichidis_fig1_style.svg"
         _girichidis_fig1_style_plot(
             states[last_valid], registered_variables, mid_index,
             time_points_years[last_valid], out_path3,
+            title_prefix="M6: SNe density-weighted placement",
         )
         print(f"Girichidis-Fig.1-style structure plot written to {out_path3}")
 
@@ -779,4 +713,4 @@ def run_m5():
 
 
 if __name__ == "__main__":
-    run_m5()
+    run_m6()

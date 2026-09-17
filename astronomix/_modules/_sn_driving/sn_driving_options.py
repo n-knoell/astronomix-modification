@@ -50,6 +50,21 @@ class SNDrivingConfig(NamedTuple):
     #: ``astronomix.time_stepping.time_integration.LoopState.cooling_shield``.
     delayed_cooling: bool = False
 
+    #: draw each trigger's site from a density-weighted distribution over
+    #: eligible cells (probability per cell proportional to
+    #: ``rho ** SNDrivingParams.sn_density_weighting_power``) instead of
+    #: uniformly at random over the eligible volume -- Simpson et al.
+    #: (2016)'s "density peak" placement mode (SILCC-ISM project milestone
+    #: M6, ladder item 12's optional stretch cross-check), approximating
+    #: their local-star-formation-rate-weighted trigger probability
+    #: (``sfr ~ rho^1.5`` on this codebase's fixed-volume grid -- see
+    #: ``sn_driving.py``'s docstring for the derivation). Off by default
+    #: (matches every existing SN-driving test's uniform-random placement
+    #: unchanged); the two modes are mutually exclusive alternatives, not
+    #: combinable. ``sn_z_min``/``sn_z_max`` still restrict eligibility the
+    #: same way for both modes.
+    density_weighted_placement: bool = False
+
 
 class SNDrivingParams(NamedTuple):
 
@@ -155,3 +170,14 @@ class SNDrivingParams(NamedTuple):
     #: so long it suppresses cooling over a large fraction of the box between
     #: triggers. Only read when ``SNDrivingConfig.delayed_cooling`` is on.
     sn_cooling_delay_time: float = 0.0
+
+    #: exponent applied to local density when drawing a trigger's site under
+    #: ``SNDrivingConfig.density_weighted_placement`` (per-cell probability
+    #: ``propto rho ** this``). Default ``1.5`` is Simpson et al. (2016)'s own
+    #: local-SFR proxy ``sfr_i ~ m_i / t_ff,i ~ m_i * sqrt(rho_i)``, which
+    #: reduces to ``rho_i^1.5`` on this codebase's fixed-volume grid (cell
+    #: mass ``m_i = rho_i * cell_volume``, free-fall time ``t_ff ~
+    #: rho^-0.5``) -- not independently re-derived, taken directly from their
+    #: Sec. 2. Only read when ``SNDrivingConfig.density_weighted_placement``
+    #: is on.
+    sn_density_weighting_power: float = 1.5
