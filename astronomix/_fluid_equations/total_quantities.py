@@ -37,6 +37,7 @@ from astronomix._fluid_equations._equations import (
     get_absolute_velocity,
     total_energy_from_primitives,
 )
+from astronomix._fluid_equations._equations_mhd import _b_squared3D
 
 
 # @jaxtyped(typechecker=typechecker)
@@ -192,6 +193,18 @@ def calculate_total_energy(
     p = primitive_state[registered_variables.pressure_index]
 
     energy = total_energy_from_primitives(rho, u, p, gamma)
+
+    # total_energy_from_primitives is thermal + kinetic only; add the
+    # magnetic term (0.5 * |B|^2) whenever MHD is on, matching the total
+    # energy convention the solver's own conserved<->primitive conversion
+    # already uses internally (total_energy_from_primitives_mhd,
+    # _fluid_equations/_equations_mhd.py) -- without this, this function
+    # silently under-reports total energy for any MHD run (e.g. by ~76% for
+    # the CP Alfven wave test, where the background field's own energy
+    # dominates thermal and kinetic combined; see pytests/mhd/
+    # mhd_energy_conservation.py).
+    if config.mhd:
+        energy = energy + 0.5 * _b_squared3D(primitive_state, registered_variables)
 
     # self-gravity carries the factor 1/2 (mutual interaction); a fixed
     # external potential contributes its full potential energy rho * phi_ext.

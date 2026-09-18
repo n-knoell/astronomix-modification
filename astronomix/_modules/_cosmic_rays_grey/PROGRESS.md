@@ -4,6 +4,53 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-18, latest: MHD-only baseline energy check DONE -- intermediate step before item 18)
+
+Before item 18 ("full energy budget: thermal + kinetic + magnetic + CR closes to round-off"), a
+user-agreed intermediate step: check whether the *plain* FV MHD solver (CR off entirely) already
+conserves thermal+kinetic+magnetic energy cleanly, since every CR-grey ladder test to date
+(items 1-17) has been hydro-only and item 18 has no chance of closing "to round-off" with CR added
+if the base MHD solver doesn't already close cleanly on its own. New
+`pytests/mhd/mhd_energy_conservation.py` (general MHD infrastructure, not CR-specific -- lives in
+`pytests/mhd/`, not this module's own pytest directory), reusing the codebase's existing validated
+3D circularly-polarized Alfven-wave IC (`astronomix.test_setups.mhd.alfven_wave3D`) since it's
+genuinely dynamic (nonzero v, evolving transverse B), unlike ladder item 3's own static-B, `v=0`
+setup.
+
+**Finding 1: energy does NOT close to literal round-off, but the residual is real, resolution-
+convergent truncation error, not a conservation bug.** Over 5 full wave periods, `C_cfl=0.4`,
+float64: `N=8` (grid 16x8x8) -> relative energy error `6.33e-6`; `N=16` (32x16x16) -> `2.29e-6`.
+Mass conserved exactly (`0.0` relative error) at both, as expected for a flux-conservative FV
+scheme under periodic BCs -- energy is not, consistent with the Strang split between the gas
+Riemann solve and the magnetic-field update in `_evolve_state_fv`
+(`astronomix/_finite_volume/_state_evolution/evolve_state.py`). **Implication for item 18: "closes
+to round-off" should be read as "closes to a small, resolution-limited residual consistent with
+the scheme's own order of accuracy" whenever MHD is in play, not literal machine precision** --
+unlike the SN-driving module's own exact energy check, which reaches genuine round-off only
+because it's pure hydro with `fixed_timestep=True` and carries no MHD.
+
+**Finding 2: a real, previously-unknown, and significant bug in shared (non-CR) diagnostic
+infrastructure -- found and, per explicit user request, FIXED (2026-09-18).**
+`astronomix._fluid_equations.total_quantities.calculate_total_energy` (and the opt-in snapshot
+field it powers, `SnapshotSettings.return_total_energy`) never included magnetic energy -- it
+called the non-MHD `total_energy_from_primitives` unconditionally, even though a correct MHD
+version already existed and is used internally by the solver's own conserved<->primitive
+conversion (`total_energy_from_primitives_mhd`, `_fluid_equations/_equations_mhd.py`) -- so the
+*solver's* own energy accounting was always fine, only this external diagnostic helper was not.
+Before the fix, measured on the N=8 run above: correct total energy `4.449`, the helper's total
+`1.072` -- **under-reported by ~76%**, not a rounding-level gap (this IC's uniform `B_parallel=1`
+background alone carries `0.5*B^2=0.5` energy density, more than triple the `0.15` from thermal
+pressure). **Fix**: added `energy = energy + 0.5 * _b_squared3D(...)` under `config.mhd` in
+`calculate_total_energy` (`total_quantities.py`) -- additive, no effect when `mhd=False`.
+Confirmed zero regression risk before fixing: grepped the whole repo for callers --
+`calculate_total_energy` has exactly one (`_snapshot_diagnostics.py`'s `return_total_energy`
+field), and no committed pytest anywhere uses that field, so nothing existing depended on the old
+(wrong) behavior. `mhd_energy_conservation.py` now asserts the helper's own output matches this
+test's independent thermal+kinetic+magnetic calculation to round-off (`<1e-10` relative), as a
+regression guard against this fix ever silently reverting.
+
+Full write-up: DESIGN.md's "Resolved: MHD-only baseline energy check" section.
+
 ## Where things stand (2026-09-18, latest: ladder item 17 -- gradient stability across a rollout, DONE)
 
 New `test_cr_gradient_check_rollout_stability` in the same file, item 17's own wording ("gradient

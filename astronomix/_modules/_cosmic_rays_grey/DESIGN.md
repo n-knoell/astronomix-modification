@@ -1383,6 +1383,65 @@ the negative result with real evidence instead.
 All four tests in `cr_gradient_check.py` (transport, injection, emission, rollout stability)
 verified passing together in one process. Full numbers: PROGRESS.md's 2026-09-18 entry.
 
+## Resolved: MHD-only baseline energy check (2026-09-18, intermediate step before item 18)
+
+Item 18 wants "thermal + kinetic + magnetic + CR" to close to round-off. Every CR-grey ladder
+test so far (items 1-17) has been hydro-only -- none has combined CR-grey with a genuinely
+dynamic magnetic field (ladder item 3 turns `mhd=True` but keeps `v=0` and a uniform B
+throughout, so the induction equation never does real work there). User-agreed intermediate
+step: check the *plain* MHD solver (CR entirely off) in isolation first, so any future failure in
+the full item-18 test can be attributed to CR-specific coupling rather than a pre-existing MHD
+issue. New `pytests/mhd/mhd_energy_conservation.py` -- deliberately placed in `pytests/mhd/`, not
+this module's own directory, since it is general MHD infrastructure with no CR content at all.
+
+**Setup**: the codebase's existing, already-validated 3D circularly-polarized Alfven wave
+(`astronomix.test_setups.mhd.alfven_wave3D.setup_cp_alfven_wave`) -- periodic, exact analytic
+solution, genuinely nonzero velocity and non-uniform transverse B (unlike item 3's own choice).
+Grid `(2N, N, N)` at `N=8` and `N=16`, `C_cfl=0.4`, `t_end=5.0` (5 full periods), float64.
+
+**Finding 1: energy does not close to literal round-off, but the residual is real, resolution-
+convergent truncation error, not a conservation bug.** `N=8`: relative energy error `6.33e-6`.
+`N=16`: `2.29e-6` -- shrinks with resolution. Mass conserved exactly (`0.0` relative error) at
+both, as expected for a flux-conservative FV scheme under periodic BCs -- energy is not, which
+points at the Strang split between the gas Riemann solve and the magnetic-field update in
+`_evolve_state_fv` (`astronomix/_finite_volume/_state_evolution/evolve_state.py`) as the source (a
+different, non-CR-specific instance of the same category of small operator-split residual ladder
+item 3's own anisotropic-flux-projection split already produces for a CR-specific reason).
+**Consequence for item 18: "closes to round-off" should be designed around as "closes to a small,
+resolution-limited residual consistent with the scheme's own order of accuracy" whenever MHD is
+included, not literal machine precision** -- contrast the SN-driving module's own exact energy
+check, which reaches genuine round-off only because it is pure hydro with `fixed_timestep=True`
+and carries no MHD at all.
+
+**Finding 2: a real, previously-unknown, and significant bug in shared (non-CR) diagnostic
+infrastructure -- found and, per explicit user request, fixed (2026-09-18).**
+`astronomix._fluid_equations.total_quantities.calculate_total_energy` (and the opt-in snapshot
+field it powers, `SnapshotSettings.return_total_energy`) called the non-MHD
+`total_energy_from_primitives` (thermal + kinetic only) unconditionally, never adding the magnetic
+term -- even though a correct MHD version already existed and is used internally by the solver's
+own conserved<->primitive conversion (`total_energy_from_primitives_mhd`,
+`astronomix/_fluid_equations/_equations_mhd.py`), so the *solver's* own internal energy accounting
+was always correct, only this external diagnostic helper was not. Before the fix, measured
+directly on the `N=8` run: correct total energy `4.449`, the helper's own total `1.072` --
+**under-reported by ~76%**, not a rounding-level gap (this IC's dominant, uniform `B_parallel=1`
+background alone carries `0.5*B^2=0.5` energy density, more than triple the `0.15` from thermal
+pressure, and far above the `~0.005` from the wave's own small kinetic perturbation -- magnetic
+is the *largest* single channel here, not a minor correction).
+
+**Fix**: `calculate_total_energy` now adds `0.5 * _b_squared3D(primitive_state,
+registered_variables)` (reusing the solver's own existing helper, `_fluid_equations/
+_equations_mhd.py`) whenever `config.mhd` -- purely additive, a no-op when `mhd=False`. Checked
+for regression risk before fixing, not just assumed safe: `calculate_total_energy` has exactly
+one caller in the whole repo (`_snapshot_diagnostics.py`'s `return_total_energy` snapshot field),
+and grepping every pytest confirmed none uses that field -- so nothing existing depended on the
+old, wrong behavior. `mhd_energy_conservation.py` now asserts the helper's own output matches
+this test's independent thermal+kinetic+magnetic calculation to round-off (`<1e-10` relative
+error) as a standing regression guard, and the test's own diagnostic plot's second panel was
+updated from "look at this discrepancy" to "these now match" accordingly.
+
+Full numbers and the two-panel diagnostic plot (`pytests/mhd/figures/
+mhd_energy_conservation_test.svg`): PROGRESS.md's 2026-09-18 entry.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)
