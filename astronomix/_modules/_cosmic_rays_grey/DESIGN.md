@@ -1280,6 +1280,64 @@ the injection/emission chain specifically (its own wording: "transport, then inj
 emission" -- only the lighter smoke-check version was done inline in items 13/14/15) -- not yet
 discussed with the user.
 
+## Resolved: ladder item 16 extended to injection/emission (2026-09-18)
+
+Item 16's own wording ("transport, then injection, then emission") staged this from the start;
+`cr_gradient_check.py` only ever implemented the transport stage (Phase A). With Phases B and C
+both complete, extended the same file with two more tests rather than opening a new one --
+`test_cr_gradient_check_injection` and `test_cr_gradient_check_emission`.
+
+**A first attempt exercised the naive, most literal reading of "small CR problem": DSA on
+throughout a full adaptive `time_integration` run of a real shock, gradient of a scalar cost
+w.r.t. `dsa_efficiency_mach_scale`.** Result: AD vs. FD relative error `~20%` -- not a
+differentiability bug (no NaN, no sign flip), but real physics: diverting more thermal energy
+into CRs measurably weakens the shock, which perturbs the adaptive-dt step sequence and which
+cell the shock finder's per-zone argmax selects as *the* surface cell each step, compounding
+nonlinearly over many steps before `t_end`. Exactly the same category of trap the SILCC-ISM
+project's M4 work already found and documented ("changing `num_snapshots`/`t_end` under
+`exact_end_time=True` silently perturbs which PRNG draws occur -- the same run at finer
+resolution is not actually the same run") -- here the perturbed quantity is a continuous
+parameter feeding back into the dynamics, not a resolution setting, but the lesson (a long,
+feedback-coupled trajectory is the wrong thing to finite-difference through if you want to
+isolate one function's own differentiability) is the same one.
+
+**Fix: isolate a single `inject_crs_at_shocks` call against a fixed, `jax.lax.stop_gradient`-
+wrapped pre-shocked control state**, generated once (DSA code path live, `dsa_efficiency=0`, so a
+real shock forms but `e_cr` stays exactly zero) and reused unchanged for every perturbed parameter
+value -- removing both the shock-weakening feedback and the argmax-reselection risk in one move,
+since the state being differentiated *through* no longer depends on the parameter at all, only
+the injection formula applied to it does. This is exactly `cr_dsa_mach_dependence.py`'s own
+"layer 2's main check" pattern (a fixed control state, direct formula cross-check) -- that item
+picked it to prove the injection code *uses* the Mach-dependent formula, this one picks it to
+isolate the formula's own gradient; same underlying reason (a fixed input removes confounds an
+evolving one reintroduces). Brought the relative error to `~1e-9` for injection alone and
+`~1.8e-8` chained through emission.
+
+**New 1D setup** (`_shocked_control_state`): a plain gas shock (no initial CR pressure, unlike
+`cr_shock_tube.py`'s two-fluid problem), open boundaries, `N=128`. Pressure/density ratio tuned
+(scanned empirically, not guessed -- `p_L=50`, `rho_R=p_R=0.01` against `rho_L=1`) so the
+detected shock's Mach number lands at `Ms~=8`, inside `dsa_efficiency_kang_ryu_2013`'s
+"intermediate" piece (`5 < Ms <= 15`) -- the one branch with a nontrivial `1/ms_safe**4`
+rational-function term, the same differentiability-gotcha category (an unselected branch's
+locally-infinite gradient poisoning the total via `0*inf`) as this module's `cr_pressure_speed_
+floor` fix and `pion_decay_photon_spectrum`'s own regime-split floors.
+
+**`test_cr_gradient_check_injection`**: cost `= sum(e_cr**2)` after one `inject_crs_at_shocks`
+call on the fixed state, w.r.t. `dsa_efficiency_mach_scale` -- rel. err `3.4e-10`.
+**`test_cr_gradient_check_emission`**: chains the same injection step's `e_cr` into
+`proton_spectrum_normalized_to_energy` (domain-summed `e_cr`, an arbitrary illustrative
+code-energy -> GeV scale since this stage's purpose is exercising the emission formula's
+differentiability, not a physical prediction -- no `CodeUnits` conversion, unlike ladder item 15)
+and then `pion_decay_photon_spectrum` at a fixed reference photon energy/gas density, gradient of
+the resulting photon rate w.r.t. the same parameter -- rel. err `1.8e-8`. This is the plan's own
+Sec. 3 goal ("gradients flow sim -> spectrum -> map") exercised end to end and cross-checked
+against finite differences for the first time -- items 13/14/15 only ever did a lighter smoke
+check (finite and nonzero, never FD-compared) on the emission formulas in isolation.
+
+Both new tests comfortably inside the existing `tol=1e-2`; all three tests in the file (transport,
+injection, emission) verified passing together in one process. Full numbers: PROGRESS.md's
+2026-09-18 entry.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

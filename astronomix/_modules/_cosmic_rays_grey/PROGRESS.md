@@ -4,6 +4,42 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-18, latest: ladder item 16 extended to injection/emission, DONE)
+
+`pytests/cosmic_rays_grey/cr_gradient_check.py` (item 16, "continuous, from Phase A") only ever
+covered the transport stage (Phase A). Now that Phases B and C are both complete, extended it per
+the plan's own wording ("transport, then injection, then emission") and DESIGN.md's ladder-item-15
+"Next" note -- two new tests, `test_cr_gradient_check_injection` and
+`test_cr_gradient_check_emission`, in the same file.
+
+**Found empirically that the naive approach (DSA on throughout a full adaptive `time_integration`
+run, gradient w.r.t. `dsa_efficiency_mach_scale`) gives AD vs. FD relative error ~20%** -- not a
+differentiability bug: diverting more thermal energy into CRs measurably weakens the shock, which
+shifts the adaptive-dt step sequence and which cell the shock finder's per-zone argmax selects as
+the surface cell, compounding over many steps (same category of trap as the M4 "same run at finer
+resolution isn't the same run" finding). **Fix: isolate a single `inject_crs_at_shocks` call
+against a fixed (`jax.lax.stop_gradient`-wrapped) pre-shocked control state** (a real shock, DSA
+code path live but `dsa_efficiency=0` so `e_cr` is still zero), generated once by a real DSA-off
+run and reused for every perturbed parameter value -- exactly `cr_dsa_mach_dependence.py`'s own
+"layer 2's main check" pattern, for the same reason. Brought the relative error to `~1e-9`.
+
+New 1D open-boundary plain-gas shock setup (`_shocked_control_state`, `N=128`, `p_L/p_R` and
+`rho_L/rho_R` tuned so the detected shock's Mach number lands at `Ms~=8`, inside
+`dsa_efficiency_kang_ryu_2013`'s "intermediate" piece, `5 < Ms <= 15` -- the one branch with a
+nontrivial `1/ms_safe**4` rational-function term, same differentiability-gotcha category as this
+item's own `cr_pressure_speed_floor` fix and item 13's Kafexhiu regime splits).
+
+**`test_cr_gradient_check_injection`**: `jax.grad` vs. central finite differences of
+`sum(e_cr**2)` after one injection call, w.r.t. `dsa_efficiency_mach_scale` -- rel. err `3.4e-10`.
+**`test_cr_gradient_check_emission`**: chains the same injection step into
+`proton_spectrum_normalized_to_energy` and `pion_decay_photon_spectrum` (an illustrative
+GeV/gas-density scale, not physically calibrated -- see that test's own docstring), gradient of
+the resulting photon rate w.r.t. the same parameter -- rel. err `1.8e-8`. Both comfortably inside
+the existing `tol=1e-2`. All three tests in the file (transport, injection, emission) verified
+passing together in one process (GPU-pinned per this project's usual workaround).
+
+Full design write-up: DESIGN.md's "Resolved: ladder item 16 extended to injection/emission" section.
+
 ## Where things stand (2026-09-17, latest: ladder item 15 -- SNR-molecular-cloud pion-bump case, DONE. Phase C complete)
 
 Two design decisions confirmed with the user before starting, via concrete options: **(1)
