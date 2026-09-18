@@ -4,6 +4,39 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-18, latest: ladder item 18 -- full energy budget, DONE (hydro+CR scope))
+
+**Scope, user-confirmed: hydro + CR only for now** -- magnetic energy and collisional-loss
+accounting (both named in the plan's item 18 wording) are deferred, not silently assumed done.
+Magnetic energy: the companion MHD-only baseline check (below) already showed plain MHD carries
+its own non-round-off truncation residual, and no CR-grey test has ever combined CR feedback with
+dynamic MHD -- bundling both into a first item-18 attempt would make failures impossible to
+attribute. Collisional losses (hadronic/Coulomb/lepton): confirmed not implemented anywhere in
+this module as a dynamical `e_cr` sink (only 4 source terms exist in `cr_grey_sources.py`: pressure-
+gradient, adiabatic-work, flux-relaxation, streaming-heating; items 13-15's emission code is
+diagnostic-only, never feeds back into the sim).
+
+New `pytests/cosmic_rays_grey/cr_energy_budget.py`. Reuses ladder item 7's Sedov-blast physical
+setup but switches to periodic boundaries + `fixed_timestep=True` (same technique the SILCC-ISM
+project's own SN-driving energy-conservation test used to reach genuine round-off, ~7e-10). Since
+DSA injection and streaming heating only *move* energy between thermal/kinetic/CR (nothing here
+injects new energy from outside the box, unlike SN-driving's random episodic deposits), the
+correctness statement is simpler and stronger than a differential identity: total energy should
+be *exactly* constant for the whole run.
+
+**Result: `NUM_CELLS=48`, `num_timesteps=400`, `t_end=0.07`, float64, DSA injection
+(`dsa_efficiency=0.1`) and streaming heating both active simultaneously -- relative energy error
+`9.5e-15`.** Consistent with pure floating-point accumulation (~400 steps x ~1.1e5 cells), not a
+resolution-limited residual -- contrast the MHD baseline's `~1e-6`. Mass conserved exactly (`0.0`
+relative error). Confirmed both mechanisms are genuinely active, not no-ops: `E_cr(t_end)/E_total_0
+~= 0.035` (DSA fires, inside the `[0.005, 0.3]` sanity band); disabling streaming heating changes
+the final state by a large margin (`max|diff| > 1e-6` easily cleared) and visibly shifts the
+thermal/kinetic/CR partition in the diagnostic plot. Also checked: control (hydro-only, CR off
+entirely) and DSA-only (no streaming) both independently close to the same round-off level
+(`7.3e-15`, `9.3e-15`) -- the round-off result isn't an artifact of one specific configuration.
+
+Full write-up: DESIGN.md's "Resolved: ladder item 18 (hydro+CR scope)" section.
+
 ## Where things stand (2026-09-18, latest: MHD-only baseline energy check DONE -- intermediate step before item 18)
 
 Before item 18 ("full energy budget: thermal + kinetic + magnetic + CR closes to round-off"), a

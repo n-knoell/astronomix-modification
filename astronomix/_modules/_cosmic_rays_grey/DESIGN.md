@@ -1442,6 +1442,55 @@ updated from "look at this discrepancy" to "these now match" accordingly.
 Full numbers and the two-panel diagnostic plot (`pytests/mhd/figures/
 mhd_energy_conservation_test.svg`): PROGRESS.md's 2026-09-18 entry.
 
+## Resolved: ladder item 18 (hydro+CR scope) (2026-09-18)
+
+Item 18: "Full energy budget (thermal + kinetic + magnetic + CR) closes to round-off with
+injection and streaming/collisional-loss accounting." **Scope, user-confirmed: hydro + CR only for
+now** -- both magnetic energy and collisional-loss accounting, named in the plan's own wording,
+are deliberately deferred rather than silently assumed done:
+
+- **Magnetic energy deferred.** The companion MHD-only baseline check (previous section) already
+  showed plain MHD (CR off) carries its own non-round-off truncation residual (~1e-6 to 2e-6), and
+  no CR-grey ladder test has ever combined CR feedback with dynamic MHD. Bundling both into a
+  first item-18 attempt would make any failure impossible to attribute to CR coupling vs. the
+  pre-existing MHD residual -- deferred to a follow-on, likely worth doing alongside item 19
+  (which needs MHD regardless).
+- **Collisional-loss accounting deferred, because it doesn't exist.** Checked directly:
+  `cr_grey_sources.py` has exactly 4 source terms (`cr_pressure_gradient_source`,
+  `cr_adiabatic_work_source`, `cr_flux_relaxation_source`, `cr_streaming_heating_source`) -- none
+  of them a hadronic/Coulomb/lepton loss. Items 13-15's emission code (`cr_grey_emission.py`/
+  `cr_grey_emission_leptonic.py`) computes photon-rate *diagnostics* from an assumed spectrum; it
+  never feeds back into the simulation's `e_cr`. So this test can only exercise what exists:
+  injection (DSA, items 7/8) and streaming (item 5).
+
+**New `pytests/cosmic_rays_grey/cr_energy_budget.py`.** Reuses ladder item 7's Sedov-blast physical
+setup (`E_EXPLOSION=1`, `RHO_AMBIENT=1`, `P_AMBIENT=1e-4`, tanh-tapered point deposit) but switches
+its default open boundaries to periodic and adds `config.fixed_timestep=True` -- the same
+technique the SILCC-ISM project's own SN-driving energy-conservation test used to reach genuine
+round-off (`~7e-10`, see that test's own docstring). **The correctness statement here is simpler
+and stronger than that test's differential identity**: `cr_pressure_gradient_source`/
+`cr_adiabatic_work_source` are locally energy-conserving by construction (their own docstrings'
+product-rule identity), `inject_crs_at_shocks` moves an exact amount from gas thermal to `e_cr`,
+and `cr_streaming_heating_source` is exactly conservative at its default
+`streaming_heating_efficiency=1.0` -- none of these inject energy from outside the box (unlike
+SN-driving's random episodic deposits), so with DSA injection and streaming heating both active
+and nothing else touching energy, **total (thermal+kinetic+CR) energy should be exactly constant
+for the whole run**, not just approximately conserved.
+
+**Result: genuine round-off, not just "very small".** `NUM_CELLS=48`, `num_timesteps=400`,
+`t_end=0.07`, float64, DSA injection (`dsa_efficiency=0.1`) and streaming heating simultaneously
+active: relative energy error **`9.5e-15`** -- consistent with pure floating-point accumulation
+over ~400 steps x ~1.1e5 cells, not a resolution-limited truncation residual (contrast the MHD
+baseline's `~1e-6`). Mass conserved exactly (`0.0` relative error), as always for this
+flux-conservative FV scheme under periodic BCs. Confirmed via two independent control runs that
+this round-off result isn't an artifact of one specific configuration: hydro-only (CR off
+entirely) closes to `7.3e-15`; DSA-only (no streaming) closes to `9.3e-15`. Confirmed both
+mechanisms are genuinely active, not no-ops: `E_cr(t_end)` is a clearly nonzero, bounded fraction
+of the initial budget (`~0.035`, inside the `[0.005, 0.3]` sanity band, cf. item 7's identical
+band), and disabling streaming heating changes the final state by many orders of magnitude more
+than the round-off floor, visibly shifting the thermal/kinetic/CR partition in the diagnostic
+plot (`pytests/cosmic_rays_grey/pics/cr_energy_budget_test.svg`).
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)
