@@ -4,7 +4,64 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Where things stand (2026-09-17, later: ladder item 14 -- synchrotron + IC SED vs. naima, DONE)
+## Where things stand (2026-09-17, latest: ladder item 15 -- SNR-molecular-cloud pion-bump case, DONE. Phase C complete)
+
+Two design decisions confirmed with the user before starting, via concrete options: **(1)
+electron treatment (plan Sec. 6, finally exercised for real) -- fixed `K_ep=0.01` ratio to the
+local proton population's shape**, over building a separately-evolved grey electron energy
+density; **(2) setup scope -- reuse ladder item 11's SNR-into-clumpy-medium scaffold**, over a
+fresh IC443/W44-scale build, with one clump's density contrast raised from item 11's 10x (ISM) to
+100x ambient (molecular-cloud-like) as the hadronic target.
+
+**New library function**: `cr_grey_emission.proton_spectrum_normalized_to_energy` -- builds a
+`GreyProtonSpectrum` (assumed `alpha=2.0`, `e_cutoff=100` TeV) whose total energy content matches
+a target (naima's own `Wp`/`We` convention), the plan's "spectrum normalization from e_cr" that
+items 13/14 deliberately deferred. Verified against a by-hand recomputation, `<4e-12` relative
+error, broadcasts over per-cell arrays.
+
+**Key efficiency insight**: every per-cell pion-decay/synchrotron/IC computation is *linear* in
+that cell's spectrum amplitude (the expensive Kafexhiu/AKP10/Khangulyan integral depends only on
+the shared spectral *shape*, never the per-cell normalization) -- so each formula is evaluated
+**once** for a unit-amplitude spectrum, giving a photon-energy-only curve `K(E_gamma)`; any
+per-cell/domain-summed/projected map is then just `K(E_gamma) * (per-cell amplitude * per-cell
+target density)`, not 128^3 independent expensive integrals. This is what made a full-3D-grid
+emission map computationally tractable.
+
+**New pytest**: `pytests/cosmic_rays_grey/cr_snr_molecular_cloud_pion_bump.py`. Single 128^3
+SNR-DSA run (smaller than item 11's calibrated 256^3 -- item 15 doesn't need that precision),
+`T_END=1000` yr, `dsa_efficiency=0.1`. **Completed cleanly, no NaNs**, shock contained
+(`r_shock_max=1.127` vs. domain half-width `2.0` code units), total injected `E_cr=4.62e49` erg.
+
+**Both checks passed with real margin:**
+1. **Morphology**: projected pion-decay emission peaks **3.16 grid cells** from the molecular
+   cloud's own prescribed center -- inside both the 12-cell test tolerance *and* the cloud's own
+   physical radius (`~6.4` cells) -- confirms emission genuinely concentrates on the dense target
+   (plan Sec. 3: "the multiphase/dense target gas *is* the signal").
+2. **The pion bump**: domain-total hadronic SED (`E^2 dN/dE`) at 50 MeV is suppressed **94.9%**
+   below the naive power-law extrapolation of its own 3-30 GeV slope (measured slope `0.12`) --
+   comfortably past the test's `50%` minimum. This is Ackermann et al. (2013)'s headline
+   signature (a low-energy break below the pi0-production kinematic threshold) -- the first
+   end-to-end exercise of item 13's Kafexhiu et al. (2014) formula (validated to floating-point
+   precision against naima there) from a real simulation's own CR content, not a hand-specified
+   spectrum.
+
+**One honest caveat, not a bug:** the SED's overall peak lands at `~158` GeV over the `20 MeV-500
+GeV` test grid, not the few-hundred-MeV-to-few-GeV peak IC443/W44's own (softer, lower-cutoff)
+spectra show in the real data -- an artifact of this item's own assumed `alpha=2.0`/`e_cutoff=100
+TeV` shape (hard, high-cutoff), not a claim this run quantitatively reproduces either specific
+SNR. The literature-matching signature actually checked for (and found) is the sharp sub-100-MeV
+threshold suppression, a property of the pi0-decay process itself, independent of this item's own
+assumed high-energy shape choices.
+
+**Leptonic channels, for context:** synchrotron (at naima's default `B=3.24` uG, since this setup
+carries no self-consistent field) is utterly negligible at gamma-ray energies (`~4e-130`, peaks at
+radio/X-ray instead); inverse Compton on the CMB is real but subdominant to pion decay at the ~3
+GeV reference point (`E^2 dN/dE`: pion `9.96e44` vs. IC `2.98e44`, pion decay ~3.3x brighter).
+
+**Phase C (items 13-15) is now fully complete.** Full design write-up: DESIGN.md's "Resolved:
+SNR-molecular-cloud pion-bump case (ladder item 15, Phase C's closing item, 2026-09-17)" section.
+
+## Where things stand (2026-09-17, ladder item 14 -- synchrotron + IC SED vs. naima, DONE)
 
 **Item 14 turned out not to actually be blocked by the plan's "electron treatment" design
 decision (Sec. 6) after all** -- checked explicitly before starting, same scoping logic as item
@@ -51,8 +108,8 @@ new physics formula with its own natural scale needs its own appropriately-scale
 write-up: DESIGN.md's "Resolved: synchrotron + inverse-Compton emission (ladder item 14, Phase C,
 2026-09-17)" section.
 
-**Next up: item 15 (end-to-end SNR-molecular-cloud case, now unblocked -- items 13 and 14 both
-done) -- or item 12's M6 clumpiness gap, per user direction.**
+**Item 15 (end-to-end SNR-molecular-cloud case) done same day -- see the 2026-09-17 "latest" entry
+above.**
 
 ## Where things stand (2026-09-17, ladder item 13 -- pion-decay SED vs. naima, DONE. Phase C started)
 
@@ -99,10 +156,9 @@ reconstruction needed to port naima's numpy-boolean-mask-assignment code into
 `jax.grad`-compatible `jnp.where` form: DESIGN.md's "Resolved: pion-decay emission (ladder item
 13, Phase C, 2026-09-17)" section.
 
-**Ladder item 12's SILCC-ISM project is done except one flagged gap (M6, below); items 13 and 14
-(Phase C) are now both done too -- see the 2026-09-17 "later" entry above for item 14. Next up:
-item 15 (end-to-end SNR-cloud case, now unblocked), or closing item 12's M6 clumpiness gap, per
-user direction.**
+**Ladder item 12's SILCC-ISM project is done except one flagged gap (M6, below); items 13, 14, and
+15 (Phase C, now fully complete) are all done too -- see the 2026-09-17 "latest" entry above for
+item 15.**
 
 ## Where things stand (2026-09-16, SILCC-ISM project M6 -- Simpson et al. (2016) SN-placement comparison, done; one real comparison gap flagged, not yet closed)
 
@@ -3243,11 +3299,26 @@ See "What's done" and "Verified" below for details.
     entry above and DESIGN.md's "Resolved: synchrotron + inverse-Compton emission (ladder item
     14, Phase C, 2026-09-17)" section, including two real bugs caught (a positivity floor sized
     for the wrong quantity's scale, in two different guises).
-21. **Next: item 15 (end-to-end SNR-molecular-cloud case, now unblocked -- items 13 and 14 both
-    done) -- needs the electron-treatment decision (Sec. 6) resolved for real this time, since
-    item 15 actually has to derive an electron population from the CR-grey/proton state, not just
-    validate a formula against a known one; or close item 12's M6 clumpiness gap (18, above) --
-    whichever the user prioritizes.**
+21. ~~Ladder item 15 (end-to-end SNR-molecular-cloud case, IC 443/W44 analog; Ackermann et al.
+    2013)~~ -- done (2026-09-17): reused item 11's SNR-into-clumpy-medium scaffold with one
+    clump raised to molecular-cloud density; resolved the electron-treatment decision (Sec. 6) for
+    real via user-picked fixed `K_ep=0.01`; new `cr_grey_emission.proton_spectrum_normalized_to_energy`
+    turns a cell's `e_cr` into an assumed DSA-shaped proton spectrum. Both checks passed with real
+    margin: projected pion-decay morphology peaks 3.16 cells from the molecular cloud's own
+    center (inside the cloud's own ~6.4-cell radius), and the hadronic SED shows a genuine 94.9%
+    low-energy suppression below the naive power-law extrapolation (the "pion bump," Ackermann et
+    al. (2013)'s headline signature). See the 2026-09-17 "latest" entry above and DESIGN.md's
+    "Resolved: SNR-molecular-cloud pion-bump case (ladder item 15, Phase C's closing item,
+    2026-09-17)" section for the full account, including the "every per-cell emission computation
+    is linear in that cell's spectrum amplitude" efficiency insight that made a full 3D grid's
+    worth of emission maps computationally tractable. **Phase C (items 13-15) is now fully
+    complete.**
+22. **Next: Phase D (gradient-based inference demo, plan Sec. 1 -- fit kappa/injection efficiency
+    to a synthetic map) is the plan's own next staged phase; alternatively, ladder item 16's
+    FD-vs-AD gradient check could be extended to the injection/emission chain specifically (its
+    own wording: "transport, then injection, then emission" -- only a lighter smoke-check version
+    was done inline in items 13/14/15); or close item 12's M6 clumpiness gap (18, above) --
+    not yet discussed with the user.**
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 

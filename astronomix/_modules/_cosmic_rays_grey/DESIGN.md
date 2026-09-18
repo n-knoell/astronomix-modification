@@ -1183,9 +1183,102 @@ code or from a forward-value-only test in bug 2's case.
 
 **Deliberately deferred, not attempted this ladder item:** naima's anisotropic and
 monochromatic/tabulated-spectrum IC seed cases; Bremsstrahlung (mentioned in the plan as
-"optional"); deriving an electron population from the CR-grey/proton state (item 15, blocked on
-the electron-treatment decision after all, for *this* specific question); line-of-sight
-integration to a map (item 15).
+"optional"); deriving an electron population from the CR-grey/proton state and line-of-sight
+integration to a map -- both taken up by item 15 (below), which resolved the electron-treatment
+decision (fixed `K_ep`) for real.
+
+## Resolved: SNR-molecular-cloud pion-bump case (ladder item 15, Phase C's closing item, 2026-09-17)
+
+Ladder item 15: "End-to-end SNR-molecular-cloud case reproducing a pion-bump source
+morphology/SED (IC 443 / W44 analog; Ackermann et al. 2013)." This closes Phase C (items 13-15)
+and is the first ladder item to turn a *running simulation's* local `e_cr` into an emission
+map/SED rather than validating a formula against a directly-specified spectrum.
+
+**Two design decisions, both discussed with the user via concrete options before starting (this
+item's own genuine forks, not resolved by reading the surrounding code more carefully):**
+1. **Electron treatment (finally exercised for real, plan Sec. 6): user picked the fixed
+   `K_ep=0.01` ratio** (plan's own "simplest, good for first light" option) over building a
+   separately-evolved grey electron energy density (substantial new Phase-A-scale infrastructure
+   -- a new state variable with its own transport/loss physics -- not attempted). This resolves
+   the decision for Phase C's purposes; a future stretch item could still revisit it.
+2. **Setup scope: user picked reusing ladder item 11's SNR-into-clumpy-medium scaffold**
+   (`pytests/cosmic_rays_grey/cr_snr_clumpy_medium.py`) over building a fresh IC443/W44-scale
+   setup -- matches this project's established practice (M5/M6 also reused scaffolding rather
+   than chasing literal literature parameters). The only change from item 11: one of the three
+   clumps' density contrast is raised from item 11's ISM value (10x ambient) to a
+   molecular-cloud-like value (100x ambient) -- the hadronic-emission target. A single run
+   suffices (DSA on, clumpy medium) -- item 11 already validated the underlying energy-
+   partition/clumps-matter dynamics.
+
+**New library function**: `cr_grey_emission.proton_spectrum_normalized_to_energy` -- the plan's
+"spectrum normalization from e_cr" (Sec. 3), deliberately deferred by items 13/14. Builds a
+`GreyProtonSpectrum` (assumed shape: `alpha=2.0`, the standard test-particle strong-shock DSA
+prediction; `e_cutoff=100` TeV, a typical assumed Galactic-SNR cutoff -- the plan's own "grey
+caveat," shape assumed not predicted) whose total energy content (naima's own `Wp`/`We`
+convention: `integral(E*J(E)dE)`) matches a given target -- verified directly against a
+by-hand recomputation of that same integral, `<4e-12` relative error, broadcasting correctly over
+an array of per-cell targets in one call.
+
+**Key efficiency insight, not obvious in advance and what actually made a full-3D-grid emission
+map tractable:** every per-cell pion-decay/synchrotron/IC computation is *linear* in that cell's
+own spectrum amplitude -- the expensive part of each formula (the full Kafexhiu/AKP10/Khangulyan
+integral over the proton/electron energy grid) depends only on the assumed spectral *shape*
+(shared across every cell here), never the per-cell normalization. So each formula is evaluated
+**once**, for a unit-amplitude spectrum, giving a photon-energy-only shape curve `K(E_gamma)`; the
+full per-cell (or domain-summed, or line-of-sight-projected) map is then just `K(E_gamma) *
+(per-cell amplitude * per-cell target density)`, an outer product rather than 128^3 independent
+expensive integrals. This is a genuinely reusable pattern for any future ladder item wiring these
+emission formulas to a real 3D field.
+
+**New pytest**: `pytests/cosmic_rays_grey/cr_snr_molecular_cloud_pion_bump.py`. Single 128^3 run
+(smaller than item 11's calibrated 256^3 -- item 15 doesn't need item 11's tight energy-partition
+precision), same box/explosion/clump geometry as item 11, DSA on (`dsa_efficiency=0.1`,
+`dsa_mach_min=1.3`), `T_END=1000` yr. **Completed cleanly, no NaNs**, forward shock contained
+(`r_shock_max=1.127` code units vs. domain half-width `2.0`), total injected `E_cr=4.62e49` erg
+(order-of-magnitude consistent with `~0.1 * E_SN=1e51` erg not yet fully processed through the
+shock by `t_end`, same qualitative picture as item 11).
+
+**Both checks passed, with real margin, not just "it ran":**
+1. **Morphology**: the projected (line-of-sight-summed) pion-decay emission map's brightest pixel
+   sits **3.16 grid cells** from the molecular cloud's own prescribed center -- well inside both
+   the test's own 12-cell tolerance *and* the cloud's own physical radius (`~6.4` cells at this
+   resolution) -- a tight, convincing confirmation that emission genuinely concentrates on the
+   dense target, not just "somewhere in the general vicinity." Directly operationalizes the
+   plan's own point (Sec. 3): "the multiphase/dense target gas *is* the signal."
+2. **The pion bump**: the domain-total hadronic SED (`E^2 dN/dE`) at 50 MeV is suppressed
+   **94.9%** below the naive power-law extrapolation of its own 3-30 GeV slope (measured slope
+   `0.12`) -- a real, sharp spectral turnover, not a continuing power law, and comfortably past
+   the test's own `50%` minimum. This is exactly Ackermann et al. (2013)'s headline finding
+   (a low-energy break/turnover below the pi0-production kinematic threshold, ruling out a
+   featureless power law) -- the first time ladder item 13's Kafexhiu et al. (2014) formula (there
+   validated to floating-point precision against naima for a *hand-specified* spectrum) has been
+   exercised end-to-end from a real simulation's own CR content.
+
+**One honest caveat, not a bug:** the SED's overall peak (`E^2 dN/dE` maximized) lands at `~158`
+GeV over this test's `20 MeV-500 GeV` grid, not the few-hundred-MeV-to-few-GeV peak IC443/W44's
+own (softer, lower-cutoff) proton spectra show in Ackermann et al. (2013)'s actual data -- an
+artifact of this item's own assumed `alpha=2.0`/`e_cutoff=100 TeV` shape choice (hard spectrum,
+high cutoff) making `E^2 dN/dE` stay roughly flat-to-rising until that cutoff, not a claim that
+this run quantitatively reproduces either specific SNR's spectrum. The physically meaningful,
+literature-matching signature this ladder item actually checks for -- and found -- is the sharp
+sub-100-MeV kinematic-threshold suppression (Check 2 above), which is a property of the pi0-decay
+process itself (already validated exactly against naima in item 13), not of this item's own
+assumed high-energy shape parameters.
+
+**Leptonic channels, for context (not asserted on):** at the SNR's actual `B=3.24` uG field
+(naima's own CMB-equipartition default, used since this setup carries no self-consistent magnetic
+field), synchrotron is utterly negligible at gamma-ray energies (`sed_sync` sums to `~4e-130` over
+the whole grid -- synchrotron from these electrons peaks at radio/X-ray energies, not gamma-ray,
+at this field strength). Inverse Compton (on the CMB) is real but subdominant to pion decay at the
+~3 GeV reference point checked (`E^2 dN/dE`: pion `9.96e44` vs. IC `2.98e44`, pion decay ~3.3x
+brighter) -- consistent with the plan's framing that dense-target hadronic emission is expected to
+dominate exactly where the dense cloud sits.
+
+**Phase C (items 13-15) is now fully complete.** Next per the plan's own staging: Phase D
+(gradient-based inference demo, Sec. 1) or extending ladder item 16's FD-vs-AD gradient check to
+the injection/emission chain specifically (its own wording: "transport, then injection, then
+emission" -- only the lighter smoke-check version was done inline in items 13/14/15) -- not yet
+discussed with the user.
 
 ## BC handling per scheme
 

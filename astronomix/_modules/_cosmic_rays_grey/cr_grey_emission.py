@@ -133,6 +133,63 @@ def proton_number_density(spectrum: GreyProtonSpectrum, e_total_gev):
     )
 
 
+def proton_spectrum_normalized_to_energy(
+    total_energy_gev,
+    e_0: float = 1.0,
+    alpha: float = 2.0,
+    e_cutoff: float = 1e5,
+    beta: float = 1.0,
+    e_p_min_gev: float = M_P_GEV + T_TH_GEV + 1e-4,
+    e_p_max_gev: float = 1e7,
+    n_e_p_per_decade: int = 100,
+) -> GreyProtonSpectrum:
+    """Build a :class:`GreyProtonSpectrum` whose total energy content equals
+    ``total_energy_gev`` -- the plan's "spectrum normalization from e_cr"
+    (Sec. 3), deliberately deferred by ladder items 13/14 (which validated
+    the emission formulas against directly-specified spectra) to whichever
+    item first needs to turn a simulation's local ``e_cr`` into an assumed
+    proton population. First exercised by ladder item 15.
+
+    "Total energy content" uses the same convention as naima's own
+    ``BaseProton.Wp``/``compute_Wp`` (and ``BaseElectron.We``): the integral
+    of *total* energy (not kinetic) weighted by the number spectrum,
+    ``integral(E * J(E) dE)`` over ``[e_p_min_gev, e_p_max_gev]`` -- so
+    ``total_energy_gev`` should be a proton population's total energy
+    content in GeV (e.g. a cell's ``e_cr`` energy density converted to
+    physical erg, times that cell's volume, then converted erg -> GeV).
+
+    ``total_energy_gev`` may be an array (e.g. one value per grid cell) --
+    the returned spectrum's ``amplitude`` field then broadcasts to the same
+    shape, one independently-normalized spectrum per input value, while
+    ``e_0``/``alpha``/``e_cutoff``/``beta`` (the assumed shared spectral
+    *shape* -- e.g. ``alpha=2.0`` is the standard test-particle strong-shock
+    DSA prediction) stay shared scalars.
+
+    Args:
+        total_energy_gev: Target total energy content, GeV (scalar or array).
+        e_0: Reference energy for the assumed shape, GeV.
+        alpha: Power-law index of the assumed shape.
+        e_cutoff: Exponential cutoff energy of the assumed shape, GeV.
+        beta: Cutoff exponent of the assumed shape.
+        e_p_min_gev: Lower integration limit (energy content, not the
+            emission formula's own integration grid -- callers passing the
+            returned spectrum to :func:`pion_decay_photon_spectrum` should
+            use matching values there for consistency).
+        e_p_max_gev: Upper integration limit, GeV.
+        n_e_p_per_decade: Number of integration-grid points per decade.
+
+    Returns:
+        A :class:`GreyProtonSpectrum` with the given shape and an
+        ``amplitude`` normalized so its total energy content matches.
+    """
+    n_ep = max(10, int(n_e_p_per_decade * math.log10(e_p_max_gev / e_p_min_gev)))
+    ep_grid = jnp.logspace(math.log10(e_p_min_gev), math.log10(e_p_max_gev), n_ep)
+    unit_spectrum = GreyProtonSpectrum(amplitude=1.0, e_0=e_0, alpha=alpha, e_cutoff=e_cutoff, beta=beta)
+    unit_energy_gev = _trapz_loglog(ep_grid * proton_number_density(unit_spectrum, ep_grid), ep_grid)
+    amplitude = total_energy_gev / unit_energy_gev
+    return GreyProtonSpectrum(amplitude=amplitude, e_0=e_0, alpha=alpha, e_cutoff=e_cutoff, beta=beta)
+
+
 def _sigma_pp_inel(Tp):
     """Inelastic p-p cross section, Kafexhiu et al. (2014) Eq. 1, cm^2."""
     Tp_safe = jnp.maximum(Tp, _TINY)
