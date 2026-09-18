@@ -1338,6 +1338,51 @@ Both new tests comfortably inside the existing `tol=1e-2`; all three tests in th
 injection, emission) verified passing together in one process. Full numbers: PROGRESS.md's
 2026-09-18 entry.
 
+## Resolved: ladder item 17 -- gradient stability across a rollout (2026-09-18)
+
+Item 17's own wording: "Gradient stability across a modest rollout -- catches a floor/limiter
+silently killing the adjoint." New `test_cr_gradient_check_rollout_stability`, same file as items
+16/17's other tests (`cr_gradient_check.py`).
+
+**Deliberately the opposite regime from item 16's own `test_cr_gradient_check`, on purpose**:
+that test's setup (`amp=1e-3`, generic `minimum_density`/`minimum_pressure=1e-14`) was built to
+keep the transport equations' own differentiability isolated from the general FV solver's
+positivity floor (`jnp.maximum` on density/pressure in `_evolve_gas_state_unsplit_inner`/
+`_apply_gravity_source`, `_finite_volume/_state_evolution/evolve_state.py` -- the same floor
+extensively discussed in this project's SILCC-ISM (M4/M5) work) -- it never engages there. Item 17
+needs the opposite: a setup where that floor *does* engage, so there's something for "catches a
+floor silently killing the adjoint" to actually catch. Same `reduced_streaming_speed` parameter
+and `sum(e_cr**2)` cost as item 16, but `amp` raised `1e4`x (`10` vs. `1e-3`) so the CR pressure
+gradient's feedback on the gas
+(`cr_pressure_gradient_source`/`cr_adiabatic_work_source`) drives a real local rarefaction, and
+`minimum_pressure`/`minimum_density` raised from the generic default to `0.3` (comparable to the
+ambient `1.0`) so a modest rollout actually reaches it. Calibrated empirically (a short parameter
+scan, not guessed): `t_end` in `[0.02, 0.1, 0.2, 0.4]` takes the run from floor-free (`p_min=
+0.76`) to floor-engaged for an extended stretch (`p_min` pinned exactly at `0.3` for `t_end=
+0.1/0.2/0.4`) -- confirmed directly via an explicit assertion on `p_min`, not assumed, so this
+test can't silently degrade into a floor-free repeat of item 16 if the dynamics ever change
+underneath it.
+
+**Result, at every rollout length: AD gradient is finite, and stays within a loosened `tol=0.1`
+of a central finite difference** (loosened vs. item 16's `1e-2` because this large-amplitude
+setup is genuinely nonlinear on its own, independent of any floor -- large CR pressure feeding
+back on the gas across a longer adaptive-dt trajectory carries real second-order truncation
+effects a small-amplitude linear pulse doesn't). **The actually interesting finding: relative
+error is *largest* at the shortest, floor-free rollout (`7.7%` at `t_end=0.02`) and *shrinks*
+monotonically as the floor engages and the rollout lengthens (`1.0%` -> `0.36%` -> `0.29%` at
+`t_end=0.1/0.2/0.4`).** In other words, this module's general positivity floor does **not**
+silently kill the adjoint here -- `jnp.maximum`'s standard backward-pass convention (zero gradient
+exactly where clamped) composes correctly through the checkpointed adjoint even across many
+adaptive-dt steps with several cells sitting on the floor simultaneously, and if anything the
+floor's own clamping *stabilizes* the gradient comparison (a floored cell's local sensitivity is
+exactly and unambiguously zero, removing one source of the nonlinear-feedback noise the unfloored
+short run still carries). **This is a real, checked-for finding, not an assumption going in** --
+item 17's entire purpose is to catch the failure mode if it *had* occurred; here it establishes
+the negative result with real evidence instead.
+
+All four tests in `cr_gradient_check.py` (transport, injection, emission, rollout stability)
+verified passing together in one process. Full numbers: PROGRESS.md's 2026-09-18 entry.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

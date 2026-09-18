@@ -78,8 +78,10 @@ explicitly deferred):**
 """
 
 # ==== GPU selection ====
+import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
 from autocvd import autocvd
-autocvd(num_gpus=1)
+autocvd(num_gpus=1, interval = 10)
 # ruff: noqa: E402
 # =======================
 
@@ -139,7 +141,7 @@ from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 
 # ---- physical setup: item 11's scaffold, unchanged unless noted ----
 GAMMA = 5.0 / 3.0
-NUM_CELLS = 128  # item 11's own lower-cost variant; item 15 doesn't need item 11's tight
+NUM_CELLS = 256  # item 11's own lower-cost variant; item 15 doesn't need item 11's tight
                  # energy-partition calibration precision, just a qualitative emission check.
 DSA_MACH_MIN = 1.3
 DSA_EFFICIENCY = 0.1
@@ -155,7 +157,7 @@ P_AMBIENT = N_AMBIENT * c.k_B * T_AMBIENT
 BOX_SIZE_PHYS = 20.0 * u.pc
 BOX_SIZE = BOX_SIZE_PHYS.to(CODE_UNITS.code_length).value
 
-T_END_PHYS = 1000.0 * u.yr
+T_END_PHYS = 2000.0 * u.yr
 T_END = T_END_PHYS.to(CODE_UNITS.code_time).value
 
 R_EXPLOSION_PHYS = 2.0 * (BOX_SIZE_PHYS / NUM_CELLS)

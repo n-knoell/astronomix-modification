@@ -4,6 +4,31 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-18, latest: ladder item 17 -- gradient stability across a rollout, DONE)
+
+New `test_cr_gradient_check_rollout_stability` in the same file, item 17's own wording ("gradient
+stability across a modest rollout -- catches a floor/limiter silently killing the adjoint").
+Deliberately the opposite regime from item 16's `test_cr_gradient_check`: same
+`reduced_streaming_speed` parameter and `sum(e_cr**2)` cost, but a much larger CR-pressure pulse
+(`amp=10` vs. item 16's linear-regime `amp=1e-3`) and an elevated `minimum_pressure`/
+`minimum_density` floor (`0.3` vs. the generic `1e-14` default) so the CR-pressure-driven local
+rarefaction actually reaches the floor within a modest rollout (`t_end` up to `0.4`, vs. item 16's
+`t_end~0.014`) -- confirmed directly (`p_min` sits exactly on `0.3`) rather than assumed.
+
+**Result: AD stays finite and reasonably accurate (`tol=0.1`, looser than item 16's `1e-2` since
+this large-amplitude setup is genuinely nonlinear even without any floor) at every rollout length
+tested, and -- the actually interesting finding -- relative error is *largest at the shortest,
+floor-free rollout* (`7.7%` at `t_end=0.02`) and *shrinks* once the floor engages (`1.0%` ->
+`0.36%` -> `0.29%` at `t_end=0.1/0.2/0.4`).** This module's general FV positivity floor
+(`jnp.maximum` on density/pressure, per-cell) does **not**, in this setup, silently kill the
+adjoint -- the floor's own backward pass (zero gradient exactly where clamped, matching JAX's
+standard `jnp.maximum` convention) composes correctly through the adjoint even across many
+adaptive-dt steps where several cells sit on it simultaneously. This is a real (if negative)
+finding this test is what establishes, not an assumption going in -- item 17's job is exactly to
+catch it if it *weren't* true.
+
+Full write-up: DESIGN.md's "Resolved: ladder item 17" section.
+
 ## Where things stand (2026-09-18, latest: ladder item 16 extended to injection/emission, DONE)
 
 `pytests/cosmic_rays_grey/cr_gradient_check.py` (item 16, "continuous, from Phase A") only ever

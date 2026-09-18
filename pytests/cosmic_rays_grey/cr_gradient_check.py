@@ -1,6 +1,7 @@
 """
-CR differentiability pytest (plan Sec. 4, item 16 -- "continuous, from Phase
-A", own wording: "transport, then injection, then emission").
+CR differentiability pytest (plan Sec. 4, items 16 -- "continuous, from
+Phase A", own wording: "transport, then injection, then emission" -- and
+17, "gradient stability across a modest rollout").
 
 Finite-difference vs. autodiff gradient checks on small CR problems: perturb
 a parameter, compute a scalar cost, and compare the AD gradient
@@ -70,6 +71,26 @@ isolates the same function the same way for the same reason (an exact
 formula cross-check, not an aggregate-energy comparison, needs a fixed
 pre-shock state).
 
+4. ``test_cr_gradient_check_rollout_stability`` (item 17): the same
+   transport-stage parameter (``reduced_streaming_speed``) and cost
+   (``sum(e_cr_final**2)``) as ``test_cr_gradient_check``, but at a family
+   of increasing ``t_end`` values, and deliberately in the regime item 16's
+   own setup avoids -- a CR-pressure perturbation large enough
+   (``amp=10``, vs. item 16's linear-regime ``amp=1e-3``) to drive a real
+   local rarefaction into an elevated ``minimum_pressure`` floor
+   (``0.3``, vs. the generic ``1e-14`` default) partway through the
+   rollout. Checks the AD gradient stays finite at every rollout length,
+   including the ones where ``p_min`` sits exactly on the floor (verified
+   directly, not assumed), and stays within a loosened tolerance of a
+   central finite difference throughout -- looser than item 16's ``1e-2``
+   because this setup is genuinely nonlinear (large-amplitude CR pressure
+   feeding back on the gas), not because the floor itself degrades the
+   comparison: empirically, AD-vs-FD relative error is *largest* at the
+   shortest, floor-free rollout (~7.7%) and *shrinks* once the floor
+   engages (~0.3-1.0%) -- i.e. this specific floor does not, in fact,
+   silently kill the adjoint, and this test is what establishes that
+   rather than assuming it.
+
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md's differentiability plan.
 """
 
@@ -79,9 +100,15 @@ autocvd(num_gpus=1)
 # ruff: noqa: E402
 # =======================
 
+# general
+from pathlib import Path
+
 # jax
 import jax
 import jax.numpy as jnp
+
+# plotting
+import matplotlib.pyplot as plt
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -374,7 +401,153 @@ def test_cr_gradient_check_emission(tol: float = 1e-2):
     )
 
 
+def test_cr_gradient_check_rollout_stability(tol: float = 0.1):
+    """Gradient stability across a modest rollout (item 17): AD vs. FD at
+    increasing ``t_end``, deliberately in a regime that drives the gas
+    pressure into an elevated ``minimum_pressure`` floor partway through.
+
+    Args:
+        tol: The maximum allowed relative error between the AD and
+            finite-difference gradients, at every rollout length tested.
+    """
+    num_cells = 64
+    box_size = 1.0
+    gamma = 5.0 / 3.0
+    gamma_cr = 4.0 / 3.0
+    reduced_streaming_speed_0 = 1.0
+    # Large enough that the CR pressure gradient's feedback on the gas
+    # (cr_pressure_gradient_source/cr_adiabatic_work_source) drives a real
+    # local rarefaction, unlike test_cr_gradient_check's deliberately linear
+    # amp=1e-3 -- see module docstring.
+    amp = 10.0
+    sigma = 0.05
+    x0 = 0.5 * box_size
+    # Elevated well above the generic 1e-14 default so a modest rollout
+    # reaches it (calibrated empirically, not guessed).
+    min_floor = 0.3
+
+    config = SimulationConfig(
+        solver_mode=FINITE_VOLUME,
+        dimensionality=1,
+        num_cells=num_cells,
+        box_size=box_size,
+        boundary_settings=BoundarySettings1D(
+            left_boundary=PERIODIC_BOUNDARY, right_boundary=PERIODIC_BOUNDARY
+        ),
+        cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True),
+        differentiation_mode=BACKWARDS,
+    )
+    registered_variables = get_registered_variables(config)
+    helper_data = get_helper_data(config)
+    x = helper_data.geometric_centers
+
+    wave_speed_0 = reduced_streaming_speed_0 * jnp.sqrt(gamma_cr - 1.0)
+    pulse = amp * jnp.exp(-0.5 * ((x - x0) / sigma) ** 2)
+
+    primitive_state = jnp.zeros((registered_variables.num_vars, num_cells))
+    primitive_state = primitive_state.at[registered_variables.density_index].set(1.0)
+    primitive_state = primitive_state.at[registered_variables.pressure_index].set(1.0)
+    primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(pulse)
+    primitive_state = primitive_state.at[registered_variables.cosmic_ray_flux_index].set(
+        wave_speed_0 * pulse
+    )
+    config = finalize_config(config, primitive_state.shape)
+
+    def _cost_at(v, t_end):
+        params = SimulationParams(
+            t_end=t_end,
+            gamma=gamma,
+            minimum_density=min_floor,
+            minimum_pressure=min_floor,
+            cosmic_ray_grey_params=CosmicRayGreyParams(
+                gamma_cr=gamma_cr, reduced_streaming_speed=v
+            ),
+        )
+        final_state = time_integration(primitive_state, config, params, registered_variables)
+        return final_state
+
+    # A modest rollout: short (floor not yet engaged) through long enough
+    # that pressure sits exactly on the floor for an extended stretch
+    # (verified below, not assumed) -- calibrated empirically.
+    rollout_t_ends = [0.02, 0.1, 0.2, 0.4]
+
+    ad_grads, fd_grads, rel_errs, p_mins = [], [], [], []
+    for t_end in rollout_t_ends:
+        cost_fn = lambda v: jnp.sum(_cost_at(v, t_end)[registered_variables.cosmic_ray_e_index] ** 2)
+
+        ad_grad = float(jax.grad(cost_fn)(reduced_streaming_speed_0))
+
+        h = 1e-4 * reduced_streaming_speed_0
+        fd_grad = float(
+            (cost_fn(reduced_streaming_speed_0 + h) - cost_fn(reduced_streaming_speed_0 - h))
+            / (2 * h)
+        )
+
+        p_min = float(jnp.min(_cost_at(reduced_streaming_speed_0, t_end)[registered_variables.pressure_index]))
+        rel_err = abs(ad_grad - fd_grad) / abs(fd_grad)
+        print(
+            f"t_end = {t_end}: p_min = {p_min:.4f}, AD grad = {ad_grad:.6e}, "
+            f"FD grad = {fd_grad:.6e}, rel. err = {rel_err:.3e}"
+        )
+        ad_grads.append(ad_grad)
+        fd_grads.append(fd_grad)
+        rel_errs.append(rel_err)
+        p_mins.append(p_min)
+
+        assert not (ad_grad != ad_grad), f"AD gradient is NaN at t_end={t_end}."
+        assert rel_err < tol, (
+            f"AD vs FD gradient mismatch at t_end={t_end}: rel. err {rel_err:.3e} >= tol {tol} "
+            f"(AD={ad_grad:.6e}, FD={fd_grad:.6e})."
+        )
+
+    fig, (ax_grad, ax_err, ax_pmin) = plt.subplots(1, 3, figsize=(15, 4.5))
+
+    ax_grad.plot(rollout_t_ends, ad_grads, "o-", label="AD ($\\mathtt{jax.grad}$)", color="tab:blue")
+    ax_grad.plot(rollout_t_ends, fd_grads, "x--", label="FD (centered)", color="tab:orange")
+    ax_grad.set_xlabel("$t_\\mathrm{end}$")
+    ax_grad.set_ylabel(r"$d(\sum e_\mathrm{cr}^2)/d(v_\mathrm{red})$")
+    ax_grad.set_title("AD vs. FD gradient")
+    ax_grad.legend()
+
+    ax_err.plot(rollout_t_ends, [100 * r for r in rel_errs], "o-", color="tab:green")
+    ax_err.axhline(100 * tol, color="k", linestyle=":", label=f"tol = {100 * tol:.0f}%")
+    ax_err.set_xlabel("$t_\\mathrm{end}$")
+    ax_err.set_ylabel("AD vs. FD relative error [%]")
+    ax_err.set_title("Gradient error shrinks as floor engages")
+    ax_err.legend()
+
+    ax_pmin.plot(rollout_t_ends, p_mins, "o-", color="tab:red")
+    ax_pmin.axhline(min_floor, color="k", linestyle=":", label=f"floor = {min_floor}")
+    ax_pmin.set_xlabel("$t_\\mathrm{end}$")
+    ax_pmin.set_ylabel("$p_\\mathrm{min}$ (final state)")
+    ax_pmin.set_title("Pressure floor engagement")
+    ax_pmin.legend()
+
+    fig.suptitle(
+        "Ladder item 17: gradient stability across a rollout -- "
+        "the positivity floor does not silently kill the adjoint"
+    )
+    fig.tight_layout()
+    pics_dir = Path(__file__).resolve().parent / "pics"
+    pics_dir.mkdir(exist_ok=True)
+    fig.savefig(pics_dir / "cr_gradient_check_rollout_stability_test.svg")
+    plt.close(fig)
+
+    # Sanity check that the rollout's later stretch really did engage the
+    # floor -- otherwise this test would silently degrade into a
+    # floor-free repeat of test_cr_gradient_check if the dynamics ever
+    # changed underneath it.
+    p_min_long = float(
+        jnp.min(_cost_at(reduced_streaming_speed_0, rollout_t_ends[-2])[registered_variables.pressure_index])
+    )
+    assert p_min_long <= min_floor + 1e-6, (
+        f"Expected the pressure floor to engage by t_end={rollout_t_ends[-2]} "
+        f"(p_min={p_min_long:.4f}, floor={min_floor}) -- this test's premise requires it."
+    )
+
+
 if __name__ == "__main__":
     test_cr_gradient_check()
     test_cr_gradient_check_injection()
     test_cr_gradient_check_emission()
+    test_cr_gradient_check_rollout_stability()
