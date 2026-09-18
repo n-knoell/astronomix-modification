@@ -1491,6 +1491,57 @@ band), and disabling streaming heating changes the final state by many orders of
 than the round-off floor, visibly shifting the thermal/kinetic/CR partition in the diagnostic
 plot (`pytests/cosmic_rays_grey/pics/cr_energy_budget_test.svg`).
 
+## Resolved: ladder item 19 -- div(B) preservation (2026-09-18)
+
+Item 19: "∇·B preservation unaffected by the CR module (both schemes)." **Scope finding: "both
+schemes" is only half-testable, and this is pre-existing, already-documented scope, not a new
+discovery requiring a decision.** Confirmed by grep before starting: no file under
+`astronomix/_finite_difference/` mentions cosmic rays, and `registered_variables.py`'s FD branch
+explicitly does not allocate `cosmic_ray_e_index`/`cosmic_ray_flux_index` -- this module's own "FD
+limitation" section (above) already records why and calls it "real, separate follow-up work -- not
+attempted in this scaffold." Since there is no FD+CR-grey combination to possibly disturb `div(B)`
+in, this item tests FV for the actual claim and FD's own (CR-absent) baseline for reference only --
+decided and documented directly, unlike item 18's MHD-vs-hydro call, since there's no genuine
+ambiguity here (the limitation was already recorded, just not yet checked against for this
+specific property).
+
+**New `pytests/cosmic_rays_grey/cr_divergence_b_preservation.py`.** Reuses the same validated CP
+Alfven-wave IC as the MHD energy baseline (genuinely dynamic, `div(B)=0` to machine precision at
+`t=0`), with a small localized `e_cr` pulse (amplitude `0.01`, tiny relative to the wave's own
+energy) superposed for the CR-on configurations so `anisotropic_transport` has something real to
+project -- **the first time anisotropic CR transport is exercised against a genuinely
+time-varying B**, unlike ladder item 3's own setup, which keeps `v=0` and B static throughout.
+Not a vacuous check: **ladder item 3 already found and fixed a real bug in exactly this area**
+(`_evolve_state_fv`'s Strang split originally sliced `primitive_state[-3:]` as "the magnetic
+field", silently grabbing CR rows registered after it and mislabelling a real `B_z` row as gas
+whenever both `mhd` and `grey_cosmic_rays` were on) -- that fix was only ever verified against CR
+*transport shape*, never directly against `div(B)` itself.
+
+**Result: clean pass.** `N=8`, `t_end=5.0` (5 full periods), float64, `max(|div(B)|)` via the same
+discrete operator the (previously unexercised by any committed pytest) `magnetic_divergence`
+snapshot diagnostic calls (`divergence3D` for FV, `_interface_field_divergence` for FD):
+
+    FV, CR off:                          6.8e-15
+    FV, CR on (isotropic):               8.4e-15
+    FV, CR on + anisotropic_transport:   9.5e-15
+    FD baseline (CR absent, reference):  5.4e-14
+
+All four at genuine floating-point round-off, not a resolution-limited residual -- `tol=1e-10`
+leaves a >1e4x margin. CR-grey does not measurably perturb `div(B)`, matching the physical
+expectation that no CR-grey source or transport term ever writes to a magnetic-field row, with or
+without anisotropic transport actively reading a real, evolving field every step.
+
+**Minor, unrelated documentation mismatch noticed in passing, not fixed (low stakes, no
+correctness impact):** `SnapshotData.magnetic_divergence`'s own docstring
+(`data_classes/simulation_snapshot_data.py`) says "mean absolute magnetic field divergence", but
+the diagnostic that fills it (`_compute_magnetic_divergence`,
+`_snapshotting/_snapshot_diagnostics.py`) actually computes the *max* absolute divergence -- a
+stale docstring, not a bug (arguably max is the more appropriate choice regardless, since a mean
+could mask a spatially localized violation). Flagged, not changed.
+
+Full numbers and the diagnostic plot (`pytests/cosmic_rays_grey/pics/
+cr_divergence_b_preservation_test.svg`): PROGRESS.md's 2026-09-18 entry.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

@@ -4,6 +4,49 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-18, latest: ladder item 19 -- div(B) preservation, DONE (FV scope))
+
+**Scope finding: "both schemes" is only half-testable, and this is pre-existing, not new.**
+Confirmed by grep before starting: no file under `astronomix/_finite_difference/` mentions cosmic
+rays at all, and `registered_variables.py`'s FD branch explicitly does not allocate
+`cosmic_ray_e_index`/`cosmic_ray_flux_index` -- already documented in DESIGN.md's own "FD
+limitation" section (FD's WENO reconstruction has a hardcoded eigensystem with no hook for extra
+scalars; "real, separate follow-up work -- not attempted in this scaffold"). So there is no
+FD+CR-grey combination for the CR module to possibly disturb `div(B)` in -- this item can only
+test FV for the actual "unaffected by the CR module" claim, plus FD's own (CR-absent) baseline
+for reference. Decided and documented directly (not asked) -- this is a pre-existing, already-
+recorded limitation, not a new ambiguous design choice like item 18's MHD-vs-hydro scope call.
+
+New `pytests/cosmic_rays_grey/cr_divergence_b_preservation.py`. Reuses the same validated CP
+Alfven-wave IC as the MHD energy baseline (genuinely dynamic, divergence-free to machine
+precision at t=0), with a small localized `e_cr` pulse superposed for the CR-on configurations --
+first time anisotropic CR transport (`anisotropic_transport=True`) is exercised against a real,
+time-varying B rather than item 3's own static, uniform one. Meaningful, not vacuous, because
+**ladder item 3 already found and fixed a real bug in exactly this area** (the FV Strang split
+originally mislabelled a real `B_z` row as gas whenever CR rows were registered after it) --
+that fix was verified against CR transport *shape*, never directly against `div(B)` itself.
+
+**Result: clean pass, `div(B)` unaffected by the CR module.** `N=8`, `t_end=5.0` (5 full periods),
+float64, `max(|div(B)|)` via the same operator the (previously unexercised by any committed
+pytest) `magnetic_divergence` snapshot diagnostic uses:
+
+    FV, CR off:                        6.8e-15
+    FV, CR on (isotropic):             8.4e-15
+    FV, CR on + anisotropic_transport: 9.5e-15
+    FD baseline (CR absent, reference):5.4e-14
+
+All four at genuine round-off, not a resolution-limited residual -- `tol=1e-10` leaves a >1e4x
+margin. CR-grey does not measurably perturb `div(B)`, with or without anisotropic transport
+actively reading a real evolving field.
+
+**Minor, unrelated documentation mismatch noticed in passing, not fixed (low stakes):**
+`SnapshotData.magnetic_divergence`'s docstring says "mean absolute magnetic field divergence",
+but the diagnostic it documents (`_compute_magnetic_divergence`) actually computes the *max*
+absolute divergence -- a stale docstring, not a correctness bug (arguably max is the more
+appropriate choice anyway, since a mean could mask a localized violation).
+
+Full write-up: DESIGN.md's "Resolved: ladder item 19" section.
+
 ## Where things stand (2026-09-18, latest: ladder item 18 -- full energy budget, DONE (hydro+CR scope))
 
 **Scope, user-confirmed: hydro + CR only for now** -- magnetic energy and collisional-loss
