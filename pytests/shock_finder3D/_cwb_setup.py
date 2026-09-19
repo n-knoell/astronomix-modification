@@ -53,7 +53,7 @@ from astropy import units as u
 
 # astronomix constants
 from astronomix import CARTESIAN, FINITE_VOLUME, HLLC
-from astronomix.option_classes.simulation_config import MUSCL, SPLIT, VAN_ALBADA_PP
+from astronomix.option_classes.simulation_config import MINMOD, MUSCL, SPLIT, VAN_ALBADA_PP
 from astronomix import OPEN_BOUNDARY, FORWARDS
 
 # astronomix containers
@@ -201,13 +201,56 @@ def run_cwb(num_cells):
         # from astronomix/_finite_difference/_time_integrators/_ssprk.py);
         # the finite-volume evolve path this config uses has no positivity
         # floor wired in at all, so those knobs are silently inert here
-        # (confirmed: turning them all on made no difference). VAN_ALBADA_PP
-        # is the FV-path-aware fix instead -- a genuine positivity-preserving
-        # MUSCL reconstruction (astronomix/_finite_volume/_state_evolution/
-        # reconstruction.py) that clamps the interface extrapolation itself
-        # so it can't overshoot into negative density/pressure, rather than
-        # patching a bad state after the fact.
-        limiter=VAN_ALBADA_PP,
+        # (confirmed: turning them all on made no difference).
+        #
+        # VAN_ALBADA_PP was tried first (2026-09-18) but turned out to be
+        # silently inert for split=SPLIT: its positivity clamp was only
+        # wired into the unsplit reconstruction path. Switched to MINMOD
+        # instead (2026-09-18/19): survives the injection-region blow-up on
+        # its own (limited gradient collapses near a sharp jump instead of
+        # amplifying it), but a *different* failure remains -- a gradual,
+        # multi-step density/pressure erosion at the domain's open-boundary
+        # corner as the wind front sweeps past it (see FIXES_TODO.md item 4
+        # for the full trace, including four ad hoc post-hoc fix attempts
+        # that all fell short).
+        #
+        # 2026-09-19: properly ported VAN_ALBADA_PP's actual positivity-
+        # preserving gradient-scaling algorithm (the real alpha/kappa/beta
+        # formula, not an ad hoc clamp) from _reconstruct_at_interface_unsplit
+        # to the split path (_reconstruct_at_interface_split), scaling the
+        # reconstructed *output* delta rather than the pre-A_W input (the
+        # latter doesn't work -- A_W mixes variables, so scaling its input
+        # can't bound a blow-up that only exists in its mixed output; see
+        # that function's own comments). This genuinely fixes the original
+        # injection-region blow-up (verified clean). It does not yet fix
+        # the full run: a new failure mode appears at N=64 around t~0.13%
+        # of T_END, well before the old boundary-corner failure -- dt
+        # collapses ~500x within a single step at a cell just outside the
+        # injection sphere, from a localized pressure/density (temperature)
+        # spike, root cause not yet found. See FIXES_TODO.md item 4 for the
+        # full trace.
+        #
+        # Confirmed (2026-09-19): re-running the real correctness test with
+        # MINMOD at N=64 reproduces the known boundary-corner failure
+        # (fully NaN by T_END), consistent with everything documented
+        # above.
+        #
+        # Back to MINMOD (2026-09-19, again): the ported positivity-
+        # preserving output-delta scaling (see _reconstruct_at_interface_split)
+        # is mathematically limiter-agnostic -- it operates on the actual
+        # reconstructed delta (primitives_left/right - primitive_state),
+        # not on the raw limited_gradients a specific limiter produced -- so
+        # it was extended to also apply when config.limiter == MINMOD, not
+        # just VAN_ALBADA_PP. MINMOD's own gradients are already far more
+        # conservative than VAN_ALBADA's (confirmed: this scaling is a
+        # near-total no-op for MINMOD in the injection region, alpha/kappa/
+        # beta ~= 1 almost everywhere), so the hope is this only actually
+        # engages at the genuinely extreme boundary-corner scenario it's
+        # meant to fix, without the broader over-triggering that made some
+        # of VAN_ALBADA_PP's own naive (now-reverted) fix attempts regress.
+        # See FIXES_TODO.md item 4 for whether this actually fixes MINMOD's
+        # ~15.47%-of-T_END boundary-corner failure.
+        limiter=MINMOD,
         riemann_solver=HLLC,
         time_integrator=MUSCL,
         differentiation_mode=FORWARDS,
@@ -258,6 +301,16 @@ def run_cwb(num_cells):
         t_end=T_END,
         gamma=GAMMA,
         C_cfl=0.4,
+        # Used by the SPLIT-path positivity floor/scaling in
+        # reconstruction.py/evolve_state.py (active for limiter in
+        # {MINMOD, VAN_ALBADA_PP} -- see FIXES_TODO.md item 4).
+        # SimulationParams' global default (1e-14) is *larger* than this
+        # setup's ambient density/pressure (RHO_AMBIENT/P_AMBIENT ~1.26e-17),
+        # which would floor -- i.e. artificially inflate -- the entire
+        # ambient medium rather than only clamping genuine violations.
+        # Scale them well below ambient instead.
+        minimum_density=1e-3 * RHO_AMBIENT,
+        minimum_pressure=1e-3 * P_AMBIENT,
         nbody_params=NBodyParams(
             masses=masses,
             nbody_state=nbody_state,

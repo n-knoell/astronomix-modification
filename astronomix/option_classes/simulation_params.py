@@ -83,15 +83,15 @@ class SimulationParams(NamedTuple):
     gamma: float = 5/3
 
     #: Minimum allowed density.
-    #: NOTE: CURRENTLY ONLY USED IN 
-    #: FINITE DIFFERENCE MODE IF
-    #: positivity protection is active.
+    #: NOTE: used in finite-difference mode if positivity protection is
+    #: active, and unconditionally in finite-volume mode by both the split
+    #: and unsplit evolve paths' positivity floors/clamps.
     minimum_density: float = 1e-14
 
     #: Minimum allowed pressure.
-    #: NOTE: CURRENTLY ONLY USED IN 
-    #: FINITE DIFFERENCE MODE IF
-    #: positivity protection is active.
+    #: NOTE: used in finite-difference mode if positivity protection is
+    #: active, and unconditionally in finite-volume mode by both the split
+    #: and unsplit evolve paths' positivity floors/clamps.
     minimum_pressure: float = 1e-14
 
     #: Velocity ceiling applied to cells fixed by the REDISTRIBUTE positivity

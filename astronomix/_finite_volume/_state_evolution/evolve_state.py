@@ -23,6 +23,7 @@ from jax.experimental import checkify
 from astronomix.option_classes.simulation_config import (
     CARTESIAN,
     GHOST_CELLS,
+    MINMOD,
     RK2_SSP,
     SPHERICAL,
     STATE_TYPE,
@@ -244,6 +245,35 @@ def _evolve_state_along_axis(
     primitive_state = primitive_state_from_conserved(
         conservative_states, gamma, config, registered_variables
     )
+
+    # Positivity floor, split-scheme counterpart of
+    # _evolve_gas_state_unsplit_inner's identical unconditional post-sweep
+    # floor (added 2026-09-15/16 for an unrelated SILCC-ISM bug). The
+    # positivity-preserving reconstruction (reconstruction.py) guarantees
+    # the *interface* values fed into the Riemann solver stay non-negative,
+    # but the conserved-state flux update here combines fluxes from two
+    # different interfaces per cell, which can still land a hair below zero
+    # from ordinary floating-point roundoff even when both inputs were
+    # individually fine (observed directly, 2026-09-19: ~1e-14-scale
+    # negative pressure, not a real blow-up -- see FIXES_TODO.md item 4).
+    # Gated on VAN_ALBADA_PP/MINMOD (the two limiters the matching
+    # reconstruction-level scaling below is gated on) so every other
+    # limiter's numerics are exactly unchanged; this split path has no
+    # positivity protection of its own for any other limiter.
+    if config.limiter == VAN_ALBADA_PP or config.limiter == MINMOD:
+        primitive_state = primitive_state.at[registered_variables.density_index].set(
+            jnp.maximum(
+                primitive_state[registered_variables.density_index],
+                params.minimum_density,
+            )
+        )
+        primitive_state = primitive_state.at[registered_variables.pressure_index].set(
+            jnp.maximum(
+                primitive_state[registered_variables.pressure_index],
+                params.minimum_pressure,
+            )
+        )
+
     if config.boundary_handling == GHOST_CELLS:
         primitive_state = _boundary_handler(primitive_state, config, registered_variables, params)
 

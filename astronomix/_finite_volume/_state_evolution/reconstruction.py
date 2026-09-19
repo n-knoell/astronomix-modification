@@ -22,6 +22,7 @@ import jax.numpy as jnp
 # astronomix constants
 from astronomix.option_classes.simulation_config import (
     CARTESIAN,
+    MINMOD,
     MUSCL,
     STATE_TYPE,
     STATE_TYPE_ALTERED,
@@ -91,9 +92,25 @@ def _reconstruct_at_interface_split(
         ].set(u)
 
         # set rest
+        #
+        # Positivity/robustness: the (axis, pressure) entry is 1/rho -- a
+        # cell with legitimately near-vanishing density (a near-vacuum
+        # ambient medium, or a supersonic wind's leading edge reaching an
+        # open boundary) makes this term huge, which the einsum below then
+        # multiplies straight into a projected *velocity* gradient. Flooring
+        # rho here (not clamping the output primitives, which is too late --
+        # the Jacobian projection already happened) fixes that specific
+        # mechanism at its root; cheap and unconditional, complementary to
+        # the VAN_ALBADA_PP positivity scaling applied further below (that
+        # one covers the *output* of this whole predictor+spatial
+        # reconstruction; this one covers the A_W matrix itself, which the
+        # output-side scaling has no visibility into).
+        rho_floor_for_jacobian = jnp.maximum(rho, params.minimum_density)
         A_W = A_W.at[registered_variables.density_index, axis].set(rho)
         A_W = A_W.at[registered_variables.pressure_index, 1].set(rho * c**2)
-        A_W = A_W.at[axis, registered_variables.pressure_index].set(1 / rho)
+        A_W = A_W.at[axis, registered_variables.pressure_index].set(
+            1 / rho_floor_for_jacobian
+        )
 
         # ====================================================================================================
 
@@ -109,6 +126,18 @@ def _reconstruct_at_interface_split(
 
         # predictor step
         predictors = primitive_state - dt / 2 * projected_gradients
+
+        # Sanitize: a literal inf/NaN here (an overflow inside the A_W/
+        # predictor-step einsum) would otherwise sail straight through
+        # everything below, including the VAN_ALBADA_PP positivity scaling
+        # further down -- that scaling can only *shrink* an already-finite
+        # delta towards primitive_state, it cannot repair a delta that's
+        # already NaN (jnp.where(cond, nan, x) still propagates nan through
+        # the comparison-selected branch once nan has entered any of these
+        # expressions). Falls back to the plain cell-centred value, exactly
+        # matching what config.first_order_fallback=True would have used
+        # for that cell.
+        predictors = jnp.where(jnp.isfinite(predictors), predictors, primitive_state)
     else:
         raise ValueError(
             f"Time integrator {config.time_integrator} not supported for split reconstruction. Only MUSCL is supported."
@@ -131,6 +160,155 @@ def _reconstruct_at_interface_split(
 
     primitives_left = predictors - distances_to_left_interfaces * limited_gradients
     primitives_right = predictors + distances_to_right_interfaces * limited_gradients
+
+    # ============ VAN_ALBADA_PP / MINMOD: positivity-preserving output scaling ============
+    #
+    # Ported from _reconstruct_at_interface_unsplit's own multi-dimensional
+    # positivity machinery (same alpha_density/kappa_pressure/beta formula,
+    # same derivation) -- see that function's comments for the original
+    # context. That version has no MUSCL predictor step: it scales the pure
+    # spatial difference (limited_gradients * grid_spacing / 2) directly,
+    # symmetrically, before extrapolating to the interface.
+    #
+    # First attempt at this port (2026-09-19, reverted) applied the same
+    # alpha/kappa/beta scaling to limited_gradients itself, *before* the A_W
+    # einsum above -- reasoning that A_W's 1/rho coupling (the mechanism
+    # found, see FIXES_TODO.md item 4, to turn an ordinary pressure gradient
+    # into a wildly unphysical projected *velocity* gradient) would then
+    # only ever see an already-safe input. Empirically this made things
+    # *worse* than doing nothing (failed at step 0, immediately, at the same
+    # injection-region cell the very first VAN_ALBADA_PP investigation
+    # found). Root cause: A_W *mixes* variables -- a pressure gradient
+    # scaled down by kappa_pressure (chosen using only pressure's own
+    # positivity requirement) still flows through A_W's 1/rho entry into
+    # the *velocity* row of projected_gradients, entirely unconstrained by
+    # beta (the velocity-specific, generally much stricter bound). Scaling
+    # the input can't fix a blow-up that only exists in the matrix's output.
+    #
+    # This version instead scales the *output* -- the actual total
+    # perturbation (predictor step + spatial extrapolation combined)
+    # applied to get from primitive_state to primitives_left/right -- since
+    # that already has A_W's mixing baked in, whatever it is. This departs
+    # from the unsplit algorithm's assumption of one *symmetric* difference
+    # per axis (primitive_state -/+ the same difference): the MUSCL
+    # predictor step generally makes primitives_left/right's own deltas
+    # from primitive_state asymmetric. Nothing in the underlying
+    # alpha_density/kappa_pressure/beta derivation actually requires
+    # symmetry (each factor only bounds "how far can primitive_state move
+    # in this specific direction and stay positive"), so left and right are
+    # scaled independently, each using its own delta as the formula's
+    # "differences" input.
+    #
+    # Extended to config.limiter == MINMOD too (2026-09-19): the formula
+    # below is mathematically limiter-agnostic -- it operates on the actual
+    # reconstructed delta (primitives_left/right - primitive_state), not on
+    # the raw limited_gradients a specific limiter produced, so nothing
+    # here depends on VAN_ALBADA_PP specifically. MINMOD's own gradients
+    # are already far more conservative than VAN_ALBADA's (confirmed:
+    # alpha_density/kappa_pressure/beta come out ~= 1, i.e. this is a
+    # near-total no-op, everywhere in the CWB injection region under
+    # MINMOD), so this is meant to only actually engage where MINMOD's own
+    # reconstruction is genuinely at risk -- see FIXES_TODO.md item 4 for
+    # whether it fixes MINMOD's own remaining (boundary-corner) failure.
+    if config.limiter == VAN_ALBADA_PP or config.limiter == MINMOD:
+        eps = 1e-14
+
+        alpha_lax = jnp.zeros((config.dimensionality,))
+        for axis_i in range(1, config.dimensionality + 1):
+            u_i = primitive_state[axis_i]
+            alpha_lax = alpha_lax.at[axis_i - 1].set(jnp.max(jnp.abs(u_i) + c))
+        C_axis = alpha_lax[axis - 1] / jnp.sum(alpha_lax)
+
+        # q = 1/C_cfl, exactly the unsplit convention (no MHD dt/2 case here
+        # -- this split path isn't used for MHD). Reused unchanged across
+        # every Strang sub-step of this step (x/2, y/2, z, y/2, x/2): each
+        # sub-step's own sub_dt is <= the full dt that C_cfl was calibrated
+        # against, so this is if anything more conservative (more
+        # positivity margin) than strictly necessary for the halved
+        # sub-steps, never less.
+        q = 1 / params.C_cfl
+
+        density_index = registered_variables.density_index
+        pressure_index = registered_variables.pressure_index
+        vx0 = registered_variables.velocity_index.x
+
+        def _positivity_scale(primitives_side):
+            delta = primitives_side - primitive_state
+
+            density_diff_protected = jnp.where(
+                jnp.abs(delta[density_index]) > eps, delta[density_index], eps
+            )
+            pressure_diff_protected = jnp.where(
+                jnp.abs(delta[pressure_index]) > eps, delta[pressure_index], eps
+            )
+            alpha_density = jnp.where(
+                jnp.abs(delta[density_index]) > eps,
+                jnp.minimum(rho / (jnp.abs(density_diff_protected) * (1 + eps)), 1),
+                1,
+            )
+            kappa_pressure = jnp.where(
+                jnp.abs(delta[pressure_index]) > eps,
+                jnp.minimum(p / (jnp.abs(pressure_diff_protected) * (1 + eps)), 1),
+                1,
+            )
+
+            delta_v = delta[vx0 : vx0 + config.dimensionality]
+            vsum = jnp.sum(delta_v**2, axis=0)
+            A1 = (C_axis * alpha_density * delta[density_index] * jnp.sum(delta_v, axis=0)) ** 2
+            A2 = C_axis * vsum
+            A1 = jnp.where(vsum > eps, A1, eps)
+            A2 = jnp.where(vsum > eps, A2, eps)
+
+            beta = jnp.where(
+                vsum > eps,
+                jnp.minimum(
+                    jnp.sqrt(
+                        ((q - 2) ** 2 * rho * p)
+                        / ((gamma - 1) * (2 * A1 + (q - 2) * rho**2 * A2))
+                    ),
+                    1,
+                ),
+                1,
+            )
+
+            scaled_delta = delta
+            scaled_delta = scaled_delta.at[density_index].set(
+                delta[density_index] * alpha_density
+            )
+            scaled_delta = scaled_delta.at[pressure_index].set(
+                delta[pressure_index] * kappa_pressure
+            )
+            scaled_delta = scaled_delta.at[vx0 : vx0 + config.dimensionality].set(
+                delta_v * beta
+            )
+            result = primitive_state + scaled_delta
+
+            # alpha_density/kappa_pressure only guarantee *non*-negativity
+            # (their limiting case, alpha = rho / |diff|, drives the scaled
+            # delta to exactly cancel rho/p in the worst case -- density or
+            # pressure landing at exactly 0.0, not some small positive
+            # value). Confirmed directly (2026-09-19, scratch
+            # debug_port_nan.py): an interface reconstructed with rho=0,
+            # p=0 exactly (but a nonzero velocity survives, since beta's
+            # own derivation doesn't force velocity to zero alongside a
+            # vanishing density) is a valid, physical vacuum state in
+            # principle, but speed_of_sound(rho=0, p=0, gamma) computes a
+            # literal 0/0 -- sqrt(gamma*p/rho) -- which is NaN, not 0, and
+            # that NaN then poisons the whole HLLC flux at that interface.
+            # A small strictly-positive floor (not the scaling's own job;
+            # this is purely about keeping downstream sqrt/division
+            # well-defined) closes that gap.
+            result = result.at[density_index].set(
+                jnp.maximum(result[density_index], params.minimum_density)
+            )
+            result = result.at[pressure_index].set(
+                jnp.maximum(result[pressure_index], params.minimum_pressure)
+            )
+            return result
+
+        primitives_left = _positivity_scale(primitives_left)
+        primitives_right = _positivity_scale(primitives_right)
+    # ============ end VAN_ALBADA_PP scaling ============
 
     # primitives left at i is the left state at the interface
     # between i-1 and i so the right extrapolation from the cell i-1
