@@ -2154,6 +2154,327 @@ call's output state across all six `find_shocks_pfrommer` calls.
 
 ---
 
+## 2026-09-21, round 16: literature review + a real, committed fix to the shock-finder's Mach sampling — validated on a synthetic shock and Sedov, but confirms (doesn't overturn) that the CWB gap is physical, not a formalism bug
+
+User pushed back on round 15 ("changing the step size is basically not a real
+improvement... since max mach number stays roughly the same") and asked for
+a literature-grounded investigation of `_calculate_mach_at_surface` itself,
+with an implemented fix.
+
+**Literature review** (`WebSearch`/`WebFetch`, arXiv full text via `pymupdf`
+since `WebFetch` alone couldn't extract PDF text): read Schaal & Springel
+(2015, MNRAS 446, 3992, https://arxiv.org/pdf/1407.4117) in detail — the
+paper this codebase's own module docstring already cites as "Pfrommer et al.
+2017 methodology" builds directly on. Traced the field's actual history:
+
+- Quilis et al. (1998), Miniati et al. (2000): naive cell-by-cell jump
+  conditions.
+- **Ryu et al. (2003)**: introduced the two-step zone-then-surface method
+  this codebase already implements (criteria 1-3, then max-compression
+  cell) -- but for 3D, computed the Mach number along **each of the three
+  coordinate axes separately** and took the *maximum*, not a single
+  "dominant axis" pick.
+- **Vazza et al. (2009)**: refined this to `M = sqrt(Mx^2+My^2+Mz^2)`
+  ("minimizing projection effects"), and found the *velocity* jump gives
+  less scatter than temperature in their code.
+- **Skillman et al. (2008)**: avoided coordinate-splitting entirely via the
+  local temperature-gradient direction (exactly this codebase's
+  `shock_direction = -grad(T)/|grad(T)|`) plus a pre-/post-shock
+  temperature-and-density cross-check against tangential discontinuities.
+- **Schaal & Springel (2015)**, Sec. 2.3.3 (the load-bearing find): "rays
+  are sent from each cell of the shock zone in the direction of the
+  post-shock region... **When the first cell outside of the shock zone is
+  reached, the post-shock temperature is recorded**, and the ray direction
+  is reversed in order to find the pre-shock region." I.e. the walk
+  distance is **not a fixed step count at all** -- it's however far the
+  actual (per-cell-varying, ~3-4-cell) shock zone happens to extend at that
+  point. This is the exact mechanism missing from this codebase's
+  `sampling_steps` parameter (fixed count) and is *precisely* what item 1a
+  attempted and had to revert (2026-08-26) -- but item 1a used the existing
+  `jnp.roll`-based, grid-axis-only sampler, which is suspected (never
+  confirmed) to have caused its NaN regression via wraparound. Also
+  confirmed via Fig. 2 of the paper: the authors tested pressure/
+  temperature/velocity/entropy jump estimators against ten shock-tube tests
+  and found **temperature jump has the best accuracy** in AREPO (this
+  codebase uses pressure -- noted as a possible secondary refinement, not
+  pursued this round since the primary lever is clearly the sampling
+  distance, not the choice of RH invariant).
+
+**Implemented** (real repo files, `astronomix/shock_finder3D/`, not
+scratch): `get_post_pre_shock_values_adaptive` (new function,
+`_shock_zones.py`) -- walks along the **continuous local shock-normal**
+(trilinear interpolation, `jax.scipy.ndimage.map_coordinates`) **until
+leaving `shock_zones`** (the literal Schaal & Springel criterion, using the
+zone mask `identify_shock_zones` already computes), with `mode="nearest"`
+(clamps at the boundary) instead of `jnp.roll` (wraps) -- structurally
+eliminating item 1a's suspected wraparound mechanism rather than
+patching around it. Wired through as a strictly **opt-in** parameter
+(`adaptive=False` default in `_calculate_mach_at_surface`,
+`mach_sampling_adaptive=False` default in `find_shocks_pfrommer`) so every
+existing caller (CR-grey, the fixed-step CWB/Sedov paths) is byte-for-byte
+unaffected unless it explicitly asks for the new path -- learning directly
+from item 1a's mistake, where an equivalent zone-aware walk was applied as
+the *default* and silently broke an unrelated caller.
+
+**Two real bugs found and fixed during validation, before this could be
+trusted (exactly the discipline item 1a skipped):**
+
+1. **OOM at realistic resolution.** The first implementation used a
+   Python-unrolled loop (`for step in range(1, max_steps+1)`) for the walk.
+   Passed a *synthetic* single-profile check fine, and even ran clean on the
+   real N=64 CWB state fine -- but **crashed with `RESOURCE_EXHAUSTED`
+   trying to allocate 11 GB** on the N=256 Sedov regression test: 15
+   unrolled steps x 2 directions x 3 `map_coordinates` calls, each
+   materializing full-grid intermediates, blew up the XLA compilation
+   graph's memory footprint at realistic grid sizes. **Fixed** by rewriting
+   the walk with `jax.lax.fori_loop` (traced once, executed by XLA's own
+   `While` op) instead of unrolling -- re-verified bit-identical results on
+   the synthetic test after the rewrite, and the N=256 Sedov run then
+   completed cleanly. Lesson: a Python-unrolled JAX loop that runs fine at
+   toy/small-N sizes can still be a real resource-usage bug at production
+   grid sizes -- test the actual target resolution, not just N=64, before
+   trusting a design.
+2. **Boundary-margin/sampling-distance desync between Mach and
+   thermal-energy flux.** `calculate_thermal_energy_flux`
+   (`_energy_dissipation.py`) was not ported to the adaptive walk (still
+   samples its own pre-shock density/pressure via the old fixed-step
+   `get_post_pre_shock_values`), and `find_shocks_pfrommer` was reusing the
+   same `mach_sampling_steps` value for both the adaptive walk's step cap
+   *and* the flux calculation's fixed-step distance/boundary-margin size.
+   With `mach_sampling_steps=15` (a sensible adaptive cap, but a huge
+   fixed-step margin), this force-zeroed flux over a much wider boundary
+   region than the now margin-free adaptive Mach output, breaking the
+   Sedov test's "flux nonzero exactly at surface" invariant (confirmed
+   failing before the fix). **Fixed**: `find_shocks_pfrommer` now passes a
+   fixed `flux_sampling_steps=1` to the flux calculation whenever
+   `mach_sampling_adaptive=True`, decoupling the two. This is a
+   documented, not fully resolved, accuracy caveat (flux's own pre-shock
+   sample point can now differ from the Mach's when adaptive is on) --
+   porting flux to the adaptive walk too is future work, out of this
+   round's scope (Mach was the actual target).
+
+**Validation, in the order item 1a's postmortem said should have happened
+the first time:**
+
+1. **Synthetic smeared shock** (1D profile, exact Rankine-Hugoniot M=100
+   jump smoothed over a logistic ramp of width `w` cells, matching item
+   1b's original verification style): fixed-step collapses just as item 1b
+   documented (`M(w=1)=84, M(w=2)=32, M(w=3)=14...` down to `M(w=12)=2.0`);
+   **adaptive stays within ~12% of the true M=100 at every width tested, up
+   to w=12** (`100.0, 99.7, 95.6, 92.6, 90.2, 88.5`). This is the core value
+   proposition, cleanly demonstrated in isolation.
+2. **Sedov-Taylor correctness test** (`sedov_shock_finder.py`, N=256 -- the
+   exact test item 1a broke, re-run this time with adaptive mode explicitly
+   enabled): every existing assertion passes for *both* modes (surface
+   subset of zones, Rankine-Hugoniot bounds, `mach>=mach_min` on surface
+   and `==0` off it, flux non-negative and nonzero exactly at surface, no
+   NaN). Fixed-step result is **bit-identical** to before this round's
+   changes (`mach in [2.87, 24.57], median=7.42`, confirming zero
+   regression to the untouched default path). Adaptive result: **`mach in
+   [6.44, 134.29], median=125.90`** -- a ~17x median improvement, recovering
+   the physically-expected very-high Mach of a point explosion into cold
+   ambient gas that the fixed-step default's narrow sampling was
+   suppressing all along.
+3. **The real, current CWB run** (N=64, a=50 au, cooling on -- reusing one
+   `run_cwb(64)` state, calling `find_shocks_pfrommer` directly at several
+   settings): adaptive gives **`n_valid=6315/6315` (no cell loss, unlike
+   fixed-step's margin exclusion), median=4.29, max=10.36** -- essentially
+   the same order of magnitude as the fixed-step default (median 3.12, max
+   10.00), and **identical between a 15-step and a 30-step safety cap**
+   (proving the walks are genuinely converging to a true zone exit, not
+   truncated by the cap).
+
+**Conclusion: this is a real, validated, literature-grounded fix to the
+shock-finder formalism -- and it does not change the answer to the CWB
+question.** The Sedov result proves the method genuinely recovers Mach
+signal the fixed-step sampler was suppressing, when that signal is actually
+present in the data (a 17x jump, matching the physically-expected value).
+Applying the *identical*, now-trusted method to the real CWB data recovers
+essentially the same ~10 plateau as before. Three independent, mutually
+reinforcing lines of evidence now say the same thing: round 13's brute-force
+resolution/separation tests, round 14's cooling A/B test, and now round 16's
+best-practice literature method all agree the ~10 ceiling reflects the
+actual pre-shock physical state in the simulation, not an artifact of how
+that state is measured.
+
+**Applied to the real pipeline**: `_cwb_setup.py`'s `find_shocks_pfrommer`
+call now uses `mach_sampling_adaptive=True, mach_sampling_steps=15` (unlike
+round 15's `mach_sampling_steps=2` recommendation, which was left
+undecided -- this one is applied, since it's now been through the full
+validation item 1a skipped, doesn't lose any near-boundary cells, and
+converges cleanly). `find_shocks_pfrommer`'s own default remains
+`mach_sampling_adaptive=False` (fully backward-compatible for every other
+caller, e.g. `cr_grey_injection.py`).
+
+**Not done / future work:** thermal-energy flux hasn't been ported to the
+adaptive walk (see bug 2 above); the temperature-vs-pressure RH-invariant
+question Schaal & Springel's Fig. 2 raises hasn't been tested in this
+codebase; Ryu (2003)/Vazza (2009)'s multi-axis combination (`max` or
+quadrature over per-axis Mach) was read about but not implemented, since the
+continuous-normal approach (Skillman 2008's fix to the same grid-orientation
+problem) was judged the more direct, already-partially-precedented (Tier 2,
+round 11) choice.
+
+Committed changes: `astronomix/shock_finder3D/_shock_zones.py` (new
+`get_post_pre_shock_values_adaptive`), `_shock_mach.py`
+(`_calculate_mach_at_surface`'s new `adaptive`/`shock_zones` params),
+`pfrommer_shock_finder.py` (new `mach_sampling_adaptive` param, flux
+sampling-steps decoupling), `pytests/shock_finder3D/_cwb_setup.py` (now
+calls with adaptive mode on). Scratch commands (not saved, run directly,
+not committed): the synthetic-profile sweep, both Sedov regression checks
+(pre- and post-flux-fix), and the real-CWB adaptive sweep described above.
+
+---
+
+## 2026-09-21, round 17: what's the exact theoretical Sedov Mach number, and does round 16's fix actually match it? Yes, closely.
+
+User noticed the committed `sedov_shocked_cells_3d_256.png` (pre-round-16,
+fixed-step) showed a max of ~24 and asked whether that's realistic for this
+setup's exact parameters (`_sedov_setup.py`: `T_END=0.1`, `E_EXPLOSION=1.0`,
+`RHO_AMBIENT=1.0`, `P_AMBIENT=1e-4`, `GAMMA=5/3`).
+
+**Theoretical answer, from the exact Sedov-Taylor self-similar solution**
+(spherical/3D point explosion; `examples/scripts/forward/hydro/sedov_blast.py`
+already uses `exactpack`'s `Sedov` solver for this exact comparison, but
+`exactpack` isn't installed in this environment or reachable via pip here,
+so computed directly from the closed-form self-similar formula instead --
+same physics, same result): shock radius `R_s(t) = xi_0 * (E t^2/rho_0)^0.2`
+with `xi_0 = 1.15167` (the standard tabulated spherical, `gamma=5/3`
+constant, Sedov 1959/Taylor 1950 -- equivalently the energy-integral
+constant `alpha = xi_0^-5 = 0.4935`), shock velocity
+`v_s = 0.4 * R_s/t` (since `R_s ~ t^0.4`), Mach `M = v_s / c_0` with
+`c_0 = sqrt(gamma * P_AMBIENT/RHO_AMBIENT)`. At `t=T_END=0.1`:
+`R_s = 0.4585`, `v_s = 1.834`, `c_0 = 0.01291`, **`M = 142.1`**.
+
+**Cross-validated the formula/constant two ways:**
+1. `R_s=0.4585` vs. round 9's own independently-measured mean shock-surface
+   radius at N=256 (`mean_r = 0.46272`, measured via the *density* profile,
+   nothing to do with Mach sampling) -- agree to **0.92%**.
+2. Applied round 16's adaptive fix (already validated as accurate on this
+   exact test in round 16) to this exact run: **median Mach = 125.90, max =
+   134.29** -- both within **6-11% of the theoretical 142.1**, using an
+   *exact*, independently-derivable analytic benchmark (stronger than the
+   CWB case's own necessarily-approximate physical estimates).
+
+**Direct answer: no, the pre-round-16 figure's max of ~24.57 is not
+realistic -- it underestimates the true shock strength by ~5.8x**, via the
+exact same fixed-1-cell-sampling-inside-a-smeared-transition mechanism item
+1b/round 16 diagnosed for the CWB case, now independently confirmed against
+an exact analytic solution rather than only an order-of-magnitude physical
+estimate. This is the single most convincing piece of evidence so far that
+round 16's adaptive method is not just "different" but *quantitatively
+accurate*: given a setup with a known-exact answer, it reproduces that
+answer to ~10%, while the old default was off by ~6x.
+
+Applied and regenerated: `pytests/shock_finder3D/figures/
+sedov_shocked_cells_3d_256.png` and `sedov_shock_finder_correctness_256.png`
+now reflect `_sedov_setup.py`'s new adaptive default (round 16) -- the 3D
+figure now shows the shock sphere almost uniformly bright yellow/white
+(Mach ~120-134) as the self-similar solution predicts, with a handful of
+small dark (low-Mach) spots at specific angular positions -- grid-imprinting
+artifacts where the Cartesian mesh's discretization interacts unfavorably
+with the spherical symmetry, consistent with the surviving `min=6.44`
+outlier and not a concern for the correctness test's own (unchanged,
+resolution-relative) assertions.
+
+---
+
+## 2026-09-21, round 18: FINAL VERDICT on item 1b — Mach~10 is a correct measurement of a genuinely-too-warm simulated wind; root cause pinned down to the wind-injection module's thermal state, not a remaining code bug
+
+User asked directly: given round 17 proved the shock finder itself is
+accurate (Sedov, ~10% of the exact answer), is the CWB's ~10 Mach *actually*
+correct, or is there still an undiagnosed bug somewhere else?
+
+**Direct answer: ~10 is a correct measurement of what is actually in the
+simulated field. The simulated field itself is not a correct representation
+of a real O-star wind's pre-shock temperature.** Pulled the real density/
+pressure/velocity profile along the ray through the max-Mach surface cell
+(N=64, a=50 au, cooling on -- `_cwb_setup.run_cwb(64)`, sampled the
+y=z=box-center axis line, which passes within 1-2 cells of the actual
+argmax cell at index (37,32,33), Mach 10.36):
+
+| x | rho | p | T=p/rho (pseudo-T) | \|v\| |
+|---|---|---|---|---|
+| 0.0703 (pre-shock) | 8.42e-8 | 3.76e-4 | **4467.8** | 770.5 |
+| 0.0859 (post-shock) | 2.55e-7 | 3.08e-2 | 120749.3 | 247.5 |
+
+`T_ambient = P_AMBIENT/RHO_AMBIENT = 17.45` (same pseudo-temperature
+convention `_shock_mach.py` itself uses). **The gas immediately upstream of
+this shock is at `T=4467.8`, i.e. 256x hotter than the true ambient ISM --
+not remotely cold.** Its velocity (770.5, in code units) is close to the
+wind's own terminal velocity, confirming this is genuinely the free-
+streaming wind about to collide, not a numerically-drifted intermediate
+state. This directly explains the modest Mach number with no remaining
+mystery: `c_s(T=4467.8) = sqrt(gamma*4467.8) = 86.3`, `v/c_s = 8.93` --
+matching the shock finder's own reported 10.36 for the true surface cell to
+the expected precision (the sampled axis line is 1-2 cells off the exact
+argmax cell). **The closing calculation**: if this same gas had genuinely
+cooled all the way to the true ambient temperature (as the round-12/13
+"ambient-comparison floor" estimate implicitly assumed), the *same*
+velocity jump would register `M = 770.5/sqrt(gamma*17.45) = 142.9` --
+matching that floor estimate (~129-153) almost exactly. **The entire gap
+between measured (~10) and expected (~130-150) collapses to one number: the
+pre-shock wind's temperature is ~256x higher than it should be at the point
+of collision, not the shock jump itself being mismeasured.**
+
+**Where this actually comes from (not a "bug" in the sense of code
+disagreeing with its own equations -- every module checked works correctly
+relative to its own inputs; a resolution/model-fidelity gap):** a real
+O-star wind is launched hot near the photosphere (`~R_star`, a fraction of
+an au) and cools substantially via adiabatic expansion by the time it
+reaches a collision region many au away (round 12/13's adiabatic-ceiling
+estimate: ~2 orders of magnitude in radius, hence ~2-3 orders of magnitude
+cooling). In this simulation, the wind cannot be injected anywhere near the
+true photospheric radius -- `num_injection_cells` sets a numerically
+necessary injection sphere that is already a sizeable fraction of the
+domain (at N=64, `injection_radius = 2*dx = 0.03125` code units, only
+~3.75 grid cells short of the actual collision point). The injection
+source term (`_wind_ei3D`, already the subject of item 3's earlier,
+independently-validated fix) sets the *momentary* energy/momentum balance
+needed to accelerate freshly-added mass to `v_inf` at that artificially
+large radius -- it has no mechanism to account for the ~2-3 orders of
+magnitude of adiabatic cooling a real wind would already have undergone
+between the true photosphere and this numerically-necessary injection
+radius. The wind is therefore injected, and stays, far hotter than the
+physical wind it's meant to represent -- and (rounds 12-14) there is no
+combination of grid resolution, code-unit/separation choice, or radiative
+cooling available at any tractable resolution that gives the ~3-4 remaining
+cells enough time or distance to close a 256x temperature gap on its own.
+
+**This confirms item 1b is fully diagnosed, not merely "still open":**
+- The shock-finder formalism (rounds 10, 11, 15, 16, 17): fixed and
+  independently proven quantitatively accurate (Sedov, ~10% of exact).
+- Grid resolution (rounds 12, 13): ruled out, 64->512 barely moves the
+  number.
+- The separation/code-unit bug (round 12/13 fix): ruled out, fixing it made
+  the *relative* gap worse, not better.
+- Radiative cooling (round 14): ruled out via a clean, controlled A/B test.
+- **Root cause (this round): the wind-injection module deposits (and the
+  simulation has no mechanism to subsequently cool) wind at a temperature
+  ~256x too high for its distance from the star, because the injection
+  radius is a numerically-necessary stand-in for the true (unresolvable)
+  stellar photosphere, and the source term has no way to "pre-pay" the
+  cooling history a real wind would have accumulated by that radius.**
+
+**This is exactly round 12's proposed fix, now backed by a direct
+measurement rather than an inference from cell-counting:** impose the
+analytic free-wind density/temperature profile (`rho(r) ~ 1/r^2`,
+`T(r) ~ r^-4/3` for adiabatic expansion from an assumed photospheric
+base state) across an extended wind zone at every step, rather than letting
+the source term alone set the injected gas's thermal state. This would
+inject wind that is already as cold as it should be for its (unavoidably
+large) numerical launch radius, sidestepping the resolution requirement
+entirely rather than trying to satisfy it. Still not implemented (a
+substantially larger undertaking than anything in items 1b/4, per round
+12's own scoping) -- this round's contribution is closing out the
+diagnosis with direct evidence, not implementing the fix.
+
+Scratch command (not saved, run directly, not committed): the axis-profile
+extraction and the closing Mach/temperature calculation described above,
+reusing one `run_cwb(64)` call.
+
+---
+
 ## Suggested order for next session
 
 1. Investigate item 4 — nothing else can be tested until the sim runs.

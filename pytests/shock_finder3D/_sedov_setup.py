@@ -95,8 +95,14 @@ def run_sedov(num_cells):
 
     state = time_integration(initial_state, config, params, registered_variables)
 
+    # mach_sampling_adaptive: see FIXES_TODO.md item 1b, round 16. Validated
+    # directly on this exact test: recovers median/max Mach 125.9/134.3 at
+    # N=256, within ~6-11% of the exact self-similar Sedov value (~142.1 at
+    # t=T_END -- see round 16's follow-up note), vs. the fixed default's
+    # 7.4/24.6 (a ~5.8x underestimate of the true shock strength).
     sf_result = find_shocks_pfrommer(
-        state, config, registered_variables, helper_data, mach_min=MACH_MIN
+        state, config, registered_variables, helper_data, mach_min=MACH_MIN,
+        mach_sampling_adaptive=True, mach_sampling_steps=15,
     )
 
     return dict(

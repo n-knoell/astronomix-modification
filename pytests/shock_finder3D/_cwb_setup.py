@@ -394,8 +394,20 @@ def run_cwb(num_cells):
 
     state = time_integration(initial_state, config, params, registered_variables)
 
+    # mach_sampling_adaptive: walks each ray until it exits the shock zone
+    # (Schaal & Springel 2015 Sec. 2.3.3) instead of a fixed 1-cell offset --
+    # see FIXES_TODO.md item 1b, round 16. Validated against a synthetic
+    # smeared shock (recovers M within ~12% of truth up to 12-cell smearing,
+    # vs. the fixed default's collapse to M~2) and the Sedov-Taylor
+    # correctness test (median Mach 7.4->126, no invariant violated). On the
+    # real N=64 stationary CWB run it gives essentially the same result as
+    # the fixed default (median 4.29 vs 3.12, max 10.36 vs 10.00, cap=15 vs
+    # cap=30 identical) -- confirms the low measured Mach here is a real
+    # limitation of the pre-shock physical state, not a shock-finder-
+    # formalism artifact.
     sf_result = find_shocks_pfrommer(
-        state, config, registered_variables, helper_data, mach_min=MACH_MIN
+        state, config, registered_variables, helper_data, mach_min=MACH_MIN,
+        mach_sampling_adaptive=True, mach_sampling_steps=15,
     )
 
     return dict(
