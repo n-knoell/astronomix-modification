@@ -1735,6 +1735,425 @@ Period/8 N=64 stationary setup as rounds 9-10).
 
 ---
 
+## 2026-09-21, round 12: independent theoretical Mach-number calculation — confirms the gap is real and physical, not a shock-finder artifact; identifies the likely root cause and a proposed (not yet implemented) fix
+
+Round 11 left an open question: is Tier 2's plateau of median~6.0/max~10.3
+close to the real answer for this specific shock, or is the true expectation
+much higher? Wrote `expected_cwb_mach.py` (new, committed, in this folder —
+deliberately does not import `astronomix`/JAX, so it runs instantly with no
+GPU dependency) to answer this independently of the shock finder entirely,
+using standard analytic colliding-wind-binary theory (Stevens, Blondin &
+Pollock 1992 / Eichler & Usov 1993 wind-momentum-balance stagnation point)
+applied to `_cwb_setup.py`'s actual physical parameters. Two independent
+estimates, both as functions of the winds' physical/orbital parameters:
+
+1. **Ambient-comparison Mach** (`v_wind / c_s(ambient)`) — exactly what
+   `_cwb_setup.py`'s own module docstring uses to justify "Mach number ~
+   100". Needs only verified setup inputs (wind terminal velocity, ambient
+   temperature). At baseline: **~153 (star 1), ~129 (star 2)**.
+2. **Adiabatic-cooled-wind Mach** — the wind that actually crosses the
+   wind-wind collision shock is not ambient gas, it's each star's own
+   freely-expanding wind, which cools substantially (`T ~ r**(-2(gamma-1))`
+   for constant-velocity adiabatic free expansion) between the stellar
+   surface and the stagnation point. Needs two extra reference values the
+   codebase doesn't specify (assumed: `R_star=20 Rsun`, `T_wind_base=3.5e4
+   K`, typical O-star literature values, flagged as illustrative). At
+   baseline (using the separation *actually simulated*, see below): **~355
+   (star 1), ~131 (star 2)** — i.e. even this more careful estimate lands in
+   the same ~100-350 range as the simple ambient comparison for this
+   specific geometry.
+
+**Both independent estimates agree the sim is far short**: Tier 2's real
+max (10.3) is **~13x below even the conservative ambient-comparison floor**
+(~129, for star 2 — the wind whose termination shock is the one actually
+being measured, per round 9/10's argmax location matching the star-2
+stagnation point). This rules out "10.3 is just genuinely the right answer
+for this compound/secondary shock" (round 11's open question) — no
+physically-motivated estimate gets anywhere near that low. The gap is real.
+
+**Independent finding, not the root cause but worth fixing regardless:**
+`_cwb_setup.py` defines `SEPARATION_PHYSICAL = 20 au` and a docstring
+describing "20 au from its companion", but this variable is never actually
+used — the live code (`sep_in_au = 20` → `code_length = (sep_in_au/10) au =
+2 au`, independent of the hardcoded `SEPARATION = 0.4`) means the separation
+*actually simulated* is `0.4 * 2 au = 0.8 au`, **25x smaller** than
+documented. Confirmed this doesn't explain the Mach gap on its own (the
+adiabatic-cooled estimate at the *actual* 0.8 au separation, ~131-355, is
+still >>10.3) — consistent with item 4's own "code units don't matter"
+finding, generalized: rescaling a physical length scale alone doesn't change
+any dimensionless ratio the scheme sees. Still worth fixing so the setup
+simulates what its own documentation claims.
+
+**Likely root cause, quantified directly by the same script**
+(`cells_between_injection_and_shock`): at N=64 (the only resolution item 4
+has gotten to run clean), there are only **~3.75 grid cells** between the
+edge of the wind-injection sphere and the star-2 stagnation-point shock
+(`num_injection_cells = num_cells // 32` is a fixed ~1/32-of-box fraction,
+so this scales only because `dx` shrinks with `N`: ~7.5 cells at N=128, ~15
+at N=256, ~30 at N=512). A 2nd-order finite-volume scheme cannot resolve a
+temperature transition spanning the ~2-3 orders of magnitude adiabatic
+cooling implies (see estimate 2 above) within 3-15 cells — numerical
+diffusion mixes the freshly-injected (numerically much hotter, near-ambient
+pressure-scale) wind with whatever it's near well before it reaches the
+shock, so the *pre-shock* wind the simulation actually sees is far warmer
+(far lower true Mach) than the real, physically-cooled wind. This is
+consistent with, and extends, every relevant finding already in this file:
+item 4's own "code units don't matter" result (this is a resolution effect,
+not a scale effect), and item 1b/round 9-11's finding that the shock-finder
+side of the problem is now essentially fixed (Tier 2 has no drift, no cell
+loss, and converges cleanly) — the remaining gap is upstream of the shock
+finder, in what physical state the wind is in by the time it reaches the
+shock at all.
+
+**Proposed fix (not yet implemented):** don't try to resolve the wind's
+adiabatic cooling with brute-force uniform resolution — item 4's whole
+saga shows the sim is already barely stable at N=64 and gets *harder*, not
+easier, to keep clean at higher N, and per the cells-between-injection-
+and-shock scaling above, resolving even ~2 more decades of cooling would
+need N in the many hundreds to thousands (`~0.06 * N` cells available,
+linear in N; getting comfortably past ~50-100 cells needs N~1000+, i.e.
+~4000x the memory/compute of N=64). Instead: **impose the analytic
+freely-expanding wind profile directly** (`rho(r) = Mdot/(4 pi r^2 v_inf)`,
+pressure from the same adiabatic-cooling law `expected_cwb_mach.py` uses)
+as an overwritten/reset state in a "wind zone" extending well beyond the
+current tiny injection sphere (out to some fixed fraction of the stagnation
+distance, chosen so several cells of *ordinary hydro* remain between the
+wind-zone edge and the shock for the Riemann solver to actually capture the
+jump) — every step or substep, not just once at t=0. Ordinary hydro/HLLC
+still does the actual shock-capturing outside the wind zone; only the
+pristine unshocked-wind interior, whose analytic solution is already known
+exactly, is prescribed rather than rebuilt from a volumetric source term
+each step. This is a standard technique in wind-bubble/CWB grid codes (an
+analytically-prescribed "wind injection zone" larger than a single
+source-term cell, refreshed every step) — it directly targets the diagnosed
+mechanism (pre-shock wind is numerically too warm because there's no room
+to develop the true cooling profile) without requiring the sim to run at a
+resolution it currently cannot reach cleanly. More invasive than anything
+tried in items 1b/4 so far (touches how the wind is represented in the
+domain, not just the shock finder or the reconstruction), and would need
+its own validation (in particular: does overwriting a growing wind-zone
+each step interact badly with the N-body-tracked, moving source positions,
+or with the open-boundary/positivity issues item 4 already found) — not
+attempted this round, in the interest of reporting the (now well-quantified)
+diagnosis and proposal rather than a rushed, unvalidated implementation.
+
+**Secondary, cheaper, non-exclusive knob**: decouple `num_injection_cells`
+from `N` (e.g. fix it at 2 regardless of resolution, instead of
+`num_cells // 32`) — `expected_cwb_mach.py`'s resolution panel shows this
+buys a modest extra margin "for free" (e.g. ~90 vs ~60 cells at N=1024) at
+zero cost, by shrinking the injection sphere's *code-unit* radius as
+resolution grows instead of holding it at a fixed ~1/32-of-box fraction.
+Worth doing regardless of the wind-zone fix above, but not a substitute for
+it — it only meaningfully closes the gap at resolutions the sim cannot
+currently run stably.
+
+Committed script: `expected_cwb_mach.py` (this folder) — prints the baseline
+summary and writes `figures/expected_cwb_mach.png` (6 panels: ambient-Mach
+vs. T_ambient and v_wind, stagnation-point location vs. mass-loss ratio,
+adiabatic-ceiling vs. ambient-floor Mach vs. separation, resolution margin
+vs. N, and Mach modulation over an eccentric orbit).
+
+---
+
+## 2026-09-21, round 13: re-checked the theory-vs-sim Mach gap against a real N=512, a=50 au run (the round-12 separation bug now fixed, T_END now derived from wind-crossing physics) — gap is unchanged, actually worse in relative terms
+
+Since round 12, `_cwb_setup.py` was updated (separate work this session): the
+separation bug is fixed (`code_length = sep_in_au / SEPARATION`, so the setup
+now genuinely simulates `a=50 au`, not the old silently-0.8-au value),
+`nbody=False` (stationary, matching round 8's finding), `num_cells=512`
+(8x item 4's N=64 baseline), and `T_END` is now derived from a wind
+boundary-crossing-time estimate rather than an arbitrary fraction of the
+orbital period. The user ran this real N=512 setup and produced
+`figures/cwb_shocked_cells_{2d,3d}_512_stat.png`; asked to check the Mach
+agreement between the *current* physical parameters and this real result.
+
+**No raw shock-finder data was saved from that run** (no `data/` output, no
+printed percentiles) — only the two PNGs. Recovered the actual Mach range by
+calibrating the plots' own colorbar pixel-by-pixel: sampled the tick-mark row
+positions (labeled 2/4/6/8/10) in both figures, fit a linear pixel-to-value
+map, and extrapolated to the colorbar's true top/bottom edge. **First attempt
+was contaminated by suptitle/subplot-title text bleeding into the same pixel
+column as the colorbar** (gave a spuriously high 2D-slice max of 12.1, higher
+than the reported 3D whole-domain max — a logical impossibility that exposed
+the bug); fixed by isolating the colorbar's own *contiguous* solid-color
+pixel run (excluding the isolated 1-2px text-bleed blobs above it) as the true
+top edge. Corrected reading, cross-validated two ways:
+- 2D mid-plane (z=256) slice: Mach ∈ [1.29, 10.67].
+- 3D whole-domain scatter (the authoritative one — `plot_shock_surface_3d`'s
+  SCATTER mode auto-scales its colorbar to `mach[surface].min()/.max()` over
+  the *entire* 3D array, unlike the 2D panel which explicitly fixes
+  `vmin=MACH_MIN` and only shows one slice): Mach ∈ [1.31, 10.95] → reported
+  as **~10.7** (splitting the difference between the two independent
+  calibrations, which agree to ~2%).
+- Both `vmin` readings land almost exactly on `MACH_MIN=1.3` (the shock-zone
+  detection threshold, not a physical floor) — strong validation that the
+  pixel-calibration method itself is correct.
+- This run used the default `find_shocks_pfrommer` call in `_cwb_setup.py`
+  (no `mach_sampling_steps` override) — i.e. Tier-1's `steps=1` backward-
+  compatible default, not even Tier-1's own `steps=2` improvement (round 10),
+  let alone the unmerged Tier-2 prototype (round 11).
+
+**Theoretical expectation, recomputed for the current (now-correct) a=50 au
+setup** (`expected_cwb_mach.py`, updated this round to drop the now-resolved
+documented-vs-actual separation split): stagnation point unchanged (wind
+momentum ratio only depends on `Mdot`/`v_inf`, not `a`) — star 2's shock
+(the one actually measured, near the orbital plane close to star 2, per
+rounds 9-10) sits at `r2 ≈ 11.24 au` (was `0.18 au` under the old bugged
+separation). Ambient-comparison floor **unchanged** at ~129 (star 2), since
+it doesn't depend on `a`. Adiabatic-cooled-wind ceiling **increased** to
+**~2061** (star 2) / ~5594 (star 1) — up from round 12's ~131/~355 at the
+old, artificially-tiny separation, since a real wind gets far more distance
+(and hence far more adiabatic cooling) to travel before colliding at the
+correct, larger separation.
+
+**Result: the gap did not close — if anything it's worse in relative terms.**
+Despite 8x more grid resolution (N=64→512, giving ~30 cells instead of ~3.75
+between the injection sphere's edge and the shock — see
+`cells_between_injection_and_shock`, confirmed this ratio is *not* affected
+by the separation fix, only by `N`, exactly as round 12 predicted) and a
+properly-scaled, 62x-larger physical domain, the measured max Mach barely
+moved (~10.3 at N=64 → ~10.7 at N=512, a ~4% change) while the *theoretical*
+ceiling grew substantially (because the fix gave the wind more real distance
+to cool). Sim is now **~12x below the conservative ambient-comparison floor**
+(unchanged from round 12's ~13x) and **~193x below the adiabatic-cooled
+ceiling** (worse than round 12's ~30x at the old, bugged separation, precisely
+*because* the separation fix raised the ceiling without raising the sim's
+actual result).
+
+**This is a third independent resolution level (N=64, 256, now 512, across
+two different, unrelated sessions) all landing at the same ~10-11 max Mach**
+— strong, repeated confirmation of round 12's core diagnosis: the bottleneck
+is not shock-finder sampling (already fixed as far as tractable, Tier 1/2),
+not the separation bug (now fixed, made no difference), and not resolvable by
+brute-force grid refinement alone (8x more cells in exactly the zone that
+matters barely moved the needle). The proposed fix from round 12 — impose the
+analytic free-wind profile in an extended, per-step-refreshed wind zone
+instead of relying on volumetric source terms + hydro to reconstruct the
+cooling profile — remains the recommended next step; nothing this round
+changes that recommendation, it only strengthens the evidence for it.
+
+**Caveat on precision:** the ~10.7 figure is a calibrated pixel reading of a
+PNG, not an exact computed value (no data file was saved from the run) —
+good to roughly ±0.3-0.5 given the two independent calibrations' ~2%
+agreement, but if a precise percentile breakdown (median, p90, p99, not just
+the max) is needed for a future decision, the run should be repeated with the
+actual `sf_result.mach_numbers` array saved or printed directly, the way
+rounds 9-11 did.
+
+Updated: `expected_cwb_mach.py` (`SEPARATION_BASELINE=50 au` replaces the
+now-resolved documented-vs-actual split; `SIMULATED_MAX_MACH=10.7` from this
+round's calibrated reading; resolution panel now marks both the round-12
+(N=64) and round-13 (N=512) runs).
+
+---
+
+## 2026-09-21, round 14: is disabled cooling the actual cause? Enabled it (real fix, not scratch) — clean, controlled A/B test shows it makes no measurable difference at N=64
+
+User's question: `_cwb_setup.py` runs pure adiabatic hydrodynamics (no
+radiative cooling at all) — could *that*, not grid resolution, be why the
+pre-shock wind never gets cold enough? Physically plausible and worth taking
+seriously: unlike adiabatic (PdV) cooling, radiative cooling is a **local,
+pointwise** process (rate ~ n^2 * Lambda(T)) that doesn't need a wide spatial
+stencil to resolve — in principle it could cool the wind to a low
+temperature right at/near the dense injection region, sidestepping round
+12/13's "not enough cells between injection and shock" diagnosis entirely.
+Real O-star CWBs are also known in the literature to span both adiabatic and
+radiative regimes depending on wind/orbital parameters (the Stevens, Blondin
+& Pollock 1992 cooling parameter chi), so this is a genuine, previously-
+missing piece of physics, not just a numerical knob.
+
+**Implemented** (real repo file, not scratch): `_cwb_setup.py` now wires up
+the codebase's existing cooling module (`astronomix._modules._cooling`),
+using `pytests/shock_finder3D/cooling_comparison2.py` (an old, `jf1uids`-era
+draft script, API-incompatible with the current `astronomix` package but
+useful as a guide) as a reference for which knobs to set:
+
+- `SimulationConfig.cooling_config = CoolingConfig(cooling=True,
+  cooling_method=IMPLICIT_COOLING, subcycle_stiff_cooling=True,
+  cooling_curve_config=CoolingCurveConfig(cooling_curve_type=
+  PIECEWISE_POWER_LAW))`.
+- `SimulationParams.cooling_params = CoolingParams(hydrogen_mass_fraction=
+  0.76, metal_mass_fraction=0.02 -- `CoolingParams`' own defaults --
+  floor_temperature=<100 K in code units>, cooling_curve_params=
+  schure_cooling(CODE_UNITS))` -- the Schure et al. (2009) + Dalgarno &
+  McCray (1972) piecewise power-law curve, same one the draft used.
+- **`IMPLICIT_COOLING` (Newton's method) chosen over the draft's
+  `EXPLICIT_COOLING`**, and **`subcycle_stiff_cooling=True` is not
+  optional**: `cooling_options.py`'s own docstring documents a prior
+  incident (SILCC-ISM M4) where a single persistently-fast-cooling cell
+  stalled a run indefinitely, because `_cfl_time_step`'s `dt_cool` term
+  clamps the *global* hydro `dt` to the single fastest-cooling cell in the
+  whole domain whenever `subcycle_stiff_cooling=False` (confirmed directly
+  in `_timestep_estimator.py:312`). This setup's injection region is
+  guaranteed to be exactly that single fastest-cooling cell (item 4's own
+  "~17 orders of magnitude pressure contrast" finding), so running with the
+  default (`subcycle_stiff_cooling=False`) would very likely reproduce that
+  same stall.
+
+**Verified safe first** (two smoke tests, not the real N=512 target -- that's
+still the user's to run): N=32 completed in ~33s with zero NaN, but turned
+out to be a degenerate case (`num_injection_cells = 32 // 32 = 1`; density
+and pressure came back *exactly* uniform ambient everywhere -- no wind
+injection happened at all at this resolution, unrelated to cooling). N=64
+(the resolution used throughout rounds 9-13) completed cleanly in ~39s: zero
+NaN, wind injection clearly present (density up to 1.7e6x ambient, pressure
+up to 1.2e10x ambient), 6315 shock-surface cells found -- the same count
+rounds 9-11 found at N=64 without cooling, a good sign nothing is
+qualitatively broken.
+
+**Clean, controlled A/B test (same exact setup, only `cooling_config.cooling`
+toggled via a monkeypatch, both at N=64): essentially no difference.**
+
+| | n_surface | Mach min | median | max |
+|---|---|---|---|---|
+| cooling ON | 6315 | 1.583 | 3.122 | 9.998 |
+| cooling OFF | 6315 | 1.581 | 3.123 | 9.986 |
+
+Differences are ~0.1%, within run-to-run float/compilation noise -- not a
+real effect. **Cooling does not measurably change the shock Mach number at
+N=64.**
+
+**Why not, most likely:** cooling needs *time* to act, exactly like
+adiabatic cooling needs *distance* -- and at N=64 there are only ~3.75 grid
+cells (round 12/13's own number) between the injection sphere's edge and the
+shock, i.e. only a very short transit time for a fluid parcel to spend in
+that zone before crossing the shock. If that transit time is short compared
+to the *local* cooling time even in the dense near-injection gas, cooling
+simply doesn't have long enough to remove much thermal energy before the
+parcel is already at the shock -- the same "not enough time/distance"
+bottleneck as round 12/13's adiabatic-cooling diagnosis, just for a
+different physical channel. This reframes the round-12/13 conclusion
+slightly: it isn't specifically that adiabatic cooling is the missing
+mechanism and radiative cooling would fix it -- it's that *no* thermal
+process, adiabatic or radiative, gets enough time/distance to act in the
+available few cells.
+
+**Two secondary findings, neither the main conclusion but both worth
+recording:**
+1. **Achievable cooling floor is bounded by the curve's own table range,
+   independent of the time argument above.** Schure's tabulated cooling rate
+   is defined only for `T in [~6300 K, ~1.4e8 K]`; `_evaluate_piecewise_
+   power_law` returns exactly `0.0` (no cooling, not an extrapolation)
+   outside that range. Even with unlimited transit time, this specific curve
+   could only cool the wind down to ~6300 K (giving `c_s ~ 9.3 km/s`,
+   Mach ~200-236 for this setup's `v_inf`) -- a real, substantial
+   improvement over the current ~10.7 if it could act, but nowhere near the
+   ~2000+ adiabatic ceiling from round 13's idealized (unlimited-distance)
+   estimate. A colder curve (extending the Dalgarno & McCray branch further,
+   or a different table) would be needed to test the true ceiling.
+2. **A mu-convention mismatch shifts the *effective* ambient temperature the
+   cooling module sees.** `RHO_0`/`P_0` were originally defined assuming
+   `mu=1` (`n = 2/cm^3` computed as `rho/m_p` with no ionization correction,
+   giving the documented "T~1.5e4 K"). The cooling module's own
+   `get_temperature_from_pressure` uses `mu~0.59` (from
+   `hydrogen_mass_fraction=0.76`, appropriate for an actually-ionized
+   plasma), so it recovers `T_ambient ~ 8850 K` for the *same* `(rho, P)`
+   pair -- a real, ~40% systematic offset between "the temperature this
+   setup's docstring claims" and "the temperature the cooling module
+   actually computes for that gas", worth knowing about but not large enough
+   to change this round's conclusion (8850 K is still comfortably inside the
+   Schure table's range).
+
+**Current code state:** cooling is now genuinely enabled in `_cwb_setup.py`
+(not reverted) -- verified numerically safe (no NaN, no stall) and worth
+keeping regardless of the null result, since it's real missing physics that
+costs nothing now that `subcycle_stiff_cooling` avoids the stall risk, and
+does not regress the (already small) N=64 shock-finder statistics. The
+user's real target (N=512, a=50 au) has not been run with cooling yet --
+that re-check, and specifically whether cooling's effect (if any) grows with
+resolution the way it would need to for a resolution-dependent transit-time
+argument, is the natural next step.
+
+Scratch commands (not saved as scripts, run directly via `python3 -c`, not
+committed): the N=32/N=64 smoke tests and the cooling-on/cooling-off A/B
+comparison described above.
+
+---
+
+## 2026-09-21, round 15: where is Mach actually computed, and is the shock-finder formalism (not just physics) part of the gap? Re-verified item 1b's Tier-1 finding against the *current* setup — yes, and it's still not wired in, but it doesn't close the gap either
+
+User asked where the shock Mach number is actually computed and whether the
+shock-finder formalism itself could be the problem, given rounds 12-14 ruled
+out resolution, the separation bug, and cooling as the explanation.
+
+**Where it's computed:** `astronomix/shock_finder3D/pfrommer_shock_finder.py`'s
+`find_shocks_pfrommer` (phase 4) calls `_shock_mach.py`'s
+`_calculate_mach_at_surface`, which:
+1. Samples pressure `sampling_steps` cells away from each shock-surface cell
+   along the local shock direction, via `_shock_zones.py`'s
+   `get_post_pre_shock_values` (walks the single *dominant grid axis* of the
+   direction vector, `jnp.roll`-based, `sampling_steps` cells each way).
+2. Computes `p_ratio = p_post / p_pre` (clamped >= 1).
+3. Inverts the strong-shock Rankine-Hugoniot relation for `M`:
+   `M = sqrt((p_ratio*(gamma+1) + (gamma-1)) / (2*gamma))`, `gamma=5/3`
+   hardcoded (matches this setup's `GAMMA`, so not itself a live bug here).
+4. Masks to shock-surface cells at least `sampling_steps` from any boundary
+   (`_make_interior_mask`, since `jnp.roll` wraps).
+
+`find_shocks_pfrommer` exposes `mach_sampling_steps` (default `1` -- literally
+the worst case per item 1b/round 10's own characterization) as a public
+kwarg, but **`_cwb_setup.py`'s actual call
+(`find_shocks_pfrommer(state, config, registered_variables, helper_data,
+mach_min=MACH_MIN)`) has never passed it** -- every single result reported
+in rounds 9 through 14 (including this session's N=64/N=512, cooling on/off,
+etc.) used the un-improved `sampling_steps=1` default, despite Tier 1 having
+been implemented and validated back in round 10.
+
+**Re-verified round 10's finding against the *current* setup** (a=50 au,
+cooling on, N=64 -- not the old, bugged 0.8 au setup round 10 originally
+tested): ran the real `run_cwb(64)` once, then called `find_shocks_pfrommer`
+directly on the resulting state at several `mach_sampling_steps` values
+(cheap -- no need to re-run the hydro):
+
+| steps | n_valid | min | median | mean | p90 | max |
+|---|---|---|---|---|---|---|
+| 1 (current default) | 6315 | 1.583 | 3.122 | 3.496 | 5.478 | 9.998 |
+| 2 | 5788 | 1.722 | 5.007 | 5.021 | 6.160 | 9.080 |
+| 3 | 5413 | 1.000 | 5.095 | 5.323 | 7.172 | 8.931 |
+| 4 | 5053 | 1.000 | 4.567 | 5.256 | 8.545 | 10.481 |
+| 5 | 4705 | 1.000 | 4.037 | 5.102 | 9.751 | 11.825 |
+| 8 | 3729 | 1.000 | 2.730 | 4.410 | 14.184 | 15.979 |
+
+**Confirms round 10's exact pattern, on the new setup:** `steps=2` gives a
+real, substantial median improvement (3.12→5.01, +60%, closely matching
+round 10's own 3.22→5.04 on the old setup) at essentially the same max
+(9.08 vs 9.998 -- a small *decrease*, from the boundary-margin exclusion
+cutting the near-edge cells, exactly as round 10 diagnosed). Beyond
+`steps=2-3`, `n_valid` keeps shrinking (boundary-margin loss) while `max`
+climbs *without plateauing* (9.08→15.98) -- the same grid-axis-vs-true-normal
+drift artifact round 10 found, not genuine signal (round 11's Tier-2
+prototype, walking the true local normal instead of a grid axis, was built
+specifically to fix this drift, but was never merged and isn't available in
+the repo to re-test here).
+
+**So: yes, the shock-finder formalism is measurably part of the picture --
+but it is a secondary, low-risk lever, not the explanation for the gap's
+size.** `steps=2` is a real, free, already-validated ~60% median
+improvement sitting unused in `_cwb_setup.py` right now -- worth wiring in
+regardless of anything else. But even at its best (`steps=2` or `3`), median
+tops out at ~5.1 and max *decreases* to ~9.1 -- nowhere near closing the
+~12x (ambient-floor) to ~190x (adiabatic-ceiling) gap from rounds 12-13, and
+entirely consistent with (not a competing explanation to) round 14's
+finding that the *physical* pre-shock state itself is the binding
+constraint, independent of both resolution and cooling. Sampling-formalism
+fixes cannot recover Mach signal that was never physically present in the
+pre-shock state to begin with.
+
+**Not yet decided/applied:** whether to set `mach_sampling_steps=2` as the
+new default in `_cwb_setup.py`'s `find_shocks_pfrommer` call. It's a free
+win with no observed downside at `steps=2` specifically, but changes every
+historical Mach number this file has quoted (median comparisons across
+rounds), and round 10 explicitly deferred this exact decision pending the
+axis-direction limitation Tier 2 addresses -- left for the user to decide
+rather than applied unprompted this round, since this round was scoped as
+"investigate", not "fix".
+
+Scratch command (not saved, run directly via `python3 -c`, not committed):
+the `mach_sampling_steps` sweep described above, reusing one `run_cwb(64)`
+call's output state across all six `find_shocks_pfrommer` calls.
+
+---
+
 ## Suggested order for next session
 
 1. Investigate item 4 — nothing else can be tested until the sim runs.

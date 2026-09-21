@@ -47,7 +47,7 @@ density slice, and a 4-panel correctness plot (axis profile + shock geometry
 
 # ==== GPU selection ====
 from autocvd import autocvd
-autocvd(num_gpus=1, interval=2)
+autocvd(num_gpus=1, interval=5)
 # ruff: noqa: E402
 # =======================
 
@@ -77,7 +77,7 @@ from _cwb_setup import (
 FIG_DIR = Path(__file__).resolve().parent / "figures"
 FIG_DIR.mkdir(exist_ok=True)
 
-NUM_CELLS = 256
+NUM_CELLS = 512
 STRONG_SHOCK_RHO_RATIO = (GAMMA + 1.0) / (GAMMA - 1.0)  # = 4 for gamma = 5/3
 # Fraction of surface cells required to respect the single-shock strong-shock
 # bound; see the module docstring's note on compound shocks. Empirically,

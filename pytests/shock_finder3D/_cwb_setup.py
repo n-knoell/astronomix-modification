@@ -83,6 +83,22 @@ from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 
 from astronomix._modules._nbody._nbody import binary_starting_orbits_at_phase
 
+# cooling (see FIXES_TODO.md item 1b, round 14: the pre-shock wind can only
+# ever be as cold as the grid can numerically resolve via adiabatic PdV
+# expansion alone, which item 1b rounds 12-13 showed is nowhere near enough
+# at any tractable resolution -- radiative cooling is a local, pointwise
+# process (rate ~ n^2 * Lambda(T)) that doesn't need that spatial resolution
+# at all, and is real missing physics for an O-star wind, not just a
+# numerical workaround)
+from astronomix._modules._cooling.cooling_options import (
+    CoolingConfig,
+    CoolingCurveConfig,
+    CoolingParams,
+    IMPLICIT_COOLING,
+    PIECEWISE_POWER_LAW,
+)
+from astronomix._modules._cooling._cooling_tables import schure_cooling
+
 # ---- physical setup (see examples/stellar_wind/colliding_wind_binary.py) ----
 GAMMA = 5.0 / 3.0
 BOX_SIZE = 1.0
@@ -93,7 +109,7 @@ M1 = 50 * u.M_sun
 M2 = 40 * u.M_sun
 # MASS_LOSS_RATE = 7e-7 * u.M_sun / u.yr  # equal for both stars
 # WIND_VELOCITY = 2000 * u.km / u.s  # equal for both stars
-SEPARATION_PHYSICAL = 20 * u.au
+SEPARATION_PHYSICAL = 50 * u.au
 
 # warm neutral/ionized ambient medium (same values as the example script)
 RHO_0 = 2 * const.m_p / u.cm**3
@@ -107,10 +123,17 @@ P_0 = 3e4 * u.K / u.cm**3 * const.k_B
 # CODE_VELOCITY = np.sqrt(const.G * CODE_MASS / CODE_LENGTH).to(u.km / u.s)
 # CODE_UNITS = CodeUnits(CODE_LENGTH, CODE_MASS, CODE_VELOCITY)
 
-sep_in_au = 20 # upper limit: 80, lower limit: 5
-length_temp = sep_in_au / 10
+sep_in_au = 50  # upper limit: 80, lower limit: 5
 mass_temp = 1
-code_length = length_temp * u.au
+# code_length chosen so SEPARATION (the dimensionless box-separation above)
+# times code_length equals sep_in_au exactly, i.e. this setup actually
+# simulates a sep_in_au-au binary. Previously this used an unrelated
+# `sep_in_au / 10` scaling for code_length, decoupled from SEPARATION -- the
+# separation actually simulated was silently 25x smaller than sep_in_au
+# claimed (0.8 au vs the documented 20 au; see FIXES_TODO.md round 12).
+# Restores the originally-intended CODE_LENGTH = SEPARATION_PHYSICAL /
+# SEPARATION relationship (see the commented-out block above).
+code_length = (sep_in_au / SEPARATION) * u.au
 code_mass = mass_temp * u.M_sun
 code_velocity = np.sqrt(const.G * code_mass / code_length).to(u.km / u.s)
 CODE_UNITS = CodeUnits(code_length, code_mass, code_velocity)
@@ -122,15 +145,22 @@ CODE_UNITS = CodeUnits(code_length, code_mass, code_velocity)
 RHO_AMBIENT = RHO_0.to(CODE_UNITS.code_density).value
 P_AMBIENT = P_0.to(CODE_UNITS.code_pressure).value
 
-# T_END is a small fraction of the code time unit: real O-star winds are so
-# much faster than the ambient sound speed and so much less dense than the
-# ambient medium that the wind-blown bubble sweeps across an order-unity
-# fraction of the domain within a tiny fraction of the (Keplerian) code time
-# unit. Chosen empirically (at NUM_INJECTION_CELLS / num_cells below) so the
-# two wind bubbles have merged into a genuine wind-collision region (not just
-# two independent, not-yet-touching bubbles) while the bow shocks stay
-# comfortably inside the domain (max |x| well below BOX_SIZE / 2).
-# T_END = 4e-3
+# Schure et al. (2009) + Dalgarno & McCray (1972) piecewise cooling curve
+# (astronomix._modules._cooling._cooling_tables.schure_cooling); the
+# tabulated rate is exactly zero below its own ~6300 K floor (see
+# _cooling._evaluate_piecewise_power_law -- out-of-range returns 0.0, not an
+# extrapolation), so the wind cannot be cooled colder than that via this
+# curve regardless of floor_temperature below. HYDROGEN_MASS_FRACTION /
+# METAL_MASS_FRACTION left at CoolingParams' own defaults (0.76 / 0.02).
+HYDROGEN_MASS_FRACTION = 0.76
+METAL_MASS_FRACTION = 0.02
+FLOOR_TEMPERATURE_KELVIN = 1e2  # numerical-only floor, well below where the
+# Schure curve's own tabulated rate already reaches zero -- see above.
+FLOOR_TEMPERATURE = (FLOOR_TEMPERATURE_KELVIN * u.K * const.k_B / const.m_p).to(
+    CODE_UNITS.code_energy / CODE_UNITS.code_mass
+).value
+COOLING_CURVE_PARAMS = schure_cooling(CODE_UNITS)
+
 MACH_MIN = 1.3
 
 # box-centered coordinates (box center at the origin), same convention as
@@ -152,17 +182,20 @@ m1 = M1.to(CODE_UNITS.code_mass).value
 m2 = M2.to(CODE_UNITS.code_mass).value
 Period = 2 * np.pi * np.sqrt(a**3 / ((m1 + m2)))
 
-# T_END = (3.5 * u.yr).to(CODE_UNITS.code_time).value
-T_END = Period
-print(f"End time in code units: {T_END}")
-
-m1 = M1.to(CODE_UNITS.code_mass).value
-m2 = M2.to(CODE_UNITS.code_mass).value
 mlr1 = mass_loss_rate_1.to(CODE_UNITS.code_mass / CODE_UNITS.code_time).value
 mlr2 = mass_loss_rate_2.to(CODE_UNITS.code_mass / CODE_UNITS.code_time).value
 v_inf1 = wind_velocity_1.to(CODE_UNITS.code_velocity).value
 v_inf2 = wind_velocity_2.to(CODE_UNITS.code_velocity).value
 inclination_deg = float(jnp.rad2deg(jnp.arccos(cos_inclination)))
+
+CROSSING_TIME_SAFETY_MARGIN = 1.1
+furthest_edge_distance = ((BOX_SIZE / 2 + SEPARATION / 2)**2 + (BOX_SIZE / 2)**2 + (BOX_SIZE / 2)**2)**0.5
+wind_crossing_time = furthest_edge_distance / min(v_inf1, v_inf2)
+T_END = CROSSING_TIME_SAFETY_MARGIN * wind_crossing_time
+# T_END = Period / 8
+print(f"Orbital period in code units: {Period}")
+print(f"Wind boundary-crossing time in code units: {wind_crossing_time}")
+print(f"End time in code units: {T_END} ({T_END / Period:.4%} of the orbital period)")
 
 masses = jnp.array([m1, m2])
 # initial N-body phase-space state [t, x, y, z, vx, vy, vz] per body,
@@ -266,9 +299,32 @@ def run_cwb(num_cells):
         ),
         
         nbody_config=NBodyConfig(
-            nbody=True,
+            nbody=False,
             deposit_particles=NGP,
             central_object_only=False,
+        ),
+        # FIXES_TODO.md item 1b, round 14: radiative cooling, disabled by
+        # default (CoolingConfig()'s own default is cooling=False), enabled
+        # here to test whether it -- not just grid resolution -- is what the
+        # pre-shock wind needs to reach a realistically low temperature.
+        # IMPLICIT_COOLING (Newton's method, astronomix._modules._cooling.
+        # _cooling.update_temperature_implicit) rather than EXPLICIT_COOLING:
+        # far more robust across a wide dt/cooling-time ratio, which this
+        # setup's huge injection-region density/temperature contrast (item 4:
+        # ~17 orders of magnitude in pressure alone) will produce somewhere.
+        # subcycle_stiff_cooling=True is not optional here: without it,
+        # _cfl_time_step's dt_cool term clamps the *global* dt to the
+        # single fastest-cooling cell in the whole domain (almost certainly
+        # right at the injection region) -- documented (cooling_options.py)
+        # to have stalled a previous run (SILCC-ISM M4) indefinitely under
+        # exactly this "one persistently fast-cooling cell" pattern.
+        cooling_config=CoolingConfig(
+            cooling=True,
+            cooling_method=IMPLICIT_COOLING,
+            subcycle_stiff_cooling=True,
+            cooling_curve_config=CoolingCurveConfig(
+                cooling_curve_type=PIECEWISE_POWER_LAW,
+            ),
         ),
         boundary_settings=BoundarySettings(
             BoundarySettings1D(OPEN_BOUNDARY, OPEN_BOUNDARY),
@@ -322,7 +378,17 @@ def run_cwb(num_cells):
             wind_final_velocities=jnp.array(
                 [v_inf1, v_inf2]
             ),
-            # wind_injection_positions=STAR_POSITIONS,
+            # Required now that nbody_config.nbody=False: _wind_source_params
+            # falls back to this field for source positions, and its default
+            # ([[0,0,0]]) is a single source at the box center, not two stars.
+            wind_injection_positions=STAR_POSITIONS,
+        ),
+        # Inert unless config.cooling_config.cooling=True (see above).
+        cooling_params=CoolingParams(
+            hydrogen_mass_fraction=HYDROGEN_MASS_FRACTION,
+            metal_mass_fraction=METAL_MASS_FRACTION,
+            floor_temperature=FLOOR_TEMPERATURE,
+            cooling_curve_params=COOLING_CURVE_PARAMS,
         ),
     )
 
