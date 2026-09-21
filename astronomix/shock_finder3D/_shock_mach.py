@@ -10,22 +10,23 @@ from astronomix.option_classes.simulation_config import (
     STATE_TYPE,
     SimulationConfig,
 )
-from astronomix.shock_finder3D._shock_zones import get_post_pre_shock_values
+from astronomix.shock_finder3D._shock_zones import get_post_pre_shock_values, _make_interior_mask
 
 """
-Calculate Mach number for all cells, 
+Calculate Mach number for all cells,
 but only keep it at the shock surface (where shock_surface is True) via filter
 * To do this to shoot follow shock direction through all cells -> get post/pre values at all cells
 * Then apply some equation to get Mach number for all cells from p_post/p_pre
 * then filter to keep only Mach for surface cells
 """
-@partial(jax.jit, static_argnames=["registered_variables", "config"])
+@partial(jax.jit, static_argnames=["registered_variables", "config", "sampling_steps"])
 def _calculate_mach_at_surface(
     primitive_state: STATE_TYPE,
     shock_surface: BOOL_FIELD_TYPE,
     shock_direction: FIELD_TYPE,        # ← needed for direction-aware p_post/p_pre
     config: SimulationConfig,
-    registered_variables: RegisteredVariables
+    registered_variables: RegisteredVariables,
+    sampling_steps: int = 1,
 ) -> FIELD_TYPE:
     gamma_gas = 5 / 3
 
@@ -34,21 +35,31 @@ def _calculate_mach_at_surface(
     temperature = pressure / density
 
     # direction-aware post/pre selection — same helper as criterion 3.
-    # max_steps=1 (the default) matches the immediate-neighbor sampling used
-    # by the shock-zone criterion: the shock zone is only ~2-4 cells thick
-    # (Pfrommer et al. 2017), so a larger offset overshoots past the
-    # compressed shell into the unshocked/rarefied region on either side.
+    # sampling_steps=1 (the default, matching pre-fix behavior) samples only
+    # the immediate neighbor, which underestimates the Mach number whenever
+    # the shock is smeared over more than ~1 cell (see FIXES_TODO.md item
+    # 1b): the sample lands inside the transition, not past it into the
+    # asymptotic pre-/post-shock plateau. A caller expecting realistic Mach
+    # numbers for a numerically-smeared shock (typically ~2-4 cells wide for
+    # a 2nd-order scheme, independent of grid resolution -- see FIXES_TODO.md
+    # round 9/10) should pass a larger sampling_steps explicitly.
     p_post, p_pre, _, _ = get_post_pre_shock_values(
-        shock_direction, pressure, temperature,
+        shock_direction, pressure, temperature, max_steps=sampling_steps,
     )
-    
+
     # calculate Mach number for all cells
     # p₂/p₁ = p_post/p_pre, but clamp to 1 to avoid numerical issues with very weak shocks
     p_ratio = jnp.maximum(p_post / jnp.maximum(p_pre, 1e-30), 1.0)
     # as p₂/p₁ = (2γM² − (γ−1)) / (γ+1) so M = √[ (p₂/p₁ · (γ+1) + (γ−1)) / (2γ) ]
     M = jnp.sqrt((p_ratio * (gamma_gas + 1) + (gamma_gas - 1)) / (2 * gamma_gas))
 
-    # write Mach only at surface cells, zero elsewhere
-    mach_array = jnp.where(shock_surface, M, 0.0)
+    # get_post_pre_shock_values samples via jnp.roll, which wraps around at
+    # the domain edge -- cells within sampling_steps of a boundary would
+    # otherwise report a physically meaningless wrapped-around Mach number
+    # (same guard as calculate_thermal_energy_flux in _energy_dissipation.py).
+    valid_interior = _make_interior_mask(pressure.shape, margin=sampling_steps)
+
+    # write Mach only at surface cells clear of the boundary, zero elsewhere
+    mach_array = jnp.where(shock_surface & valid_interior, M, 0.0)
 
     return mach_array

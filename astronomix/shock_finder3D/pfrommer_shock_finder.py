@@ -18,13 +18,14 @@ from astronomix.shock_finder3D._shock_surface import identify_shock_surface
 from astronomix.shock_finder3D._shock_mach import _calculate_mach_at_surface
 from astronomix.shock_finder3D._energy_dissipation import calculate_thermal_energy_flux
 
-@partial(jax.jit, static_argnames=["registered_variables", "config"])
+@partial(jax.jit, static_argnames=["registered_variables", "config", "mach_sampling_steps"])
 def find_shocks_pfrommer(
     primitive_state: STATE_TYPE,
     config: SimulationConfig,
     registered_variables: RegisteredVariables,
     helper_data: HelperData,
     mach_min: float = 1.3,
+    mach_sampling_steps: int = 1,
 ) -> ShockFinderResult:
     """
     Main entry point: Identify shocks using Pfrommer et al. 2017 methodology.
@@ -43,6 +44,20 @@ def find_shocks_pfrommer(
         registered_variables: registry of variable indices
         helper_data:          geometric centers etc.
         mach_min:             minimum Mach threshold (default 1.3)
+        mach_sampling_steps:  number of cells the Rankine-Hugoniot pre-/
+            post-shock sampling (Mach number + thermal-energy flux) walks
+            out from each shock-surface cell, along the local shock
+            direction. Default 1 (immediate neighbor only) matches
+            pre-existing behavior and is a strict backward-compatible
+            default; it underestimates the Mach number for any shock
+            smeared over more than ~1 cell (see FIXES_TODO.md item 1b in
+            pytests/shock_finder3D/). Shock-*zone* detection (criterion 3,
+            `_shock_zones.py`) is intentionally unaffected by this
+            parameter and always uses immediate-neighbor sampling -- only
+            the reported Mach number and thermal-energy flux use this
+            wider sample. Cells within `mach_sampling_steps` of a domain
+            boundary are excluded from both outputs (jnp.roll wraps at the
+            edge, see `_make_interior_mask`).
 
     Returns:
         ShockFinderResult
@@ -69,10 +84,15 @@ def find_shocks_pfrommer(
     # Phase 4: Mach numbers (*spatial_shape)
     mach_numbers = _calculate_mach_at_surface(
         primitive_state, shock_surface, shock_direction,
-        config, registered_variables,
+        config, registered_variables, sampling_steps=mach_sampling_steps,
     )
-    
-    # Phase 5: thermal-energy flux at shock-surface cells
+
+    # Phase 5: thermal-energy flux at shock-surface cells. Uses the same
+    # sampling_steps as Mach above so the pre-shock state (density_pre,
+    # pressure_pre -> sound_speed_pre) stays consistent with the Mach number
+    # it's combined with (mach_numbers * sound_speed_pre) -- sampling at
+    # different distances for the two would silently mix pre-shock states
+    # from different points along the shock normal.
     thermal_energy_flux = calculate_thermal_energy_flux(
         primitive_state=primitive_state,
         shock_surface=shock_surface,
@@ -80,6 +100,7 @@ def find_shocks_pfrommer(
         mach_numbers=mach_numbers,
         config=config,
         registered_variables=registered_variables,
+        sampling_steps=mach_sampling_steps,
     )
 
     num_shocks     = jnp.sum(shock_surface, dtype=jnp.int32)

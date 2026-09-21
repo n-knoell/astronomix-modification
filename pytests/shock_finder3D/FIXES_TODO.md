@@ -1513,6 +1513,228 @@ picked up.
 
 ---
 
+## 2026-09-19, round 10: item 1b Tier 1 implemented — a real, non-trivial
+## improvement, but exposes a *new* limitation a fixed sampling distance
+## can't get past
+
+**Implemented** (real repo files, not scratch): a `sampling_steps` /
+`mach_sampling_steps` parameter threaded through `_shock_mach.py`
+(`_calculate_mach_at_surface`), `_energy_dissipation.py`
+(`calculate_thermal_energy_flux`, which already had this parameter but
+wasn't wired up) and `pfrommer_shock_finder.py` (`find_shocks_pfrommer`,
+new `mach_sampling_steps` kwarg, **default 1** -- strictly backward
+compatible, so `cr_grey_injection.py` and every other existing caller is
+unaffected unless it opts in). Both Mach and thermal-flux sampling always
+use the *same* step count now (previously could silently mismatch -- Mach
+from one offset, pre-shock state for the energy flux from another).
+Generalized `_shock_zones._make_interior_mask` to take a `margin` param
+(default 1, unchanged for its one pre-existing caller, criterion 3) and
+reused it in both `_shock_mach.py` (new) and `_energy_dissipation.py`
+(refactored from duplicated inline logic) as the boundary-safety guard:
+cells within `sampling_steps` of a domain edge are excluded from the
+reported Mach/flux, since `get_post_pre_shock_values` samples via
+`jnp.roll`, which wraps at the edge -- this guard was present for thermal
+flux already but **entirely missing for Mach before this fix**. Shock-zone
+*detection* (criterion 3) is untouched, exactly as item 1b's original fix
+direction specified.
+
+**Regression check:** re-ran `sedov_shock_finder.py`'s full assertion
+suite (N=256, default `mach_sampling_steps=1`) -- passes identically to
+before (`mach in [2.87, 24.57]`, same as pre-change), confirming the
+refactor is a true no-op at the default. This is the validation step item
+1a skipped, which is exactly what let its bug reach a real simulation
+undetected.
+
+**Investigation on the real stationary N=64 CWB run (T_END=Period/8, same
+state as round 9, shock-finder re-run post-hoc per step count so the
+expensive time integration only ran once):**
+
+| steps | n_valid (margin-excluded) | Mach min | max | mean | median | p90 | p99 | argmax location (x,y,z) |
+|---|---|---|---|---|---|---|---|---|
+| 1 (old default) | 6315 (0) | 1.51 | 10.31 | 3.55 | 3.22 | 5.44 | 8.72 | (+0.070, +0.023, +0.023) |
+| 2 | 5814 (501) | 1.69 | 8.45 | 5.05 | 5.04 | 6.15 | 7.54 | (+0.070, +0.023, +0.023) |
+| 3 | 5440 (875) | 1.00 | 8.74 | 5.35 | 5.11 | 7.20 | 8.22 | (+0.242, -0.211, +0.039) |
+| 4 | 5077 (1238) | 1.00 | 10.51 | 5.28 | 4.60 | 8.60 | 9.76 | (+0.242, -0.227, +0.023) |
+| 5 | 4728 (1587) | 1.00 | 11.72 | 5.12 | 4.07 | 9.87 | 11.13 | (+0.258, -0.242, +0.023) |
+| 6 | 4386 (1929) | 1.00 | 13.06 | 4.92 | 3.59 | 11.22 | 12.58 | (+0.289, -0.258, +0.055) |
+| 8 | 3751 (2564) | 1.00 | 16.32 | 4.46 | 2.75 | 14.35 | 15.82 | (+0.320, -0.273, -0.070) |
+| 10 | 3155 (3160) | 1.00 | 19.79 | 3.43 | 2.04 | 11.32 | 18.88 | (+0.336, -0.273, -0.086) |
+
+(First pass at this table naively reported "n_shock_cells" and Mach
+min/mean/median over *all* originally-detected surface cells including
+ones the new boundary-margin guard had just zeroed out -- that's wrong,
+it dilutes the stats with excluded cells reading as Mach=0. The table
+above filters to `surface & (mach > 0)`, the actually-trusted cells.)
+
+**Real improvement at small step counts:** steps=2 already lifts the
+median from 3.22 to 5.04 -- a genuine, substantial recovery of previously
+undersampled shock strength, with the argmax still at the *same physical
+location* as steps=1 (the wind-collision shock near the orbital plane,
+close to star 2). This matches the prediction and is exactly what Tier 1
+was designed to do.
+
+**New problem found, not previously anticipated: at steps>=3 the argmax
+location jumps to a different, drifting position, and keeps drifting
+further as steps grows** (+0.242,-0.211 at steps=3 -> +0.336,-0.273 at
+steps=10 -- monotonically away from the orbital plane, off the x-axis
+entirely). This is *not* the same shock converging toward its true Mach as
+sampling reaches further into the plateau -- it's the walk picking up a
+*different* part of the 3D bow-shock surface. Root cause: `get_post_pre_
+shock_values` walks along the single dominant *grid axis* of the local
+shock-direction vector, not the true (continuous) shock-normal direction.
+For the near-orbital-plane shock (close to axis-aligned) this is fine even
+several cells out; for the curved parts of the paraboloid bow-shock
+surface further from the orbital plane, a grid-axis walk increasingly
+diverges from the true local normal the further it goes, eventually
+sampling material that isn't actually pre-/post-shock relative to that
+point on the curved surface at all. This explains the Mach max growing
+seemingly without bound (10.3 -> 19.8) rather than plateauing -- it's
+cross-contamination from a mismatched, curved region, not genuine
+recovery of a higher true Mach. The median/mean also turn over and
+decline again past steps=3 (5.11 -> 2.04 by steps=10): the boundary-margin
+guard is increasingly excluding the *good*, high-Mach cells near the
+domain edge (round 9 found surface cells reach `|x|=0.477`-`0.494` out of
+the `0.5` box half-width -- i.e. many of the strongest, most informative
+cells sit close to the boundary and get progressively margined out as
+`sampling_steps` grows) faster than any genuine signal is being added.
+
+**Conclusion:** Tier 1 works and is worth keeping (a real, validated,
+backward-compatible improvement over the old always-1-cell default), but
+a single fixed step count can't be pushed very far before trading real
+signal for two compounding problems: (a) grid-axis-vs-true-normal
+divergence contaminating the result with an unrelated part of the shock
+surface, and (b) the boundary-margin guard removing an increasing share of
+the domain's most informative (near-edge) cells. A small, conservative
+value (steps=2, maybe 3) looks safe and genuinely helpful; anything larger
+is actively counterproductive on this geometry, not just "diminishing
+returns." **This is new, concrete evidence for going further than
+originally scoped Tier 1**: the earlier Tier-2 proposal (adaptive
+walk-until-plateau) would need to also walk along the true local
+shock-normal direction, not just add a smarter stopping rule, to avoid
+this specific failure mode -- a refinement not anticipated when Tier 2 was
+first sketched (round 9's response to "think about a way to fix it").
+
+**Not yet done:** deciding on / applying a new default `mach_sampling_steps`
+in `_cwb_setup.py`/`cwb_shock_finder.py`'s actual `find_shocks_pfrommer`
+call (still `mach_min=MACH_MIN` only, no `mach_sampling_steps` override --
+this round's investigation used a separate scratch script,
+`investigate_mach_sampling.py`, deliberately kept out of the real pipeline
+pending a decision on the axis-direction issue above). No change made to
+`cr_grey_injection.py` or any other consumer.
+
+Scratch scripts: `regression_check_sedov.py` (Sedov correctness regression
+check), `investigate_mach_sampling.py` (the sweep above).
+
+---
+
+## 2026-09-19, round 11: Tier 2 (adaptive walk-until-plateau, along the
+## true shock-normal, not a grid axis) tried against the real N=64 CWB
+## stationary run — solves both problems round 10 found
+
+**Prototype only, scratch, not yet in the real package** (this round was
+"try it and report the numbers," not "implement" — unlike Tier 1):
+`adaptive_shock_sampling.py`. Design, directly informed by round 10's
+diagnosis:
+- Walks along the **continuous local shock-normal direction**
+  (`shock_direction`, already a unit vector) via trilinear interpolation
+  (`jax.scipy.ndimage.map_coordinates`, `order=1`), not the single
+  dominant *grid axis* `get_post_pre_shock_values` uses — this directly
+  targets round 10's finding that a grid-axis walk increasingly diverges
+  from the true normal on curved parts of the 3D shock surface.
+- `mode="nearest"` clamps any out-of-domain sample to the boundary value
+  instead of wrapping (`jnp.roll`'s behavior) — structurally eliminates
+  the wraparound risk suspected (never confirmed) to be item 1a's real-
+  simulation NaN cause, rather than patching around it with a margin mask.
+- Adaptive per-cell stopping: walks independently on the post/pre sides,
+  advancing until `|Δlog(field)| < tol` (plateaued) **or** the local
+  log-gradient's sign reverses (crossed into a different feature — the
+  safeguard aimed at the "compound shock" risk noted in this file's
+  module docstrings), capped at `max_steps=15`. Vectorized as a bounded
+  Python-unrolled loop over `max_steps` with a per-cell "still active"
+  mask, same style as the existing `shift_field` walk.
+
+**Validated against the exact same converged, clean N=64 stationary CWB
+state used in rounds 9-10** (Phase 1-3 -- shock direction/zones/surface --
+reused unchanged from `find_shocks_pfrommer`'s default path; only Phase 4
+Mach replaced):
+
+| method | n_valid | Mach min | max | mean | median | p90 | p99 | argmax location |
+|---|---|---|---|---|---|---|---|---|
+| Tier 1, steps=1 (old default) | 6315/6315 | 1.51 | 10.31 | 3.55 | 3.22 | 5.44 | 8.72 | (+0.070,+0.023,+0.023) |
+| Tier 1, steps=2 (round 10's best) | 5814/6315 | 1.69 | 8.45 | 5.05 | 5.04 | 6.15 | 7.54 | (+0.070,+0.023,+0.023) |
+| Tier 2, tol=0.10 | 6315/6315 | 2.34 | 10.28 | 5.61 | 5.59 | 6.64 | 8.48 | (+0.070,+0.023,+0.023) |
+| Tier 2, tol=0.05 | 6315/6315 | 2.34 | 10.28 | 6.01 | 5.93 | 7.50 | 8.81 | (+0.070,+0.023,+0.023) |
+| Tier 2, tol=0.03 | 6315/6315 | 2.34 | 10.28 | 6.15 | 5.98 | 7.87 | 8.91 | (+0.070,+0.023,+0.023) |
+| Tier 2, tol=0.01 | 6315/6315 | 2.34 | 10.28 | 6.22 | 6.01 | 8.11 | 9.06 | (+0.070,+0.023,+0.023) |
+
+**Both problems round 10 found are resolved:**
+1. **No drift.** The argmax cell is identical across every Tier-2 setting
+   tested and matches Tier 1's own steps=1/2 argmax exactly -- unlike
+   Tier 1 at steps>=3, which jumped to a different, progressively-drifting
+   location. Walking along the true normal keeps the sample anchored to
+   the correct physical shock, confirming the round-10 diagnosis (grid-
+   axis divergence, not "more sampling reveals more contamination") was
+   the right explanation.
+2. **No cell loss.** `n_valid=6315/6315` at every tolerance -- `mode=
+   "nearest"`'s boundary clamping means no cell is ever excluded for
+   being close to the domain edge, unlike Tier 1's margin guard, which
+   increasingly threw away the domain's most informative (near-boundary)
+   cells as `sampling_steps` grew.
+3. **Converges cleanly, doesn't run away.** Tightening `tol` from 0.10 to
+   0.01 (a 10x range) moves the mean from 5.61 to 6.22 with clearly
+   diminishing increments (+0.40, +0.14, +0.07) -- converging toward an
+   asymptote near ~6.3-6.4, not growing without bound the way Tier 1's
+   max did (10.3 -> 19.8 from steps=1 to steps=10). The max itself is
+   *flat* at ~10.28 across all four tolerances -- that cell's plateau is
+   reached almost immediately and doesn't move further, a strong
+   consistency signal.
+4. Clean throughout (no NaN, no exceptions) across all four tolerances.
+
+**A real, substantial improvement in typical Mach, still well short of
+the ~100 physically expected for O-star winds:** median goes from 3.22
+(original bug) to ~6.0 (Tier 2, tol<=0.03) -- roughly +86% -- but the
+*maximum* detected Mach stays near ~10.3, essentially unchanged from the
+original bug's own max (10.31) by coincidence. **Open question, not yet
+investigated:** is ~10.3 genuinely the correct plateau value for this
+specific cell (plausible -- it sits in the wind-collision region between
+the two stars, i.e. possibly a compound/secondary shock into already-
+once-shocked material rather than the pristine-ambient bow shock the
+"~Mach 100" expectation describes), or is the *true* strongest shock (the
+outer bow shock into cold ambient gas) a different, thinner feature that
+isn't well-represented in the detected surface-cell population at all (a
+zone-*detection* completeness question, separate from the Mach-sampling
+question these three rounds have focused on)? Distinguishing these needs
+looking at where in the domain the various Mach percentiles actually sit
+(e.g. a 2D/3D plot colored by Mach, analogous to round 9's figures, but
+using Tier-2 Mach) and/or checking the pre-shock temperature at the
+argmax cell against the true ambient value.
+
+**Not yet done / caveats:**
+- This is a **prototype, not wired into the real package** -- unlike Tier
+  1, nothing in `astronomix/shock_finder3D/` was changed this round.
+  `adaptive_shock_sampling.py` and `run_tier2_cwb.py` are scratch-only.
+- Not yet jitted (ran in eager mode for this investigation) -- should be
+  trivially `@jax.jit`-compatible (pure `jnp` ops, a `max_steps`-bounded
+  Python-unrolled loop, no data-dependent control flow) but this hasn't
+  been confirmed.
+- Not yet validated against a real *evolving* simulation loop (only used
+  as post-hoc analysis on a converged final state here) -- item 1a's
+  lesson is that synthetic/single-snapshot correctness isn't sufficient;
+  before this could be trusted as a real fix it should be re-checked
+  against the Sedov-Taylor test (the one 1a broke) the same way Tier 1
+  was in round 10, and ideally against a case with genuinely nearby
+  compound shocks to stress-test the gradient-reversal safeguard.
+- Thermal-energy-flux hasn't been ported to the adaptive approach yet
+  (only Mach was, for this investigation); would need the same treatment
+  for `calculate_thermal_energy_flux` before this could fully replace
+  Tier 1 in `pfrommer_shock_finder.py`.
+
+Scratch scripts: `adaptive_shock_sampling.py` (the new sampling function),
+`run_tier2_cwb.py` (this round's investigation, reuses the same T_END=
+Period/8 N=64 stationary setup as rounds 9-10).
+
+---
+
 ## Suggested order for next session
 
 1. Investigate item 4 — nothing else can be tested until the sim runs.

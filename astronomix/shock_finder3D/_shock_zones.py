@@ -224,17 +224,23 @@ def get_post_pre_shock_values(
         field_b_pre,
     )
 
-def _make_interior_mask(spatial_shape):
+def _make_interior_mask(spatial_shape, margin=1):
     """
-    Build a boolean mask that is True for interior cells (not on any boundary).
-    Shape: spatial_shape.
+    Build a boolean mask that is True for cells at least `margin` cells away
+    from every boundary. Shape: spatial_shape.
+
+    `margin` must be >= the largest `max_steps`/`sampling_steps` used with
+    `get_post_pre_shock_values` on a field of this shape: that function
+    samples via `jnp.roll`, which wraps around at the domain edge, so cells
+    closer than `margin` to a boundary can read physically meaningless
+    wrapped-around values.
     """
     mask = jnp.ones(spatial_shape, dtype=jnp.bool_)
     for ax in range(len(spatial_shape)):
         sl_first = [slice(None)] * len(spatial_shape)
         sl_last  = [slice(None)] * len(spatial_shape)
-        sl_first[ax] = 0
-        sl_last[ax]  = -1
+        sl_first[ax] = slice(0, margin)
+        sl_last[ax]  = slice(-margin, None)
         mask = mask.at[tuple(sl_first)].set(False)
         mask = mask.at[tuple(sl_last)].set(False)
     return mask

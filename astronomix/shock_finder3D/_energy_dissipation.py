@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 from astronomix.shock_finder3D._shock_zones import (
     get_post_pre_shock_values,
+    _make_interior_mask,
 )
 
 
@@ -178,16 +179,10 @@ def calculate_thermal_energy_flux(
     #     f_th = delta(M) * f_kin
     thermal_energy_flux = (efficiency * kinetic_energy_flux)
 
-    # Pre/post sampling uses max_steps=8, so values within 8 cells
-    # of a boundary are not reliable because jnp.roll wraps around.
-    margin = sampling_steps
-    valid_interior = jnp.zeros_like(shock_surface, dtype=jnp.bool_)
-
-    interior_slices = tuple(
-        slice(margin, -margin) for _ in range(shock_surface.ndim)
-    )
-
-    valid_interior = valid_interior.at[interior_slices].set(True)
+    # jnp.roll wraps around at the domain edge, so values within
+    # sampling_steps cells of a boundary are not reliable (same guard as
+    # _shock_mach.py's _calculate_mach_at_surface).
+    valid_interior = _make_interior_mask(shock_surface.shape, margin=sampling_steps)
 
     return jnp.where(
         shock_surface & valid_interior,
