@@ -465,6 +465,94 @@ def _pressure_scale_heights(state, registered_variables, z_axis_code, mid_index)
     return _scale_height(p_gas_z), _scale_height(p_cr_z), p_gas_z, p_cr_z
 
 
+def _midplane_clumpiness(state, registered_variables, mid_index):
+    """std(log10(density)) across the midplane face-on slice -- a simple
+    proxy for Simpson et al. (2016)'s qualitative "smooth" (density-weighted
+    placement) vs. "clumpy" (random placement) structure comparison.
+    Identical to ``m6_sn_placement_comparison.py``'s function of the same
+    name, added here (2026-09-22) to close PROGRESS.md's flagged M6-vs-M5
+    clumpiness gap -- M5's original attempt-3 run never saved states, so
+    this needed a fresh run with the diagnostic in place, not a retrofit
+    onto old data. See this module's docstring -- not a metric from the
+    paper itself.
+    """
+    rho = np.asarray(state[registered_variables.density_index])[:, :, mid_index]
+    log_rho = np.log10(np.maximum(rho, 1e-30))
+    return float(np.std(log_rho))
+
+
+def _clumpiness_evolution_plot(
+    states, time_points_years, clumpiness_series, registered_variables, mid_index,
+    out_path, title_prefix,
+):
+    """Small filmstrip (~4 snapshots) of the midplane face-on density field,
+    from the initial condition through the clumpiness *peak* (the onset/
+    collapse transient) to the late-time quasi-steady state.
+
+    Added 2026-09-22 alongside the M5-vs-M6 clumpiness finding it exists to
+    illustrate: the two placement modes' *late-time-average* clumpiness came
+    out statistically tied (0.467 both), which doesn't show Simpson et al.
+    (2016)'s predicted "density-weighted -> smoother" signature -- but the
+    signature *does* show up as a much higher transient peak during the
+    onset/collapse phase for random placement, which a single late-time
+    number can't convey. This filmstrip makes that transient visible
+    directly, rather than relying on the reader to infer it from the
+    ``clump=`` column of the per-snapshot printout. See PROGRESS.md's
+    2026-09-22 entry for the full numbers.
+
+    The peak snapshot is found dynamically (``nanargmax`` of the actual
+    ``clumpiness_series``), not a hardcoded index, so this keeps working if
+    the run parameters (resolution, SN rate, ...) ever change and shift
+    which snapshot the peak lands on.
+    """
+    clump_arr = np.asarray(clumpiness_series)
+    valid_idx = np.where(~np.isnan(clump_arr))[0]
+    if valid_idx.size == 0:
+        print(f"  [warning] skipping clumpiness evolution plot -- no valid (non-NaN) snapshots")
+        return
+
+    idx_first = int(valid_idx[0])
+    idx_last = int(valid_idx[-1])
+    idx_peak = int(valid_idx[np.argmax(clump_arr[valid_idx])])
+    mid_target = (idx_peak + idx_last) // 2
+    idx_settle = int(valid_idx[np.searchsorted(valid_idx, mid_target)])
+
+    indices = sorted(dict.fromkeys([idx_first, idx_peak, idx_settle, idx_last]))
+    candidates = list(valid_idx)
+    while len(indices) < 4 and len(indices) < len(candidates):
+        gaps = [(indices[i + 1] - indices[i], indices[i], indices[i + 1]) for i in range(len(indices) - 1)]
+        gaps.sort(reverse=True)
+        _, lo, hi = gaps[0]
+        mid = int(candidates[np.searchsorted(candidates, (lo + hi) // 2)])
+        if mid in indices:
+            break
+        indices.append(mid)
+        indices.sort()
+
+    fig, axes = plt.subplots(1, len(indices), figsize=(4.3 * len(indices), 4.6))
+    if len(indices) == 1:
+        axes = [axes]
+    for ax, idx in zip(axes, indices):
+        rho = np.asarray(states[idx][registered_variables.density_index])[:, :, mid_index]
+        vmin = max(float(rho.min()), 1e-30)
+        vmax = max(float(rho.max()), vmin * 10)
+        im = ax.imshow(
+            rho.T, origin="lower", cmap="magma", aspect="equal",
+            norm=LogNorm(vmin=vmin, vmax=vmax),
+        )
+        t_myr = time_points_years[idx] / 1e6
+        tag = " (peak)" if idx == idx_peak else (" (final)" if idx == idx_last else "")
+        ax.set_title(f"t={t_myr:.2f} Myr{tag}\nclump={clump_arr[idx]:.3f}", fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=r"$\rho$ [code]")
+
+    fig.suptitle(f"{title_prefix}: midplane density, clumpiness evolution")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
 def _girichidis_fig1_style_plot(state, registered_variables, mid_index, t_yr, out_path):
     """Structure plot styled directly after Girichidis et al. (2016) Fig. 1
     (``pics/girichidis_SN.jpeg``, provided by the user -- a 3x3 grid: edge-on
@@ -633,6 +721,7 @@ def run_m5():
     n_h_mid_series, t_max_series = [], []
     mdot_series, v_out_series, eta_series = [], [], []
     h_gas_series, h_cr_series = [], []
+    clumpiness_series = []
     for i, t_yr in enumerate(time_points_years):
         state_i = states[i]
         # A literal jnp.isnan hit is not the only corruption signature this
@@ -659,6 +748,7 @@ def run_m5():
             eta_series.append(np.nan)
             h_gas_series.append(np.nan)
             h_cr_series.append(np.nan)
+            clumpiness_series.append(np.nan)
             continue
 
         rho_i = state_i[registered_variables.density_index]
@@ -674,6 +764,7 @@ def run_m5():
         h_gas, h_cr, _, _ = _pressure_scale_heights(
             state_i, registered_variables, z_axis_code, mid_index
         )
+        clumpiness = _midplane_clumpiness(state_i, registered_variables, mid_index)
 
         n_h_mid_series.append(n_h_mid)
         t_max_series.append(float(jnp.max(t_i_kelvin)))
@@ -682,12 +773,13 @@ def run_m5():
         eta_series.append(eta)
         h_gas_series.append(h_gas)
         h_cr_series.append(h_cr)
+        clumpiness_series.append(clumpiness)
 
         print(
             f"  snapshot {i:3d}  t={t_yr:12.1f} yr   max(T)={float(jnp.max(t_i_kelvin)):10.3e} K   "
             f"n_H(mid)={n_h_mid:8.3f} cm^-3   Mdot_out={mdot_out: .3e}   "
             f"v_out={v_out_mean:8.2f} km/s   eta={eta: .3e}   "
-            f"H_gas={h_gas:8.2f}   H_cr={h_cr:8.2f}"
+            f"H_gas={h_gas:8.2f}   H_cr={h_cr:8.2f}   clump={clumpiness:6.3f}"
         )
 
     if first_nan_idx is not None:
@@ -714,6 +806,9 @@ def run_m5():
         print(f"  H_gas = {np.nanmean(np.asarray(h_gas_series)[tail]):.2f} code, "
               f"H_cr = {np.nanmean(np.asarray(h_cr_series)[tail]):.2f} code "
               f"(Girichidis 2016: H_cr > H_gas)")
+        print(f"  midplane clumpiness = {np.nanmean(np.asarray(clumpiness_series)[tail]):.3f} "
+              f"(M6_SN_PLACEMENT_COMPARISON's own M6_CLUMPINESS constant, if set, is the "
+              f"density-weighted-placement counterpart to compare against)")
 
     # Diagnostic plots.
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
@@ -774,6 +869,13 @@ def run_m5():
             time_points_years[last_valid], out_path3,
         )
         print(f"Girichidis-Fig.1-style structure plot written to {out_path3}")
+
+    out_path4 = pics_dir / "m5_clumpiness_evolution.svg"
+    _clumpiness_evolution_plot(
+        states, time_points_years, clumpiness_series, registered_variables, mid_index,
+        out_path4, title_prefix="M5: SNe random placement",
+    )
+    print(f"Clumpiness-evolution filmstrip written to {out_path4}")
 
     return snapshot_data
 

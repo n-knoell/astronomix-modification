@@ -220,6 +220,13 @@ M5_ATTEMPT3_ETA = 6.155
 M5_ATTEMPT3_V_OUT_KMS = 5.83
 M5_ATTEMPT3_H_GAS = 28.41
 M5_ATTEMPT3_H_CR = 86.81
+# Clumpiness wasn't tracked by the original attempt-3 run (its states were
+# never saved to disk, so it couldn't be computed retroactively either) --
+# this flagged gap (PROGRESS.md) was closed 2026-09-22 by adding
+# _midplane_clumpiness to m5_cr_driven_outflow.py and rerunning it at this
+# same attempt-3 resolution. Same late-time-quarter-average convention as
+# the other M5_ATTEMPT3_* constants above.
+M5_ATTEMPT3_CLUMP = 0.467
 
 
 def _base_config() -> SimulationConfig:
@@ -256,7 +263,19 @@ def _base_config() -> SimulationConfig:
         ),
         progress_bar=True,
         return_snapshots=True,
-        num_snapshots=40,
+        # 10, not 40 like m5_cr_driven_outflow.py: with return_states=True,
+        # the full snapshot buffer stays live in GPU memory for the whole
+        # run, and this config's extra density-weighted-placement memory
+        # need (on top of a similar baseline to M5) pushes an 11GB 2080 Ti
+        # over the edge at higher snapshot counts -- confirmed directly
+        # (2026-09-22): 40 needed an extra 7.46GiB in one allocation, 20
+        # needed 4.67GiB, both OOM'd; 10 fits (~8.3GB total, matching M5's
+        # healthy baseline) and was confirmed to complete successfully
+        # (twice, independently). Coarser time sampling than M5's 40 as a
+        # result -- fine for this milestone's per-snapshot diagnostics and
+        # the clumpiness-evolution filmstrip (only needs ~4 of them), but
+        # worth knowing if a future use of this script wants finer sampling.
+        num_snapshots=10,
         snapshot_settings=SnapshotSettings(
             return_states=True,
             return_final_state=True,
@@ -404,6 +423,65 @@ def _midplane_clumpiness(state, registered_variables, mid_index):
     rho = np.asarray(state[registered_variables.density_index])[:, :, mid_index]
     log_rho = np.log10(np.maximum(rho, 1e-30))
     return float(np.std(log_rho))
+
+
+def _clumpiness_evolution_plot(
+    states, time_points_years, clumpiness_series, registered_variables, mid_index,
+    out_path, title_prefix,
+):
+    """Small filmstrip (~4 snapshots) of the midplane face-on density field,
+    from the initial condition through the clumpiness *peak* (the onset/
+    collapse transient) to the late-time quasi-steady state. Identical to
+    ``m5_cr_driven_outflow.py``'s function of the same name -- see that
+    module's docstring for the full rationale (added 2026-09-22 alongside
+    the M5-vs-M6 clumpiness finding it exists to illustrate).
+    """
+    clump_arr = np.asarray(clumpiness_series)
+    valid_idx = np.where(~np.isnan(clump_arr))[0]
+    if valid_idx.size == 0:
+        print(f"  [warning] skipping clumpiness evolution plot -- no valid (non-NaN) snapshots")
+        return
+
+    idx_first = int(valid_idx[0])
+    idx_last = int(valid_idx[-1])
+    idx_peak = int(valid_idx[np.argmax(clump_arr[valid_idx])])
+    mid_target = (idx_peak + idx_last) // 2
+    idx_settle = int(valid_idx[np.searchsorted(valid_idx, mid_target)])
+
+    indices = sorted(dict.fromkeys([idx_first, idx_peak, idx_settle, idx_last]))
+    candidates = list(valid_idx)
+    while len(indices) < 4 and len(indices) < len(candidates):
+        gaps = [(indices[i + 1] - indices[i], indices[i], indices[i + 1]) for i in range(len(indices) - 1)]
+        gaps.sort(reverse=True)
+        _, lo, hi = gaps[0]
+        mid = int(candidates[np.searchsorted(candidates, (lo + hi) // 2)])
+        if mid in indices:
+            break
+        indices.append(mid)
+        indices.sort()
+
+    fig, axes = plt.subplots(1, len(indices), figsize=(4.3 * len(indices), 4.6))
+    if len(indices) == 1:
+        axes = [axes]
+    for ax, idx in zip(axes, indices):
+        rho = np.asarray(states[idx][registered_variables.density_index])[:, :, mid_index]
+        vmin = max(float(rho.min()), 1e-30)
+        vmax = max(float(rho.max()), vmin * 10)
+        im = ax.imshow(
+            rho.T, origin="lower", cmap="magma", aspect="equal",
+            norm=LogNorm(vmin=vmin, vmax=vmax),
+        )
+        t_myr = time_points_years[idx] / 1e6
+        tag = " (peak)" if idx == idx_peak else (" (final)" if idx == idx_last else "")
+        ax.set_title(f"t={t_myr:.2f} Myr{tag}\nclump={clump_arr[idx]:.3f}", fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=r"$\rho$ [code]")
+
+    fig.suptitle(f"{title_prefix}: midplane density, clumpiness evolution")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
 def _outflow_pressure_budget(state, registered_variables, z_index):
@@ -646,9 +724,11 @@ def run_m6():
         print(f"  outflow velocity v_out  : M6={v_out_m6:.2f} km/s   M5-attempt3={M5_ATTEMPT3_V_OUT_KMS:.2f} km/s")
         print(f"  H_gas                   : M6={h_gas_m6:.2f}   M5-attempt3={M5_ATTEMPT3_H_GAS:.2f}")
         print(f"  H_cr                    : M6={h_cr_m6:.2f}   M5-attempt3={M5_ATTEMPT3_H_CR:.2f}")
-        print(f"  midplane clumpiness     : M6={clump_m6:.3f}   "
+        print(f"  midplane clumpiness     : M6={clump_m6:.3f}   M5-attempt3={M5_ATTEMPT3_CLUMP:.3f}   "
               f"(Simpson et al. 2016: density-weighted placement -> smoother/lower clumpiness "
-              f"than random placement)")
+              f"than random placement; late-time average found these statistically tied -- see "
+              f"PROGRESS.md's 2026-09-22 entry: the qualitative signature shows up in the *peak* "
+              f"clumpiness during the onset/collapse phase instead, not the late-time average)")
         print(f"  outflow pressure budget : M6 P_gas={p_gas_m6: .3e}  P_cr={p_cr_m6: .3e}  "
               f"P_ram={p_ram_m6: .3e}   (Simpson et al. 2016: density-weighted placement -> "
               f"'pressure-driven' [P_cr comparable to/exceeding P_ram]; random placement -> "
@@ -708,6 +788,13 @@ def run_m6():
             title_prefix="M6: SNe density-weighted placement",
         )
         print(f"Girichidis-Fig.1-style structure plot written to {out_path3}")
+
+    out_path4 = pics_dir / "m6_clumpiness_evolution.svg"
+    _clumpiness_evolution_plot(
+        states, time_points_years, clumpiness_series, registered_variables, mid_index,
+        out_path4, title_prefix="M6: SNe density-weighted placement",
+    )
+    print(f"Clumpiness-evolution filmstrip written to {out_path4}")
 
     return snapshot_data
 

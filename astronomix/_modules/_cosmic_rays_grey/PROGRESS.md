@@ -4,7 +4,81 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Where things stand (2026-09-22, latest: SILCC-ISM M0b's flagged FV gravity gap -- CLOSED)
+## Where things stand (2026-09-22, latest: M5/M6 clumpiness-evolution filmstrips + a real M6 OOM finding)
+
+**Added `_clumpiness_evolution_plot` to both `m5_cr_driven_outflow.py` and `m6_sn_placement_comparison.py`**
+(identical function in each, matching this project's self-contained-per-script convention): a
+~4-panel filmstrip of the midplane face-on density field, picked dynamically from the run's own
+`clumpiness_series` (initial, the clumpiness *peak*, a settling point, and the final snapshot --
+`np.argmax`-found, not hardcoded indices) so it keeps working if run parameters ever shift which
+snapshot the peak lands on. Written to `pics/m5_clumpiness_evolution.svg` /
+`pics/m6_clumpiness_evolution.svg`. Directly visualizes the 2026-09-22 clumpiness finding above:
+M5's peak panel (t=1.85 Myr, clump=1.701) shows a large SN-blast void carving into the field,
+settling into a diffuse background with a couple sharp localized density peaks by the end
+(clump=0.352) -- M6's peak (t=1.48 Myr, clump=0.744) shows a shock-compressed sheet against a
+cavity, visibly less extreme than M5's, settling into a uniformly turbulent filamentary web
+without sharp localized peaks (clump=0.449) -- matching Simpson et al.'s "smoother, pressure-driven"
+qualitative picture better than M5's late-time state does. Both reruns completed with no NaNs.
+
+**Real, reproducible finding along the way: M6 needs `num_snapshots <= 10`, not `40`, to fit an
+11GB 2080 Ti.** `return_states=True` keeps the *entire* snapshot buffer live in GPU memory for the
+whole run; M6's density-weighted placement (`_draw_density_weighted_site`, `jax.random.categorical`
+over the full grid) needs a further single allocation on top of a similar baseline to M5's, and
+that extra allocation scales with `num_snapshots`: 40 needed an extra `7.46GiB` in one shot, 20
+needed `4.67GiB`, both `RESOURCE_EXHAUSTED`; 10 fits (~8.3GB total, matching M5's healthy baseline)
+and was confirmed to complete successfully **twice, independently** (once flagged as possibly
+"stuck" after running far longer than M5's ~43 min with no visible progress -- turned out to be a
+red herring from how the run was launched (piped through non-follow `tail`, which buffers
+everything until the process exits, hiding the live progress bar), not an actual hang: a second,
+identically-configured run launched with `PYTHONUNBUFFERED=1` and direct file redirection (instead
+of `| tail -N`) showed live, steadily-advancing progress-bar percentages every few minutes,
+confirming the first run was genuinely still working, not stuck -- it finished successfully at
+~2h elapsed, ~3x M5's runtime, plausibly because density-weighted placement's per-step cost is
+itself more expensive, not just its peak memory). `num_snapshots=10` is now `m6_sn_placement_comparison.py`'s
+permanent default (was `40`); its own comment explains why. Lesson for future long GPU runs in this
+project: launch with `PYTHONUNBUFFERED=1` and direct file redirection (`> logfile 2>&1`, not
+`| tail -N`) whenever live progress visibility might matter, not just at the end.
+
+## Where things stand (2026-09-22, latest: SILCC-ISM M6-vs-M5 clumpiness gap -- CLOSED)
+
+**The item-18-punch-list gap ("M6's clumpiness comparison vs. M5 -- M5's states were never saved
+to disk") is now closed.** `_midplane_clumpiness` (identical to `m6_sn_placement_comparison.py`'s
+function of the same name) added to `m5_cr_driven_outflow.py`'s per-snapshot diagnostics, then M5
+(random SN placement) rerun at M6's own comparison resolution (`N_XY, N_Z = 32, 256`, i.e.
+attempt-3's resolution, not attempt-4's now-doubled default -- `_RESOLUTION_FACTOR` temporarily
+set to `1` for this one run, reverted to `2` afterward). New `M5_ATTEMPT3_CLUMP = 0.467` constant
+added to `m6_sn_placement_comparison.py` alongside the existing `M5_ATTEMPT3_ETA`/`_V_OUT_KMS`/
+`_H_GAS`/`_H_CR`, and wired into that script's own comparison print line.
+
+**Result: genuinely surprising, not what Simpson et al. (2016) would naively predict.** Late-time
+(last-quarter-of-snapshots average, the same convention as every other M5/M6 diagnostic) midplane
+clumpiness: **M5 (random) = 0.467, M6 (density-weighted) = 0.467** -- statistically tied to 3
+decimal places, not the "density-weighted placement -> smoother/lower clumpiness than random"
+signature Simpson et al. report. Not a bug: independently re-derived both numbers from each run's
+full per-snapshot `clump=` series (last 10 of 40 snapshots, `np.nanmean`) and got the same match
+(M5: `0.4673`, M6: `0.4666`), so this is a genuine result, not a copy-paste artifact.
+
+**The qualitative Simpson signature *does* show up, but earlier, not late-time.** Full-series peak
+clumpiness during the initial collapse/first-SN-trigger onset phase (before the flow settles into
+its late-time turbulent quasi-steady state): **M5 (random) peaks at 1.701** (snapshot 10, `t~=
+1.85e6` yr, right as the midplane density troughs to `n_H~5.8e-2 cm^-3` during the pre-first-SN
+"runaway" collapse), **M6 (density-weighted) peaks at only 0.75** (snapshot 11, `t~=1.29e6` yr) --
+a genuine ~2.3x difference, in the direction Simpson predict. By late times both placement modes'
+turbulence has washed out that initial difference and converged to a similar clumpiness range
+(M5's tail: `0.33-0.78`; M6's tail: `0.32-0.66`) -- plausibly because once SN-driven turbulence is
+well established, the *turbulent* structure dominates over whatever structure the *placement
+algorithm* itself imposes, and both algorithms are by then just perturbing an already-turbulent
+background similarly. **Practical implication for future use of this metric**: the late-time
+average (what both scripts' comparison tables report for every other diagnostic) is the wrong
+statistic to capture this particular qualitative claim -- a peak-during-onset or an early-phase
+average would be a better single-number proxy, if this comparison is revisited.
+
+No NaNs in the M5 rerun. Diagnostic plots regenerated (`pics/m5_*.svg`); old attempt-4
+(`_512`-suffixed) plots untouched. This closes PROGRESS.md's "Next steps" item 22's third option
+(closing item 12's M6 clumpiness gap) -- Phase D (gradient-based inference) and extending item
+16's gradient check through injection/emission remain the other two, still undiscussed, options.
+
+## Where things stand (2026-09-22, SILCC-ISM M0b's flagged FV gravity gap -- CLOSED)
 
 **The M0b "not well-balanced FV gravity" gap (flagged 2026-09-11, see the 2026-09-11 entry below
 and `DESIGN.md`'s SILCC-ISM section) is now closed.** New opt-in
@@ -3548,7 +3622,11 @@ See "What's done" and "Verified" below for details.
     deliberately-left-open gap (M6's clumpiness comparison vs. M5 -- M5's states were never saved
     to disk, so this needs a fresh M5-random-placement rerun with M6's diagnostics added to close;
     user chose to leave it and move on rather than spend more GPU time unprompted). See the
-    2026-09-16 "M6" and "M5" entries above for the full account.
+    2026-09-16 "M6" and "M5" entries above for the full account. ~~The clumpiness gap itself~~ --
+    closed 2026-09-22: late-time clumpiness is statistically tied between placement modes
+    (M5=M6=0.467), but M5's *peak* clumpiness during the onset/collapse phase (1.701) is ~2.3x
+    M6's (0.75), matching Simpson et al.'s qualitative claim there instead. See the 2026-09-22
+    entry above.
 19. ~~Ladder item 13 (pion-decay SED for a known proton population vs. naima, Phase C's first
     item)~~ -- done (2026-09-17): new `cr_grey_emission.py` (JAX port of naima's Kafexhiu et al.
     (2014) implementation) validated to floating-point precision against naima itself. See the
@@ -3581,8 +3659,8 @@ See "What's done" and "Verified" below for details.
     to a synthetic map) is the plan's own next staged phase; alternatively, ladder item 16's
     FD-vs-AD gradient check could be extended to the injection/emission chain specifically (its
     own wording: "transport, then injection, then emission" -- only a lighter smoke-check version
-    was done inline in items 13/14/15); or close item 12's M6 clumpiness gap (18, above) --
-    not yet discussed with the user.**
+    was done inline in items 13/14/15); ~~or close item 12's M6 clumpiness gap (18, above)~~ --
+    done 2026-09-22, see that entry. Two options remain, still not yet discussed with the user.**
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 
