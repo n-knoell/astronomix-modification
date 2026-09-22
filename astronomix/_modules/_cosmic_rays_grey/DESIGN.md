@@ -1550,6 +1550,83 @@ could mask a spatially localized violation). Flagged, not changed.
 Full numbers and the diagnostic plot (`pytests/cosmic_rays_grey/pics/
 cr_divergence_b_preservation_test.svg`): PROGRESS.md's 2026-09-18 entry.
 
+## Resolved: Phase D -- gradient-based inference demo (2026-09-22)
+
+Plan Sec. 1's Phase D: "gradient-based inference demo (fit kappa / injection efficiency to a
+synthetic map)". Split into two milestones, D1 (kappa) and D2 (injection efficiency), since they
+carry very different risk: item 16's own gradient check already validated `diffusion_coefficient`
+gradients through a full live rollout (tol `1e-2`), but only validated
+`dsa_efficiency_mach_scale` against a fixed, `stop_gradient`-wrapped pre-shock state -- a first
+attempt at differentiating that parameter through a full live rollout there gave `~20%` AD-vs-FD
+error (real physics: DSA feedback weakens the shock at a parameter-dependent rate, shifting which
+cell the shock finder's per-zone selection flags as the surface cell each step). **User's explicit
+choice for this pass: attempt D2 through a full live rollout anyway, confronting that risk
+directly, rather than sidestepping it via the isolated-state pattern** -- see PROGRESS.md's
+2026-09-22 Phase D entry for the full decision context.
+
+**Shared design (both milestones).** A cheap forward-model function `param -> synthetic pion-decay
+emission map`, built by running the real CR-grey `time_integration` (under
+`differentiation_mode=BACKWARDS`) and converting the final `e_cr` field into a photon map via the
+exact same linearity trick ladder item 15's `_build_emission_maps` uses:
+`pion_decay_photon_spectrum` is exactly linear in both the proton spectrum's `amplitude` and the
+gas density, so a whole map reduces to one pion-decay integral (computed once, at unit
+amplitude/density) times a cheap elementwise product -- **kept entirely in `jnp` here** (item 15's
+own version casts to `numpy` partway through for its diagnostic plot, which would break the
+gradient graph). A synthetic target map is generated once at a known ground-truth parameter value
+(no injected noise -- a clean optimization sanity check, not a statistical inverse-problem study).
+The optimized variable is `log(param)`, not `param` directly, so Adam's unconstrained steps can
+never drive a physical diffusion coefficient or efficiency scale negative. `jax.grad` + `optax.adam`
+minimize the relative squared error between the predicted and target maps. `optax` was already an
+incidental dependency (used only in `examples/scripts/`) -- added to `pyproject.toml` as a real one
+for this pass.
+
+**D1 (`pytests/cosmic_rays_grey/cr_phase_d_kappa_inference.py`): closed cleanly, as expected.**
+Reuses ladder item 4's exact isotropic-diffusion setup (`N=128`, Gaussian `e_cr` bump,
+`diffusive_relaxation=True`). A fixed, non-uniform "target gas" density weighting (a Gaussian
+cloud bump offset from the CR injection site -- not part of the sim's own uniform `rho`, just a
+post-hoc emissivity weighting) makes the resulting map a genuinely different spatial shape from
+raw `e_cr(x)`, not merely a rescaled copy. Starting from `kappa_guess = 2 * kappa_true = 0.12`,
+60 Adam steps (`lr=0.1`) recovered `kappa = 0.05976` vs. `kappa_true = 0.06` -- **relative error
+0.40%**, loss dropped `3.51e-2 -> 4.13e-7`. Trajectory shows the expected overshoot-then-settle
+oscillation of constant-`lr` Adam near a sharp minimum (visible in the saved plot), not evidence of
+instability. One `jax.grad` eval at `N=128` took `~29s` (cold, including its one-time compile).
+
+**D2 (`pytests/cosmic_rays_grey/cr_phase_d_injection_efficiency_inference.py`): also converged
+cleanly, and surfaced a real, useful, not-fully-explained finding.** Reuses
+`cr_dsa_mach_dependence.py`'s exact Sedov-Taylor DSA setup (`NUM_CELLS=48`, KR13 Mach-dependent
+efficiency), full live rollout (shock propagates, DSA injects, CR feedback all on), the run's own
+simulated `rho` field as the emission map's target-gas weighting (physically meaningful here,
+unlike D1's synthetic profile, since the shocked shell's density genuinely varies).
+
+*Step 1 (measure the live-rollout gradient error in this specific setup first):* AD grad
+`-4.8816e-01` vs. FD grad `-4.8765e-01` at the optimizer's initial-guess point
+(`mach_scale=0.4`) -- **relative error 0.10%**, not item 16's `~20%`. **Working hypothesis, not
+independently confirmed by further instrumentation:** item 16's setup used a shock that had
+weakened into a near-stationary configuration, so the same surface cell got repeatedly
+re-evaluated and re-selected over many steps, amplifying the discreteness. This Sedov blast's
+shock is genuinely, continuously expanding throughout the run -- cell-to-cell surface
+reselection is dominated by real outward propagation, not by the parameter's comparatively small
+influence on shock strength, so the discreteness effect is much weaker here. **This means the
+`~20%` figure is setup-dependent, not a fixed property of differentiating through live DSA
+injection** -- worth remembering before assuming any future live-DSA-gradient attempt will hit the
+same wall item 16 did.
+
+*Step 2/3 (attempt the fit, report the outcome):* starting from `mach_scale_guess = 0.4` (true
+`= 1.0`), 40 Adam steps (`lr=0.1`) recovered `mach_scale = 1.0635` -- **relative error 6.35%**,
+loss dropped `3.53e-1 -> 3.81e-3` (98.9% reduction), same overshoot-oscillate-converge pattern as
+D1 but not yet as tightly damped by step 40 (still visibly oscillating in the saved plot) -- more
+steps or an `lr` decay schedule would plausibly tighten this further; not attempted, per this
+module's "report the actual outcome, don't tune to force a pass" convention for an explicitly
+exploratory milestone. Wall-clock: two one-time JIT compiles dominate (`510s` for the first
+`jax.grad` trace including Step 1's check, `275s` for the separate `optax`-loop `step` function),
+each subsequent step then fast (seconds) -- `~52` min total for the whole D2 run.
+
+**Caveats shared with item 16's own emission gradient check, not new here:** the GeV conversion
+(`GEV_SCALE`) and assumed proton spectral shape (`alpha=2.0`, `e_cutoff=1e5` GeV) are illustrative,
+not a physically calibrated `CodeUnits` conversion -- this is a differentiability/inference demo,
+not a science prediction. Full numbers, plots (`pics/cr_phase_d_kappa_inference_test.svg`,
+`pics/cr_phase_d_injection_efficiency_inference_test.svg`): PROGRESS.md's 2026-09-22 Phase D entry.
+
 ## BC handling per scheme
 
 - FV: inherits whatever `config.boundary_settings` already provides (open/reflective/periodic)

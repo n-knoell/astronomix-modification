@@ -4,6 +4,46 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-22, latest: Phase D -- gradient-based inference demo, both D1 and D2 done)
+
+**Phase D (plan Sec. 1: "gradient-based inference demo (fit kappa / injection efficiency to a
+synthetic map)") is done.** Split into D1 (kappa) and D2 (injection efficiency) since they carry
+very different risk -- item 16's own gradient check found `diffusion_coefficient` gradients safe
+through a full live rollout, but only validated `dsa_efficiency_mach_scale` against a fixed,
+isolated pre-shock state after a live-rollout attempt there gave `~20%` AD-vs-FD error. **User's
+explicit decision: attempt D2 through a full live rollout anyway, confronting that risk directly
+rather than sidestepping it.** Full design writeup: DESIGN.md's "Resolved: Phase D" section.
+
+**D1 (`cr_phase_d_kappa_inference.py`): closed cleanly, exactly as expected.** Reuses ladder item
+4's isotropic-diffusion setup plus a new, fully-`jnp` synthetic pion-decay emission-map layer (the
+same exact-linearity trick item 15's `_build_emission_maps` uses, but kept differentiable this
+time). 60 Adam steps recovered `kappa = 0.05976` vs. `kappa_true = 0.06` -- **rel. err 0.40%**,
+loss `3.51e-2 -> 4.13e-7`.
+
+**D2 (`cr_phase_d_injection_efficiency_inference.py`): also converged cleanly, and surfaced a
+real, useful, not-fully-explained finding.** Reuses `cr_dsa_mach_dependence.py`'s Sedov-Taylor
+DSA setup, full live rollout (shock propagates, DSA injects, CR feedback all on). Measured the
+live-rollout AD-vs-FD gradient error in this specific setup *before* fitting (Step 1): **0.10%**,
+not item 16's `~20%`. Working hypothesis (not independently confirmed by further
+instrumentation): item 16's shock had weakened into a near-stationary configuration, repeatedly
+re-selecting the same surface cell over many steps and amplifying the discreteness; this Sedov
+blast's shock is continuously, genuinely expanding, so cell-to-cell reselection is dominated by
+real propagation, not by the parameter's comparatively small influence on shock strength --
+**the `~20%` figure is setup-dependent, not a fixed property of differentiating through live DSA
+injection.** 40 Adam steps then recovered `mach_scale = 1.0635` vs. `true = 1.0` -- **rel. err
+6.35%**, loss `3.53e-1 -> 3.81e-3` (98.9% reduction), still visibly oscillating at step 40 (more
+steps/an `lr` decay would plausibly tighten this further -- not attempted, reporting the actual
+outcome rather than tuning to force a pass, per this milestone's explicitly exploratory scope).
+Wall-clock dominated by two one-time JIT compiles (`510s`, `275s`); `~52` min total.
+
+**Regression check: `cr_gradient_check.py` (item 16, all 4 tests) re-run unmodified, still passes
+clean** -- Phase D touched no shared transport/injection/emission code, only two new pytest
+scripts and a `pyproject.toml` dependency addition (`optax`, already an incidental dependency via
+`examples/scripts/`, now declared for real).
+
+Diagnostic plots: `pytests/cosmic_rays_grey/pics/cr_phase_d_kappa_inference_test.svg`,
+`pytests/cosmic_rays_grey/pics/cr_phase_d_injection_efficiency_inference_test.svg`.
+
 ## Where things stand (2026-09-22, latest: M5/M6 clumpiness-evolution filmstrips + a real M6 OOM finding)
 
 **Added `_clumpiness_evolution_plot` to both `m5_cr_driven_outflow.py` and `m6_sn_placement_comparison.py`**
@@ -3655,12 +3695,18 @@ See "What's done" and "Verified" below for details.
     is linear in that cell's spectrum amplitude" efficiency insight that made a full 3D grid's
     worth of emission maps computationally tractable. **Phase C (items 13-15) is now fully
     complete.**
-22. **Next: Phase D (gradient-based inference demo, plan Sec. 1 -- fit kappa/injection efficiency
-    to a synthetic map) is the plan's own next staged phase; alternatively, ladder item 16's
-    FD-vs-AD gradient check could be extended to the injection/emission chain specifically (its
-    own wording: "transport, then injection, then emission" -- only a lighter smoke-check version
-    was done inline in items 13/14/15); ~~or close item 12's M6 clumpiness gap (18, above)~~ --
-    done 2026-09-22, see that entry. Two options remain, still not yet discussed with the user.**
+22. ~~Phase D (gradient-based inference demo, plan Sec. 1 -- fit kappa/injection efficiency to a
+    synthetic map)~~ -- **done (2026-09-22): both D1 (kappa) and D2 (injection efficiency, via a
+    full live rollout, per explicit user direction) converged cleanly.** See the 2026-09-22 "Phase
+    D" entry above and DESIGN.md's "Resolved: Phase D" section for the full account, including
+    D2's real, not-fully-explained finding that live-DSA-rollout AD-vs-FD gradient error is
+    setup-dependent (`0.1%` here vs. item 16's own `~20%` in a different, stationary-shock setup),
+    not a fixed penalty. This also substantially covers what the other previously-listed option
+    (extending item 16's own FD-vs-AD check through a live injection/emission chain) was after --
+    D2 differentiates the full live transport+DSA-injection+emission chain end to end, just via an
+    optimization loop rather than a single FD-vs-AD comparison. **Next per the plan's own staging:
+    Phase E (spectrally-resolved CRs, Girichidis collaboration, replacing the assumed spectral
+    shape) -- not yet started, not yet discussed with the user.**
 
 ## Environment notes (so the next session doesn't have to rediscover these)
 

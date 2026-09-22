@@ -19,6 +19,7 @@ beartype = ">=0.19.0"
 # Newer Orbax (>=0.11.20) either corrupts sharded restores or calls
 # jax.sharding.set_mesh as a context manager, which JAX 0.6.2 does not support.
 orbax-checkpoint = ">=0.11.0,<0.11.11"
+optax = ">=0.2.0"
 
 [build-system]
 requires = ["poetry-core"]
