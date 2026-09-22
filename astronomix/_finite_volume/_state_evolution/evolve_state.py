@@ -54,6 +54,10 @@ from astronomix._finite_volume._state_evolution._pallas_evolve import (
     _evolve_gas_state_unsplit_pallas,
     _fv_pallas_evolve_supported,
 )
+from astronomix._modules._gravity._gravity import (
+    _compute_total_potential,
+    _reconstruct_pressure_well_balanced,
+)
 from astronomix._geometry.boundaries import _boundary_handler
 from astronomix._fluid_equations._equations import (
     primitive_state_from_conserved,
@@ -530,6 +534,34 @@ def _evolve_gas_state_unsplit_inner(
         if config.limiter == VAN_ALBADA_PP:
             primitives_left_interface = pls[axis - 1]
             primitives_right_interface = prs[axis - 1]
+        elif config.gravity_config.gravity and config.gravity_config.well_balanced_fv_gravity:
+            # Well-balanced hydrostatic-reconstruction path (opt-in, see
+            # _gravity.py's "Well-balanced FV coupling" section): reconstructs
+            # the pressure relative to a discrete hydrostatic reference built
+            # from the *current* density at this axis/RK-stage, so it stays
+            # exactly consistent with whatever the paired gravity source
+            # (_gravitational_source_term_along_axis, evaluated once from the
+            # pre-hydro state -- density does not change within this
+            # gravity-free hydro sub-step at true equilibrium, so the two
+            # agree) needs to cancel against.
+            gravitational_potential = _compute_total_potential(
+                primitive_state[registered_variables.density_index],
+                config.grid_spacing,
+                config,
+                params,
+                registered_variables,
+                params.gravitational_constant,
+            )
+            primitives_left_interface, primitives_right_interface = (
+                _reconstruct_pressure_well_balanced(
+                    primitive_state,
+                    gravitational_potential,
+                    config,
+                    helper_data,
+                    registered_variables,
+                    axis,
+                )
+            )
         else:
             primitives_left_interface, primitives_right_interface = (
                 _reconstruct_at_interface_unsplit_single(
@@ -614,7 +646,40 @@ def _evolve_gas_state_unsplit(
         config.gravity_config.gravity or registered_variables.cosmic_ray_e_active
     )
 
-    if apply_operator_split_sources:
+    # Well-balanced FV gravity (opt-in, see _gravity.py's "Well-balanced FV
+    # coupling" section) cannot use the presolve-once/apply-once pattern
+    # below: that pattern evaluates the gravity source exactly once, from
+    # the pre-step state, then adds it after the *entire* 2-stage SSP-RK2
+    # has run. But the well-balanced reconstruction's embedded P_eq flux
+    # (inside _evolve_gas_state_unsplit_inner, via rhs below) is evaluated
+    # at *both* RK stages and integrated with SSP-RK2's proper 2nd-order
+    # weights. Those two -- the flux's implicit -dP_eq/dx and the source's
+    # explicit +dP_eq/dx, which are exactly equal and must cancel -- would
+    # then be combined with different time-integration weights, so they
+    # would *not* cancel even though they're spatially identical at every
+    # instant. Confirmed this defeats the well-balanced property: seeding
+    # the exact discrete hydrostatic equilibrium
+    # (_hydrostatic_pressure_reference's own reference profile, not just the
+    # continuum analytic one) with the presolve/apply pattern still produced
+    # velocities of order 1e-3, nowhere near round-off.
+    #
+    # The fix: fold the gravity source into ``rhs`` itself, evaluated at
+    # every stage from that stage's own pre-hydro primitive state ``p`` --
+    # matching exactly the state the reconstruction builds its P_eq from.
+    # Then at an exact discretely-hydrostatic state, ``rhs`` returns ~0 at
+    # every stage (both terms identical, same weight, so they cancel), so
+    # the whole SSP-RK2 update is a fixed point to round-off. This also
+    # moves any active CR-grey feedback source (bundled into the same
+    # _time_integrator_sources call) onto the same per-stage evaluation
+    # for this combination -- fine, since well_balanced_fv_gravity defaults
+    # False and no passing test combines it with CR-grey feedback.
+    well_balanced_inline_gravity = (
+        config.gravity_config.gravity
+        and config.gravity_config.well_balanced_fv_gravity
+        and config.limiter != VAN_ALBADA_PP
+    )
+
+    if apply_operator_split_sources and not well_balanced_inline_gravity:
         gravity_source = _gravity_source_presolve(
             primitive_state, dt, gamma, config, params, helper_data, registered_variables
         )
@@ -636,12 +701,17 @@ def _evolve_gas_state_unsplit(
                 helper_data,
                 registered_variables,
             )
-            return (
+            du = (
                 conserved_state_from_primitive(
                     p_stepped, gamma, config, registered_variables
                 )
                 - u
             )
+            if well_balanced_inline_gravity:
+                du = du + _gravity_source_presolve(
+                    p, dt_step, gamma, config, params, helper_data, registered_variables
+                )
+            return du
 
         u0 = conserved_state_from_primitive(
             primitive_state, gamma, config, registered_variables
@@ -666,7 +736,7 @@ def _evolve_gas_state_unsplit(
     # self-gravity (the only gravity pytest, self_gravity/jeans_waves.py,
     # uses FINITE_DIFFERENCE), so nothing currently passing depended on the
     # old behavior.
-    if apply_operator_split_sources:
+    if apply_operator_split_sources and not well_balanced_inline_gravity:
         primitive_state = _apply_gravity_source(
             primitive_state, gravity_source, gamma, config, params, registered_variables
         )

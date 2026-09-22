@@ -308,6 +308,36 @@ class GravityConfig(NamedTuple):
     #: Manual open boundary conditions in the Poisson solver.
     poisson_manual_open_boundaries: bool = False
 
+    #: Opt-in well-balanced FV self-gravity coupling: reconstructs the
+    #: pressure *perturbation* about a discrete hydrostatic reference (built
+    #: from the current density and potential) instead of the raw pressure,
+    #: and replaces the gravity momentum/energy source with that same
+    #: reference's own flux difference, so the two exactly cancel for a
+    #: discretely-hydrostatic state (round-off residual, not just reduced
+    #: truncation error -- confirmed directly: seeding the exact discrete
+    #: hydrostatic reference as the initial condition holds velocities at
+    #: float64 round-off (~1e-15) over several dynamical times, vs. ~1e-1
+    #: for the plain coupling. See PROGRESS.md's SILCC-ISM M0b entry and
+    #: pytests/stratified_ism/stratified_hydrostatic_column.py for the
+    #: motivating finding). Only wired into the unsplit (default,
+    #: ``split=UNSPLIT``) FV path with a non-``VAN_ALBADA_PP`` limiter and
+    #: ``HLLC``-family Riemann solvers (relies on exact stationary-contact
+    #: resolution); ``SPLIT`` and ``VAN_ALBADA_PP`` combinations silently
+    #: keep the plain (non-well-balanced) reconstruction *and* the paired
+    #: plain (momentum-conservative but non-well-balanced) source -- both
+    #: ``_reconstruct_pressure_well_balanced``'s call site and
+    #: ``_gravitational_source_term_along_axis`` gate on the identical
+    #: ``split``/``limiter`` condition, so the two can never become
+    #: mismatched. The gravity source is also evaluated at every SSP-RK2
+    #: stage rather than once per step when this is on (see
+    #: ``_evolve_gas_state_unsplit``'s ``well_balanced_inline_gravity``) --
+    #: required for the exact cancellation above to actually hold; the
+    #: once-per-step operator-split source used everywhere else is fine
+    #: there because nothing is meant to cancel it exactly. Default False,
+    #: so every existing config/test is unaffected unless explicitly opted
+    #: in.
+    well_balanced_fv_gravity: bool = False
+
     #: Master gravity switch. Set automatically in ``finalize_config`` to
     #: ``self_gravity or external_potential``; gates the gravity source-term
     #: machinery so an external potential works without self-gravity. Not set

@@ -568,6 +568,14 @@ Two foundational milestones done this session, both new tests under `pytests/str
   smoke-test milestone). Full numbers and the resolution/steepness checks that established this:
   PROGRESS.md's 2026-09-11 entry.
 
+  **RESOLVED (2026-09-22):** opt-in `gravity_config.well_balanced_fv_gravity` (default `False`,
+  so this milestone's own calibration above is untouched) implements a Käppeli & Mishra
+  (2014)-style hydrostatic reconstruction in `_gravity.py`/`evolve_state.py`, verified to hold an
+  exact discrete hydrostatic state at float64 round-off (`max|v| ~ 3e-15`, vs. `~6e-3` for an
+  earlier, buggy version of the same fix) and to cut the realistic continuum-IC core Mach residual
+  by ~650x with proper 2nd-order (not resolution-independent) convergence. Full writeup:
+  PROGRESS.md's 2026-09-22 entry.
+
 ## Resolved: SILCC-ISM project M1 (Koyama & Inutsuka two-phase net-cooling curve)
 
 New cooling-curve type `KOYAMA_INUTSUKA_NET_COOLING` (`astronomix/_modules/_cooling/cooling_options.py`

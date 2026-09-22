@@ -4,6 +4,86 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Where things stand (2026-09-22, latest: SILCC-ISM M0b's flagged FV gravity gap -- CLOSED)
+
+**The M0b "not well-balanced FV gravity" gap (flagged 2026-09-11, see the 2026-09-11 entry below
+and `DESIGN.md`'s SILCC-ISM section) is now closed.** New opt-in
+`gravity_config.well_balanced_fv_gravity` flag; implementation in
+`astronomix/_modules/_gravity/_gravity.py` (`_hydrostatic_pressure_reference`,
+`_hydrostatic_pressure_reference_face`, `_reconstruct_pressure_well_balanced`, and the
+well-balanced branch of `_gravitational_source_term_along_axis`) and
+`astronomix/_finite_volume/_state_evolution/evolve_state.py`
+(`_evolve_gas_state_unsplit_inner`'s reconstruction dispatch,
+`_evolve_gas_state_unsplit`'s `well_balanced_inline_gravity`). Käppeli & Mishra
+(2014)-style hydrostatic reconstruction: reconstructs the pressure *perturbation* about a
+discrete hydrostatic reference `P_eq` (built by cumulatively integrating the same
+interface-averaged `rho * dphi` used elsewhere) instead of raw pressure, and replaces the
+gravity source with `P_eq`'s own flux difference, so the two cancel exactly for a
+discretely-hydrostatic state -- relies on HLLC's exact stationary-contact resolution
+(matched pressure + zero velocity on both sides -> flux = that pressure, exactly, a
+numerical-flux consistency property).
+
+**Picked up mid-implementation after a session crash; two real bugs found and fixed before
+trusting it, both via direct numerical verification, not just code reading:**
+
+1. **Fallback-gating mismatch.** The gravity *source*'s well-balanced branch checked only the
+   `well_balanced_fv_gravity` flag, not whether the matching well-balanced *reconstruction* had
+   actually run. `SPLIT` mode and `VAN_ALBADA_PP` never call the well-balanced reconstruction
+   (only `_evolve_gas_state_unsplit_inner`'s non-`VAN_ALBADA_PP` branch does), so without a
+   matching guard on the source, those combinations would pair a well-balanced source with a
+   plain (raw-pressure) flux -- cancels nothing, silently worse than either pure option. Fixed:
+   `_gravitational_source_term_along_axis` now gates on `well_balanced_fv_gravity and split ==
+   UNSPLIT and limiter != VAN_ALBADA_PP`, identical to the reconstruction's own condition.
+   Verified: `SPLIT` mode with the flag on vs. off now produce bit-identical output
+   (`max|diff|=0.0` exactly).
+2. **RK-stage time-integration mismatch (the dominant one).** The gravity source was evaluated
+   once from the pre-step state and added once after the *entire* 2-stage SSP-RK2 update (the
+   pre-existing `_gravity_source_presolve`/`_apply_gravity_source` pattern, unchanged since
+   before this project and fine for every *other* FV source, since nothing else is meant to
+   cancel exactly). But the well-balanced reconstruction's embedded `P_eq` flux goes through
+   *both* RK stages, weighted by SSP-RK2's proper 2nd-order scheme. The flux's implicit
+   `-dP_eq/dx` and the source's explicit `+dP_eq/dx` are exactly equal at any single instant, but
+   combining them with *different* time-integration weights stops them from canceling -- a bug
+   that silently defeats the entire well-balanced property. Caught by direct verification, not
+   code review: seeded the *exact* discrete hydrostatic reference (`_hydrostatic_pressure_reference`'s
+   own profile, not the continuum analytic one) as the initial condition and ran a few steps --
+   an ideal well-balanced scheme should hold this at round-off, but the presolve/apply pattern
+   produced `max|v| ~ 6.3e-3`, nowhere near round-off. Fixed by moving the gravity-source
+   evaluation inside the SSP-RK2 `rhs` closure, evaluated at every stage from that stage's own
+   pre-hydro state (matching exactly what the reconstruction uses) -- confirmed the same
+   discrete-equilibrium test then holds `max|v| ~ 3.3e-15` (true float64 round-off).
+
+**Verification (venv_grav_source, GPU-pinned, `jax_enable_x64`, N_XY=8/16/32 paired with N_Z=8x
+that for uniform grid spacing, `T_END=4.0`, the M0b column setup):**
+
+- Exact discrete-hydrostatic IC (isolates the algorithm from any IC/reference mismatch): `max|v|`
+  drops from `6.3e-3` (pre-fix, presolve/apply pattern) to `3.3e-15` (post-fix) -- round-off.
+- Realistic continuum IC (`rho = rho0*exp(-phi/c_s^2)`, the actual M0b test's IC, which is *not*
+  exactly the discrete `P_eq` reference -- some residual expected from that quadrature mismatch
+  alone): at `N_XY=8, N_Z=64`, core Mach drops `0.1103 -> 1.68e-4` (~656x), core density drift
+  `0.0223 -> 2.06e-3` (~11x), relative to the plain (non-well-balanced, but still the
+  momentum-conservative face-based) source.
+- Resolution scan of the well-balanced continuum-IC residual, `N_XY=8/16/32` (`N_Z=64/128/256`):
+  core Mach `1.68e-4 / 4.56e-5 / 1.15e-5` -- shrinks ~4x per doubling, i.e. ordinary 2nd-order
+  truncation error (the continuum-IC-vs-discrete-P_eq quadrature mismatch), confirming this is
+  *not* the old resolution-independent structural bias.
+- Full existing pytest (`pytests/stratified_ism/stratified_hydrostatic_column.py`,
+  `well_balanced_fv_gravity` left at its default `False`) re-run unmodified at its calibrated
+  `N_XY=64, N_Z=512`: still passes cleanly (exit 0, no assertion failures) -- the default
+  (opt-out) path is unaffected, as intended.
+- `pytests/stratified_ism/stratified_column_thermal_collapse.py`'s pytest (the only *other*
+  FV-self-gravity test in the repo with hard assertions -- mass conservation, midplane/edge n_H
+  growth, K&I-equilibrium tracking) re-run unmodified at its calibrated `N_XY=32, N_Z=256`: also
+  passes cleanly (exit 0, all 7 assertions held) -- confirms the momentum-conservative face-based
+  default source (inherited from the crashed session, predates this session's two bug fixes) is
+  not a regression there either.
+
+**Scope, still not done:** `M4`/`M5`/`M6`'s exploratory SILCC-ISM scripts
+(`m4_stratified_column_sn_driving_delayed_cooling.py`, `m5_cr_driven_outflow.py`,
+`m6_sn_placement_comparison.py`) have no hard assertions (just "no NaNs by t_end" prints) and were
+not re-run -- lower priority since nothing there can "fail" in a way pytest would catch, but a
+future qualitative check (do the plots still look physically sensible) wouldn't hurt.
+
 ## Where things stand (2026-09-18, latest: ladder item 19 -- div(B) preservation, DONE (FV scope))
 
 **Scope finding: "both schemes" is only half-testable, and this is pre-existing, not new.**
