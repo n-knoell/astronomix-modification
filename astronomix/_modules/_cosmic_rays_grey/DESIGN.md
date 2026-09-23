@@ -1407,19 +1407,16 @@ this module's own directory, since it is general MHD infrastructure with no CR c
 solution, genuinely nonzero velocity and non-uniform transverse B (unlike item 3's own choice).
 Grid `(2N, N, N)` at `N=8` and `N=16`, `C_cfl=0.4`, `t_end=5.0` (5 full periods), float64.
 
-**Finding 1: energy does not close to literal round-off, but the residual is real, resolution-
-convergent truncation error, not a conservation bug.** `N=8`: relative energy error `6.33e-6`.
-`N=16`: `2.29e-6` -- shrinks with resolution. Mass conserved exactly (`0.0` relative error) at
-both, as expected for a flux-conservative FV scheme under periodic BCs -- energy is not, which
-points at the Strang split between the gas Riemann solve and the magnetic-field update in
-`_evolve_state_fv` (`astronomix/_finite_volume/_state_evolution/evolve_state.py`) as the source (a
-different, non-CR-specific instance of the same category of small operator-split residual ladder
-item 3's own anisotropic-flux-projection split already produces for a CR-specific reason).
-**Consequence for item 18: "closes to round-off" should be designed around as "closes to a small,
-resolution-limited residual consistent with the scheme's own order of accuracy" whenever MHD is
-included, not literal machine precision** -- contrast the SN-driving module's own exact energy
-check, which reaches genuine round-off only because it is pure hydro with `fixed_timestep=True`
-and carries no MHD at all.
+**Finding 1 (corrected 2026-09-23): energy closes to round-off -- the ~1e-6 first measured was the
+magnetic update's fixed-point tolerance, not truncation error.** As first run (default
+`numerical_precision=SINGLE_PRECISION`): `N=8` -> `6.33e-6`, `N=16` -> `2.29e-6`, originally read as
+Strang-split truncation error. Instrumenting every sub-step of a real `time_integration` run (see
+"Resolved: ladder item 18 (MHD extension)" below) showed both gas half-steps conserve
+thermal+kinetic energy to `~1e-14`, and all of the residual comes from `magnetic_update`'s
+implicit-midpoint fixed-point loop, which stops on `1e-5` under `SINGLE_PRECISION` even in float64
+runs. With `numerical_precision=DOUBLE_PRECISION` (`1e-10`): `N=8` -> `7.5e-12`, `N=16` -> `2.1e-12`.
+Mass conserved exactly throughout. The test now runs with `DOUBLE_PRECISION` and `tol=1e-9`; its
+old "must shrink with resolution" assertion (encoding the wrong explanation) was removed.
 
 **Finding 2: a real, previously-unknown, and significant bug in shared (non-CR) diagnostic
 infrastructure -- found and, per explicit user request, fixed (2026-09-18).**
@@ -1457,12 +1454,9 @@ injection and streaming/collisional-loss accounting." **Scope, user-confirmed: h
 now** -- both magnetic energy and collisional-loss accounting, named in the plan's own wording,
 are deliberately deferred rather than silently assumed done:
 
-- **Magnetic energy deferred.** The companion MHD-only baseline check (previous section) already
-  showed plain MHD (CR off) carries its own non-round-off truncation residual (~1e-6 to 2e-6), and
-  no CR-grey ladder test has ever combined CR feedback with dynamic MHD. Bundling both into a
-  first item-18 attempt would make any failure impossible to attribute to CR coupling vs. the
-  pre-existing MHD residual -- deferred to a follow-on, likely worth doing alongside item 19
-  (which needs MHD regardless).
+- **Magnetic energy deferred** (done since -- see "Resolved: ladder item 18 (MHD extension)"
+  below). At the time the MHD-only baseline appeared to carry a ~1e-6 truncation residual; that
+  later turned out to be the magnetic update's fixed-point tolerance.
 - **Collisional-loss accounting deferred, because it doesn't exist.** Checked directly:
   `cr_grey_sources.py` has exactly 4 source terms (`cr_pressure_gradient_source`,
   `cr_adiabatic_work_source`, `cr_flux_relaxation_source`, `cr_streaming_heating_source`) -- none
@@ -1499,6 +1493,60 @@ band), and disabling streaming heating changes the final state by many orders of
 than the round-off floor, visibly shifting the thermal/kinetic/CR partition in the diagnostic
 plot (`pytests/cosmic_rays_grey/pics/cr_energy_budget_test.svg`).
 
+
+## Resolved: ladder item 18 (MHD extension) (2026-09-23)
+
+Closes the magnetic half of item 18 that the hydro+CR section above deferred. Collisional losses
+remain N/A (not implemented as a dynamical `e_cr` sink).
+
+**Where MHD energy error actually came from.** Before building the CR test, re-examined the
+MHD-only baseline's `~1e-6` residual by wrapping `_evolve_gas_state_unsplit` and `magnetic_update`
+in a real `time_integration` run (CP Alfven wave, `N=8`, 92 steps) with `jax.debug.callback`s
+logging each sub-step's energy change: gas half-steps summed to `+8.5e-14`, `magnetic_update` to
+`+4.28e-3` -- the whole residual. The Pang & Wu implicit-midpoint update is exactly
+energy-conserving at convergence: with the centered `jnp.roll` curl (`_vector_maths.curl3D`),
+`sum(B . curl W) = sum(W . curl B)` on a periodic grid, so `-dt sum[v_mid.(B_mid x J_mid) +
+B_mid.curl(B_mid x v_mid)] = 0` (measured `-2.9e-16` over the run). But the iterate returned
+missed the midpoint equations by `~3e-7-1.4e-6`: the loop stops after 4-5 iterations because
+`config.numerical_precision` -- read *only* in `magnetic_update` -- defaults to
+`SINGLE_PRECISION`, i.e. a `1e-5` stopping tolerance regardless of `jax_enable_x64`. Patching the
+`DOUBLE_PRECISION` branch's constant had no effect for exactly that reason, which is how this was
+first spotted. Implications: (1) any float64 MHD run in this codebase that doesn't set
+`numerical_precision=DOUBLE_PRECISION` gets a single-precision-quality magnetic update; (2) the
+pre-existing `mhd_energy_conservation.py` conclusion was wrong and has been corrected (previous
+section).
+
+**How CR-grey couples to B.** Only `anisotropic_flux_projection` reads B, and it rewrites `F_cr`
+without moving energy. Streaming (`streaming_flux_target`, `cr_streaming_heating_source`) uses the
+isotropic `reduced_streaming_speed`, not the Alfven speed. All CR source terms sit in the gas
+half-steps (B split out); DSA runs on the full state. So the new energy path is indirect: CR
+pressure reshapes the velocity field, which then exchanges energy with B in `magnetic_update`.
+`magnetic_update` hardcodes `gamma=5/3` in its thermal-energy bookkeeping, but it only swaps kinetic
+energy at fixed thermal pressure, so the constant cancels exactly.
+
+**New `pytests/cosmic_rays_grey/cr_mhd_energy_budget.py`.** `cr_energy_budget.py`'s periodic,
+fixed-timestep CR-DSA Sedov blast (48^3, 400 steps, `t_end=0.07`) threaded by uniform `B_x=0.2`,
+`numerical_precision=DOUBLE_PRECISION`, DSA + streaming + anisotropic transport on. Relative
+error on thermal + kinetic + magnetic + CR:
+
+    MHD only (CR off)                          1.35e-13
+    MHD + CR, isotropic transport              1.39e-13
+    MHD + CR, anisotropic transport (main)     1.40e-13
+    same, default SINGLE_PRECISION tolerance   1.55e-8
+
+Mass `3e-16`. Channels active: `E_mag` 0.0200 -> 0.0237 (`|dE_mag|/E_tot = 3.7e-3`), `E_cr/E_tot =
+0.019`; anisotropic-vs-isotropic states differ well above round-off. Asserts `tol=1e-9` on every
+double-precision configuration and that the single-precision tolerance run is `>10x` worse (keeps
+the explanation above pinned). Plot: `pytests/cosmic_rays_grey/pics/cr_mhd_energy_budget_test.svg`.
+
+**Not changed (flagged for a decision):** `magnetic_update` could pick its tolerance from the array
+dtype instead of `config.numerical_precision`, which would make float64 MHD runs conserve energy by
+default. That's a shared-solver behavior change (more fixed-point iterations per step, slightly
+different results in every existing float64 MHD run), so it was left alone. Also noticed in
+passing: `time_integration._prepare_padded_state` applies the gas boundary handler to
+`primitive_state[:-3]` under MHD, which assumes B is in the last 3 rows -- with CR-grey registered
+after B that slice is `rho..B..e_cr` (not `F_cr`). Harmless for periodic boxes (ghost copy only);
+untested for MHD+CR with non-periodic boundaries.
 ## Resolved: ladder item 19 -- div(B) preservation (2026-09-18)
 
 Item 19: "∇·B preservation unaffected by the CR module (both schemes)." **Scope finding: "both

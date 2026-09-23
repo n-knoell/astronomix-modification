@@ -7,17 +7,12 @@ injection and streaming/collisional-loss accounting").
 the plan's item 18 wording names are deliberately deferred, both flagged
 rather than silently assumed:
 
-1. **Magnetic energy** -- not included here. The companion baseline check
-   (`pytests/mhd/mhd_energy_conservation.py`) established that even *plain*
-   MHD (CR off) does not close to literal round-off -- it carries a small,
-   resolution-convergent truncation-error residual (~1e-6 to 2e-6 over 5
-   wave periods at N=8/16), from the Strang split between the gas Riemann
-   solve and the magnetic-field update in `_evolve_state_fv`. No CR-grey
-   ladder test has ever combined CR feedback with dynamic MHD. Bundling
-   both into a first item-18 attempt would make any failure impossible to
-   attribute to CR coupling vs. the pre-existing MHD residual, so MHD is
-   deferred to a follow-on (naturally relevant to item 19's own div-B
-   check too).
+1. **Magnetic energy** -- not included here; done since (2026-09-23) in
+   `cr_mhd_energy_budget.py`, which closes the thermal + kinetic + magnetic
+   + CR budget to ~1e-13. (The ~1e-6 plain-MHD residual that originally
+   motivated deferring it turned out to be the magnetic update's fixed-point
+   tolerance under the default `numerical_precision=SINGLE_PRECISION`, not
+   Strang-split truncation error -- see that file's docstring.)
 2. **Collisional losses** (hadronic/Coulomb on protons; synchrotron/IC/
    Coulomb/bremsstrahlung on electrons, plan Sec. 2 "Losses") -- not
    implemented anywhere in this module as a dynamical sink on `e_cr`

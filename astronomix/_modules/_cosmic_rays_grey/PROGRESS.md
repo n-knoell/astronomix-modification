@@ -4,7 +4,33 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Where things stand (2026-09-22, latest: Phase D -- gradient-based inference demo, both D1 and D2 done)
+## Where things stand (2026-09-23, latest: ladder item 18 MHD extension -- DONE, closes to ~1e-13)
+
+**Item 18 now covers thermal + kinetic + magnetic + CR.** New
+`pytests/cosmic_rays_grey/cr_mhd_energy_budget.py`: item 18's periodic, fixed-dt CR-DSA Sedov blast
+(48^3, 400 steps) threaded by uniform `B_x=0.2`, DSA + streaming + anisotropic transport on,
+`numerical_precision=DOUBLE_PRECISION`. Relative total-energy error `1.40e-13` (isotropic
+transport `1.39e-13`, CR-off MHD control `1.35e-13`); mass `3e-16`. `E_mag` 0.0200 -> 0.0237,
+`E_cr/E_tot=0.019`. Passes (GPU 0, float64).
+
+**The ~1e-6 "MHD truncation residual" from 2026-09-18 was misdiagnosed -- it's the magnetic
+update's fixed-point tolerance.** Instrumented a real `time_integration` run's sub-steps: gas
+half-steps conserve energy to `~1e-14`, all of the residual is in `magnetic_update`, whose
+implicit-midpoint scheme is exactly conservative at convergence (discrete summation by parts,
+`-2.9e-16`) but whose loop stops at `1e-5` because `config.numerical_precision` defaults to
+`SINGLE_PRECISION` even under `jax_enable_x64`. Same run with that default: `1.55e-8`. Plain-MHD
+baseline (`pytests/mhd/mhd_energy_conservation.py`) re-run with `DOUBLE_PRECISION`: `7.5e-12`
+(N=8) / `2.1e-12` (N=16), was `6.3e-6` / `2.3e-6`; its docstring, tolerance (`1e-5` -> `1e-9`) and
+the "must shrink with resolution" assertion were corrected. `cr_energy_budget.py`'s docstring
+updated to point here.
+
+**Open, not changed (needs a decision):** making `magnetic_update` choose its tolerance from the
+array dtype would give every float64 MHD run the conserving behavior by default, but changes
+shared-solver results. Also flagged: `_prepare_padded_state`'s `[:-3]` slice assumes B is last,
+wrong with CR-grey rows after B (harmless for periodic BCs). Full write-up: DESIGN.md's
+"Resolved: ladder item 18 (MHD extension)".
+
+## Where things stand (2026-09-22, Phase D -- gradient-based inference demo, both D1 and D2 done)
 
 **Phase D (plan Sec. 1: "gradient-based inference demo (fit kappa / injection efficiency to a
 synthetic map)") is done.** Split into D1 (kappa) and D2 (injection efficiency) since they carry

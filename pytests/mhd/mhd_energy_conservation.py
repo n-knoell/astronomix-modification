@@ -20,28 +20,30 @@ non-uniform, evolving transverse B, unlike ladder item 3's static-B,
 `v=0` anisotropic-transport setup, which never lets the induction equation
 do real work).
 
-**Result: total energy does NOT close to literal round-off, but the
-residual is real truncation error, not a conservation bug.** Measured (5
-full wave periods, `t_end=5.0`, `C_cfl=0.4`, float64):
+**Result: total energy closes to round-off, provided the magnetic update's
+fixed-point iteration is asked for the double-precision tolerance.**
+Measured (5 full wave periods, `t_end=5.0`, `C_cfl=0.4`, float64), mass
+conserved exactly at both resolutions:
 
-    N=8  (grid 16x8x8):  relative energy error 6.33e-6
-    N=16 (grid 32x16x16): relative energy error 2.29e-6
+    numerical_precision   N=8 (16x8x8)   N=16 (32x16x16)
+    SINGLE_PRECISION      6.33e-6        2.29e-6
+    DOUBLE_PRECISION      7.5e-12        2.1e-12
 
-Mass is conserved *exactly* (relative error `0.0`) at both resolutions --
-expected for a flux-conservative FV scheme under periodic BCs. Energy is
-not, but the error shrinks with resolution (consistent with the Strang
-split between the gas Riemann solve and the magnetic-field update in
-`_evolve_state_fv`, `astronomix/_finite_volume/_state_evolution/
-evolve_state.py` -- the same split ladder item 3's own docstring already
-flagged as leaving "a small, per-step, non-accumulating residual" for a
-different, CR-specific reason). This is the honest baseline item 18 needs
-to design against: "closes to round-off" should be read as "closes to a
-small, resolution-limited residual consistent with the scheme's own order
-of accuracy," not literal machine precision, whenever MHD is in play --
-unlike the SN-driving module's own exact energy check
-(`pytests/stratified_ism/sn_driving_energy_conservation.py`), which reaches
-genuine round-off only because it is pure hydro with `fixed_timestep=True`
-and no MHD.
+This test originally ran with the default `SINGLE_PRECISION` and read the
+~1e-6 residual as Strang-split truncation error. Instrumenting every sub-step
+of the real `time_integration` loop (2026-09-23) showed that was wrong: both
+gas half-steps conserve thermal+kinetic energy to ~1e-14, and the whole
+residual comes from `magnetic_update` (Pang & Wu implicit midpoint). That
+update is exactly energy-conserving at convergence -- its centered,
+`jnp.roll`-based curl obeys discrete summation by parts on a periodic grid,
+so the midpoint kinetic and magnetic energy changes cancel identically
+(-2.9e-16 summed over a run) -- but its fixed-point loop stops on a tolerance
+picked by `config.numerical_precision`, the only place in the code that
+reads that flag. The default `SINGLE_PRECISION` gives 1e-5 even when
+`jax_enable_x64` is on, so every step stopped 4-5 iterations in, with a
+~1e-6 midpoint residual. This test therefore runs with `DOUBLE_PRECISION`.
+Ladder item 18's MHD extension (`pytests/cosmic_rays_grey/
+cr_mhd_energy_budget.py`) builds on this.
 
 **Real bug found and fixed along the way (general infrastructure, not
 CR-specific): the shared diagnostic
@@ -86,7 +88,7 @@ import matplotlib.pyplot as plt
 
 # astronomix containers
 from astronomix import FINITE_VOLUME, SimulationConfig, SimulationParams
-from astronomix.option_classes.simulation_config import StaticIntVector
+from astronomix.option_classes.simulation_config import DOUBLE_PRECISION, StaticIntVector
 
 # astronomix functions
 from astronomix.test_setups.mhd.alfven_wave3D import (
@@ -99,9 +101,8 @@ from astronomix.data_classes.simulation_helper_data import get_helper_data
 from astronomix._fluid_equations.total_quantities import calculate_total_energy
 
 # Tight comparisons below need 64-bit precision (same rationale as
-# cr_gradient_check.py) -- the measured residuals are ~1e-6, well below
-# float32's own ~1e-7 per-op noise floor accumulated over ~1e3-1e4 cells and
-# many steps.
+# cr_gradient_check.py) -- the measured residuals are ~1e-12, far below
+# float32's own ~1e-7 per-op noise floor.
 jax.config.update("jax_enable_x64", True)
 
 
@@ -135,7 +136,11 @@ def _total_mass(state, config, registered_variables):
 def _run(N: int, t_end: float, c_cfl: float = 0.4):
     """Run the CP Alfven wave at grid (2N, N, N); return the initial state,
     final state, config, params, registered_variables."""
-    config = SimulationConfig(solver_mode=FINITE_VOLUME, num_cells=StaticIntVector(2 * N, N, N))
+    config = SimulationConfig(
+        solver_mode=FINITE_VOLUME,
+        num_cells=StaticIntVector(2 * N, N, N),
+        numerical_precision=DOUBLE_PRECISION,
+    )
     params = SimulationParams(C_cfl=c_cfl)
     settings = CPAlfvenWave3DSettings(t_end=t_end)
 
@@ -146,7 +151,7 @@ def _run(N: int, t_end: float, c_cfl: float = 0.4):
     return initial_state, final_state, config, params, registered_variables
 
 
-def test_mhd_energy_conservation(tol: float = 1e-5):
+def test_mhd_energy_conservation(tol: float = 1e-9):
     """Baseline (CR-off) MHD energy conservation, at two resolutions, over
     five full CP-Alfven-wave periods.
 
@@ -178,15 +183,6 @@ def test_mhd_energy_conservation(tol: float = 1e-5):
             f"rel. err {rel_energy_err:.3e} >= tol {tol}."
         )
 
-    # The residual should shrink with resolution (truncation error), not
-    # sit at a fixed floor (which would instead point to a genuine
-    # conservation bug) -- see module docstring.
-    assert rel_errs[16] < rel_errs[8], (
-        f"Energy-conservation error did not improve with resolution "
-        f"(N=8: {rel_errs[8]:.3e}, N=16: {rel_errs[16]:.3e}) -- "
-        "expected truncation-error behavior, possibly a real bug."
-    )
-
     # Regression guard for the calculate_total_energy fix (see module
     # docstring): its own output must match this test's independent
     # thermal+kinetic+magnetic calculation, not just "be close".
@@ -212,7 +208,7 @@ def test_mhd_energy_conservation(tol: float = 1e-5):
     ax_conv.axhline(tol, color="k", linestyle=":", label=f"tol = {tol:.0e}")
     ax_conv.set_xlabel("N (grid: 2N x N x N)")
     ax_conv.set_ylabel("relative energy error")
-    ax_conv.set_title("Shrinks with resolution -> truncation error")
+    ax_conv.set_title("Round-off at both resolutions\n(DOUBLE_PRECISION fixed-point tolerance)")
     ax_conv.legend()
 
     ax_bug.bar(

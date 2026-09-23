@@ -147,7 +147,10 @@ def inject_crs_at_shocks(
     dsa_efficiency_model`` -- is diverted from the gas thermal channel into
     ``e_cr`` instead -- exact, local energy conservation (kinetic
     energy/velocity untouched; only the portion of thermal energy the shock
-    would have deposited this step is repartitioned). Cartesian, uniform
+    would have deposited this step is repartitioned), **except when the
+    nominal amount would drive that cell's gas pressure below
+    ``params.minimum_pressure``, in which case the diverted amount is capped
+    so it doesn't** -- see the positivity-floor note below. Cartesian, uniform
     ``grid_spacing`` only for now
     (matches every grey-CR ladder test to date, and the plan's own FV-first
     staging): a shock cell's cross-sectional area is
@@ -198,13 +201,35 @@ def inject_crs_at_shocks(
     started = current_time >= cr_params.dsa_start_time
     delta_e_cr_density = jnp.where(started, delta_e_cr_density, 0.0)
 
+    # Positivity floor: cap the diverted amount so p_gas_new can never drop
+    # below params.minimum_pressure, mirroring the identical fix applied to
+    # _apply_gravity_source (SILCC-ISM project M5 root cause -- see
+    # DESIGN.md/PROGRESS.md). Without this, a shock-surface cell whose gas
+    # pressure is already near the floor (e.g. a still-near-vacuum cell right
+    # at the edge of a freshly-seeded, extremely fast wind/SN injection, where
+    # find_shocks_pfrommer can report a very large apparent Mach number) can
+    # have far more energy diverted than it actually has -- driving pressure
+    # sharply negative and NaN-ing the very next Riemann solve. Bounding
+    # delta_e_cr_density itself (rather than clamping p_gas_new after the
+    # fact) keeps the e_cr/p_gas exchange exactly self-consistent: whatever
+    # amount e_cr actually gains is exactly what gas thermal energy loses,
+    # even in the clamped case.
+    p_gas_pre = primitive_state[registered_variables.pressure_index]
+    max_available = jnp.maximum(p_gas_pre - params.minimum_pressure, 0.0) / (
+        gamma_gas - 1.0
+    )
+    delta_e_cr_density = jnp.minimum(delta_e_cr_density, max_available)
+
     e_cr_new = (
         primitive_state[registered_variables.cosmic_ray_e_index] + delta_e_cr_density
     )
-    p_gas_new = (
-        primitive_state[registered_variables.pressure_index]
-        - delta_e_cr_density * (gamma_gas - 1.0)
-    )
+    p_gas_new = p_gas_pre - delta_e_cr_density * (gamma_gas - 1.0)
+    # max_available above bounds p_gas_new >= minimum_pressure only exactly
+    # in infinite precision -- floating-point roundoff in this subtraction
+    # can still leave it a hair below (observed: ~-4.5e-13), which is enough
+    # for speed_of_sound's unguarded sqrt(gamma*p/rho) to NaN. Re-clamp here
+    # to make the floor exact rather than "exact up to roundoff".
+    p_gas_new = jnp.maximum(p_gas_new, params.minimum_pressure)
 
     primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(
         e_cr_new
