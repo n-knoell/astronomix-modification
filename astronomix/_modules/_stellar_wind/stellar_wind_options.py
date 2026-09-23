@@ -31,6 +31,20 @@ class WindConfig(NamedTuple):
     #: Only supported by the 3D EI scheme (``_wind_ei3D`` / ``_wind_ei3D_source``).
     real_wind_params: bool = False
 
+    #: After the EI source term, overwrite an extended "wind zone" around each
+    #: source with the analytic freely-expanding, adiabatically-cooled wind
+    #: (``rho = Mdot / (4 pi r^2 v_inf)``, radial ``v_inf`` relative to the
+    #: source, ``p = rho * T0 * (r0 / r)**(2 (gamma - 1))``), every step. Lets
+    #: the wind arrive at the collision region with the thermal state it would
+    #: have after expanding from the (unresolvable) photosphere, instead of
+    #: the far too hot state a numerically large injection sphere produces
+    #: (see pytests/shock_finder3D/FIXES_TODO.md, rounds 12 and 18). The zone
+    #: radius is ``WindParams.wind_zone_stagnation_fraction`` times each
+    #: source's distance to its nearest stagnation point. Only supported by
+    #: the 3D EI scheme on the finite-volume path; ``False`` leaves the
+    #: default injection untouched.
+    analytic_wind_zone: bool = False
+
 
 class WindParams(NamedTuple):
     # Single-source parameters, used by the 1D injection schemes
@@ -62,6 +76,25 @@ class WindParams(NamedTuple):
     #: ``wind_mass_loss_rates`` / ``wind_final_velocities`` when
     #: ``config.wind_config.real_wind_params``.
     real_params: Union[Tuple, None] = None
+
+    #: Analytic wind zone (``WindConfig.analytic_wind_zone``) only. Per-source
+    #: wind base radius ``r0`` (code length, e.g. the photospheric radius) and
+    #: base pseudo-temperature ``T0 = p / rho`` at ``r0`` (code units, the
+    #: same convention the shock finder's Mach estimate uses), shapes
+    #: (n_sources,). Anchor the adiabatic law ``T(r) = T0 (r0 / r)**(2 (gamma - 1))``.
+    wind_base_radii: jnp.ndarray = jnp.array([1.0])
+    wind_base_temperatures: jnp.ndarray = jnp.array([0.0])
+
+    #: Analytic wind zone only. Each source's zone radius is this fraction of
+    #: its distance to the nearest ram-pressure stagnation point (the point
+    #: between two sources where ``Mdot_i v_i / r_i**2`` balance), clipped to
+    #: at least the EI injection radius and at most ``wind_zone_max_radius``.
+    #: Keep it in (0, 1) so zones never overlap and ordinary hydro cells
+    #: remain in front of the shock. With a single source there is no
+    #: stagnation point and the zone radius is ``wind_zone_max_radius``,
+    #: which must then be set to a finite value.
+    wind_zone_stagnation_fraction: float = 0.5
+    wind_zone_max_radius: float = float("inf")
 
     #: Set internally, once per step, by the time-integration loop (see
     #: astronomix.time_stepping.time_integration) to the current simulation

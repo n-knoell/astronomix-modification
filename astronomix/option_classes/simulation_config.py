@@ -34,7 +34,7 @@ from astronomix._modules._neural_net_force._neural_net_force_options import (
     NeuralNetForceConfig,
 )
 from astronomix._modules._sn_driving.sn_driving_options import SNDrivingConfig
-from astronomix._modules._stellar_wind.stellar_wind_options import WindConfig
+from astronomix._modules._stellar_wind.stellar_wind_options import EI, WindConfig
 from astronomix._modules._turbulent_forcing._turbulent_forcing_options import TurbulentForcingConfig
 
 # ===================== constant definition =====================
@@ -957,6 +957,21 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
             "For stellar wind simulations, we need source term aware timesteps, turning on."
         )
         config = config._replace(source_term_aware_timestep=True)
+
+    # The analytic wind zone (stellar_wind._analytic_wind_zone) is only wired
+    # into the 3D EI finite-volume injection; anywhere else it would silently
+    # do nothing.
+    if config.wind_config.analytic_wind_zone and not (
+        config.wind_config.stellar_wind
+        and config.dimensionality == 3
+        and config.wind_config.wind_injection_scheme == EI
+        and config.solver_mode == FINITE_VOLUME
+    ):
+        raise ValueError(
+            "wind_config.analytic_wind_zone requires stellar_wind=True, "
+            "dimensionality == 3, wind_injection_scheme == EI and "
+            "solver_mode == FINITE_VOLUME."
+        )
 
     # The N-body -> gas mass-deposition kernels (NGP/CIC/TSC) are 3D-only.
     if (

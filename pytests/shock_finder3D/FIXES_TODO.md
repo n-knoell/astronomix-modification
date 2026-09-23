@@ -2,28 +2,44 @@
 
 Origin: investigating why `cwb_shocked_cells_2d_256.png`'s Mach numbers looked
 qualitatively right but capped at max ~7, when the CWB wind-termination shock
-is physically ~Mach 100. Turned into two separate threads: (1) real bugs in
-the Pfrommer shock-finder formalism, and (2) the CWB test's solver
-configuration was silently unstable, and separately (3) a real, now-fixed
-dimensional bug in the 3D stellar-wind injection module. None of that
-unblocks (4): **the CWB sim does not run clean at any tested N (64/128/256)**
-— a genuine numerical-stability problem, pre-existing (not caused by item
-3's fix — see item 4), and resistant to five different well-motivated fixes
-tried across two sessions. This is the priority blocker: nothing past it can
-be properly re-validated until the sim runs cleanly.
+is physically ~Mach 100. Split into four threads: (1) the Pfrommer
+shock-finder formalism, (2) the CWB test's silently-diffusive solver config,
+(3) a dimensional bug in the 3D stellar-wind injection module, and (4) the
+CWB sim going to NaN.
 
-**Repo state right now:** `_shock_surface.py` (items 1c/1d only — item 1a was
-reverted, see below), `stellar_wind.py` (item 3) and `_cwb_setup.py` all have
-uncommitted changes. `_shock_mach.py`, `_shock_zones.py` and
-`pfrommer_shock_finder.py` are back to `HEAD` (item 1a's fix removed — it
-turned out to break a real running simulation, see item 1a below; this was
-found while working on an unrelated module, the CR-grey ladder, which shares
-`find_shocks_pfrommer`). The tracked `cwb_shocked_cells_2d_256.png` /
-`_3d_256.png` still show the *broken* (all-NaN → empty) result from an early
-mid-investigation state — unchanged, since the sim still doesn't run clean
-(item 4). `..._256a.png` are the pre-change (old `HLL`/first-order,
-Mach-capped-at-~7) reference plots, kept for comparison; delete once no
-longer needed.
+**Current status (updated 2026-09-23, after round 18):**
+- **1c / 1d, 2, 3: done.**
+- **1a: superseded.** The original zone-edge-walk fix was reverted (it broke a
+  live sim); the adaptive walk-until-plateau sampling from rounds 10–16
+  (`dd7a5ae`) replaces it.
+- **1b (Mach sampling formalism): fixed** (rounds 10–17) and validated
+  quantitatively against Sedov (~10% of the exact Mach number).
+- **1b (the CWB Mach gap itself): fully diagnosed, fix not implemented**
+  (round 18). The measured Mach ~10 is *correct* for the simulated field; the
+  pre-shock wind is ~256x hotter than ambient at the point of collision
+  because the wind is injected at a numerically large radius with no
+  adiabatic-cooling history. With that gas at ambient temperature the same
+  jump gives Mach ~143, matching theory. Resolution (64→512), the separation
+  fix, and radiative cooling are all ruled out (rounds 12–14). Proposed fix:
+  impose an analytic free-wind profile (`rho ~ r^-2`, `T ~ r^-4/3`) over an
+  extended wind zone. **Now implemented as the opt-in
+  `WindConfig.analytic_wind_zone` (round 19):** Mach ~1.4x (max) / ~2.4x
+  (median) higher at N=64, but spurious total-energy heating at the zone edge
+  still keeps the pre-shock wind ~20x above ambient.
+- **4 (NaN): worked around, not fixed.** The stationary binary
+  (`nbody=False`, explicit `wind_injection_positions`) runs clean at
+  N=64/128/256/512 (rounds 8–9, 13) and is what `_cwb_setup.py` now uses.
+  With an orbiting binary (`nbody=True`) the failure is still open; the
+  sharpened question is what about source motion breaks positivity.
+
+**Repo state:** the items 1c/1d/3 changes and the round-16 Mach-sampling fix
+are committed. `_cwb_setup.py` / `cwb_shock_finder.py` currently carry
+uncommitted, unrelated work (grey-CR / DSA coupling for the CWB setup, new
+`*_64.png` CR figures). `cwb_shocked_cells_{2d,3d}_256.png` were last
+regenerated 2026-09-19, i.e. before the rounds 10–17 finder fixes; the
+`*_stat_*` / `_512` figures are the stationary-setup outputs. `..._256a.png`
+are the old `HLL`/first-order, Mach-capped-at-~7 references, kept for
+comparison; delete once no longer needed.
 
 **Running things:** `source ~/venv_grav_source/bin/activate`, then pin a GPU
 manually and no-op `autocvd` (the repo's own `autocvd(num_gpus=1)` hangs
@@ -32,8 +48,8 @@ forever on this shared cluster) — see `verify_wind_fix.py` / `debug_nan2.py`
 pattern; `cwb_param.py` in particular is a parametrized rebuild of
 `_cwb_setup.py` (code-unit scale, `num_injection_cells`, and N-body all
 exposed as arguments) worth reusing rather than rebuilding for the next round
-of experiments. GPUs 2/3 were free and used so far; check `nvidia-smi` fresh
-each session.
+of experiments. Check `nvidia-smi` fresh each session.
+
 
 ---
 
@@ -2475,17 +2491,120 @@ reusing one `run_cwb(64)` call.
 
 ---
 
+## 2026-09-23, round 19: analytic wind zone implemented as an opt-in option — cools the pre-shock wind ~15x and raises Mach ~1.4x (max) / ~2.4x (median), but the hydro solver re-heats the cold wind right at the zone edge
+
+**Implemented (opt-in, default path unchanged):** `WindConfig.analytic_wind_zone`
+(default `False`). When on, `_wind_ei3D` is followed by
+`stellar_wind._analytic_wind_zone`. Every step, that function overwrites each
+source's zone with `rho = Mdot/(4 pi r^2 v_inf)`, a radial `v_inf` (plus the
+source's N-body velocity), and `p = rho T0 (r0/r)^(2(gamma-1))`. New
+`WindParams` fields: `wind_base_radii`, `wind_base_temperatures`
+(code p/rho), `wind_zone_stagnation_fraction` (default 0.5) and
+`wind_zone_max_radius` (default inf; must be finite for a single source).
+Zone radius = fraction x distance to the nearest ram-pressure stagnation
+point, clipped to [EI injection radius, max radius]. `finalize_config`
+rejects the flag unless the run is 3D + EI + FINITE_VOLUME + stellar_wind.
+Unit tests: `pytests/shock_finder3D/analytic_wind_zone.py` (7 cases, all
+pass on CPU). They check that flag-off equals plain `_wind_ei3D`
+bit-for-bit, that in-zone cells match the analytic profile to 1e-5, that
+out-of-zone cells are untouched, and that unsupported configs raise.
+`_cwb_setup.run_cwb(..., analytic_wind_zone=False)` gained the opt-in, with
+base state R0 = 20 Rsun and T0 = 3.5e4 K (the `expected_cwb_mach.py` values).
+
+**N=64 A/B, current `_cwb_setup` (CR on, cooling off), both runs clean:**
+
+| | Mach max | Mach median | Mach p90 | pre-shock T on axis (star-1 side) |
+|---|---|---|---|---|
+| plain EI | 24.65 | 4.36 | 9.71 | ~4600-6000 |
+| analytic zone | 34.16 | 10.38 | 24.99 | ~325-620 |
+
+(T_ambient = 17.45.) Star 1's zone reaches x ~ -0.045. Inside it, the wind
+cools monotonically to T ~ 8 at the zone edge. **At the first hydro cell
+past the edge, T jumps ~75x (8.2 -> 621) with no change in velocity and a
+smooth density.** It then falls adiabatically to ~325 before the shock.
+Even inside the zone, the last hydro step leaves T ~200x above the analytic
+value (8.2 vs 0.036 at r = 0.145). **Not round-off:** rerunning in float64
+reproduces the profile to 3 significant figures. The mechanism is the
+standard high-Mach-number problem of a total-energy scheme. The wind at the
+zone edge is at Mach ~220, so p / (0.5 rho v^2) ~ 2e-5, and ordinary
+discretization error in the kinetic energy (MINMOD-limited reconstruction
+of a diverging radial flow on a Cartesian grid) is large compared with the
+thermal energy. `p = E - KE` absorbs that error as spurious heating.
+So the zone removes the injection-radius part of the problem, but the
+cold wind cannot survive ~4 cells of ordinary hydro between the zone edge
+and the shock.
+
+**Possible next steps (not done):** (a) a larger
+`wind_zone_stagnation_fraction` (e.g. 0.8-0.9), which pushes the edge
+closer to the shock and leaves fewer re-heating cells (cheap, one knob);
+(b) a dual-energy / entropy-based pressure for cold supersonic cells, the
+standard cure for the high-Mach problem but a solver-level change; (c) a
+pressure floor tied to the analytic wind entropy outside the zone (hacky).
+
+Scratch scripts (not committed): `cwb_wind_zone_ab.py`,
+`cwb_wind_zone_x64.py`.
+
+---
+
+## 2026-09-23, round 20: zone fraction 0.9 at N=64 — on-axis pre-shock wind now at ~ambient T and Mach ~130-190, but only for the ~40 surface cells where the zone reaches the shock; plus a separate plain-EI mass-loss bug found
+
+Script (committed): `cwb_analytic_wind_zone.py`, which runs plain EI and
+zone fractions 0.5 and 0.9 through `run_cwb` (new
+`wind_zone_stagnation_fraction` argument). Figures:
+`figures/cwb_wind_zone_{axis_profile,mach_hist,slices}_64.png`.
+
+| | Mach max | median | p90 | zone radii (star 1, star 2) |
+|---|---|---|---|---|
+| plain EI | 24.65 | 4.36 | 9.71 | — |
+| zone f=0.5 | 34.16 | 10.38 | 24.99 | 0.155, 0.045 |
+| zone f=0.9 | 186.65 | 10.69 | 24.83 | 0.279, 0.081 |
+
+All runs finished without NaN. **At f=0.9, star 1's zone edge (x ~ 0.079)
+sits right at the star-1 shock on the axis (x ~ 0.085).** The wind reaches
+the shock at T ~ 14 (ambient 17.45) with a local Mach of ~170, and the
+histogram gets a new cluster of ~40 surface cells at Mach 130-190. This is
+the expected ~130-150 value for the first time. **The median does not move,
+though.** The zone is a sphere, but the bow shock curves away from star 1,
+so off-axis there is still a gap of hydro cells between the zone edge and
+the shock. The cold wind is re-heated in that gap (round 19 mechanism),
+and most of the arc stays at Mach ~10-30. **Caveat:** on the axis, less than
+one hydro cell separates the zone edge from the shock, so the zone may now
+be pinning the apex shock position rather than just feeding it. The apex
+shock moves from x ~ 0.06 (plain) to ~ 0.07 (f=0.5) to ~ 0.085 (f=0.9).
+Going above 0.9 would put the zone on top of the shock.
+
+**Separate bug found in the default `_wind_ei3D` (not fixed; default path
+left untouched on purpose):** the source term is normalised by
+`injection_volume = 4/3 pi (num_injection_cells dx)^3`, but it is only
+applied to cells with `dist <= injection_radius - dx/2`. At N=64
+(`num_injection_cells=2`) that mask holds 12 cells, i.e. **36% of the
+normalisation volume**. So plain EI injects only ~36% of the nominal
+`Mdot` and kinetic luminosity. That matches the measured axis mass flux:
+`rho v` in the plain run is ~0.34x the analytic-zone value at x = -0.1.
+Consequences:
+- plain-EI winds are ~3x weaker than configured in every past CWB round;
+- the plain-vs-zone comparison is not momentum-matched, since the zone
+  uses the full nominal `Mdot`.
+
+The FD-path `_wind_ei3D_source` already normalises by the actual mask
+volume and is not affected. The fix would be to use `sum(mask) * dx^3` as
+the normalisation volume, but it changes the default EI behaviour, so it
+needs your decision.
+
+---
+
 ## Suggested order for next session
 
-1. Investigate item 4 — nothing else can be tested until the sim runs.
-   Formula choice, code units, one limiter epsilon, injection-region size,
-   and N-body are all ruled out (two sessions' worth of testing); start with
-   #3 under item 4 (instrument the actual failing step directly) rather than
-   another blind hypothesis-and-rerun cycle, then sub-cycling if that
-   doesn't pin it down.
-2. Once N=128 (fast) then N=256 run clean with `riemann_solver=HLLC`,
-   `first_order_fallback=False`: re-check the CWB Mach numbers. If item 1b's
-   zone-width bottleneck is still capping Mach well below ~100, do the
-   decoupled-plateau-walk fix described there.
-3. Regenerate `cwb_shocked_cells_2d_256.png` / `_3d_256.png` for real, drop
-   the `_256a.png` reference copies once no longer needed.
+1. **Analytic wind zone follow-up (round 19).** First try the cheap knob:
+   `wind_zone_stagnation_fraction` 0.8-0.9. If the zone-edge re-heating
+   still dominates, decide whether a dual-energy / entropy pressure fix
+   is worth doing at the solver level.
+2. **Only if an orbiting binary is required:** reopen item 4 for
+   `nbody=True`, starting from round 8's hypotheses (moving source changes
+   which cells are freshly injected every step; orbital velocity is a
+   sizeable fraction of `v_inf`; interaction with the open-boundary corner).
+3. **Figures:** regenerate `cwb_shocked_cells_{2d,3d}_256.png` with the
+   current (stationary, round-16-fixed) setup, or replace them with the
+   `_stat_` variants; drop the `_256a.png` references.
+4. **Bookkeeping:** formally close 1a (superseded by `dd7a5ae`) and retitle
+   1b / 4 headings to match the status block at the top.

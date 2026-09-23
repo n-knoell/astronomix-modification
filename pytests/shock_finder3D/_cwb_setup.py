@@ -79,6 +79,11 @@ from astronomix import (
 from astronomix.option_classes import EI, WindConfig, WindParams
 from astronomix.option_classes import NBodyConfig, NBodyParams, NGP
 
+from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
+    CosmicRayGreyConfig,
+    CosmicRayGreyParams,
+)
+
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 
 from astronomix._modules._nbody._nbody import binary_starting_orbits_at_phase
@@ -163,6 +168,28 @@ COOLING_CURVE_PARAMS = schure_cooling(CODE_UNITS)
 
 MACH_MIN = 1.3
 
+# Analytic wind zone (WindConfig.analytic_wind_zone, opt-in via run_cwb's
+# analytic_wind_zone argument; FIXES_TODO.md round 18): the wind's
+# adiabatic-expansion base state, the same illustrative photospheric values
+# expected_cwb_mach.py uses for its adiabatic-ceiling estimate. The base
+# temperature is converted to the code pseudo-temperature p/rho with the same
+# mu = 1 convention as RHO_0/P_0 above.
+WIND_BASE_RADIUS = (20 * u.R_sun).to(CODE_UNITS.code_length).value
+WIND_BASE_TEMPERATURE = (3.5e4 * u.K * const.k_B / const.m_p).to(
+    CODE_UNITS.code_velocity**2
+).value
+WIND_ZONE_STAGNATION_FRACTION = 0.5
+
+# diffusive shock acceleration: inject this fraction of each detected shock's
+# dissipated kinetic-energy flux into e_cr instead of gas thermal energy
+# (CosmicRayGreyParams.dsa_efficiency). Same fixed-efficiency value already
+# calibrated for the wind-blown-bubble ladder item (cr_wind_bubble.py) --
+# reused here rather than re-tuned, since this is a first CR-DSA pass on the
+# CWB setup, not a new calibration exercise. dsa_mach_min reuses MACH_MIN
+# above so the injected-CR population matches exactly the shocks the finder
+# itself reports.
+DSA_EFFICIENCY = 0.1
+
 # box-centered coordinates (box center at the origin), same convention as
 # helper_data.geometric_centers - box_center; see
 # astronomix._modules._stellar_wind.stellar_wind._wind_source_distances.
@@ -188,6 +215,17 @@ v_inf1 = wind_velocity_1.to(CODE_UNITS.code_velocity).value
 v_inf2 = wind_velocity_2.to(CODE_UNITS.code_velocity).value
 inclination_deg = float(jnp.rad2deg(jnp.arccos(cos_inclination)))
 
+# CosmicRayGreyParams.reduced_streaming_speed's global default (1.0) is a
+# placeholder (see DESIGN.md's open questions) that is nowhere near this
+# setup's actual velocity scale: v_inf1/v_inf2 above are ~826/~694 in the
+# same code units. Left at the default, the CR two-moment system's own
+# characteristic signal speed is ~800x slower than the wind that advects its
+# e_cr/F_cr state -- the same "reduced_streaming_speed undercut by the real
+# flow speed" failure mode already documented for the SILCC-ISM project (see
+# this module's CR-grey PROGRESS.md, 2026-09-16 M5 entry), just far more
+# extreme here. Set comfortably above both terminal wind speeds instead.
+REDUCED_STREAMING_SPEED = 1000.0
+
 CROSSING_TIME_SAFETY_MARGIN = 1.1
 furthest_edge_distance = ((BOX_SIZE / 2 + SEPARATION / 2)**2 + (BOX_SIZE / 2)**2 + (BOX_SIZE / 2)**2)**0.5
 wind_crossing_time = furthest_edge_distance / min(v_inf1, v_inf2)
@@ -206,11 +244,37 @@ nbody_state = binary_starting_orbits_at_phase(
 )
 
 
-def run_cwb(num_cells):
+def run_cwb(
+    num_cells,
+    dsa_efficiency=DSA_EFFICIENCY,
+    analytic_wind_zone=False,
+    wind_zone_stagnation_fraction=WIND_ZONE_STAGNATION_FRACTION,
+):
     """Run one 3D stationary colliding-wind-binary simulation and find its shocks.
+
+    Grey two-moment cosmic rays are always active (``grey_cosmic_rays=True``,
+    ``diffusive_shock_acceleration=True``) so the registered-variable layout
+    (and hence array shapes/indices) is identical across calls -- only
+    ``dsa_efficiency`` varies between a CR-off control (``dsa_efficiency=0``,
+    DSA code path live but injecting nothing) and a CR-on run. Everything
+    else about the physical setup (wind/ambient/cooling/resolution/BCs) is
+    unchanged from the original hydro-only CWB setup.
 
     Args:
         num_cells: The number of cells per dimension (cubic domain).
+        dsa_efficiency: Fraction of each detected shock's dissipated
+            kinetic-energy flux diverted into ``e_cr`` (diffusive shock
+            acceleration). ``0.0`` gives a CR-free control run with the same
+            state layout as a CR-on run.
+        analytic_wind_zone: Overwrite an extended zone around each star with
+            the analytic adiabatically-cooled free wind every step
+            (``WindConfig.analytic_wind_zone``, base state
+            ``WIND_BASE_RADIUS`` / ``WIND_BASE_TEMPERATURE``). ``False`` is
+            the plain EI injection.
+        wind_zone_stagnation_fraction: Zone radius as a fraction of each
+            star's distance to the stagnation point
+            (``WindParams.wind_zone_stagnation_fraction``). Only read when
+            ``analytic_wind_zone`` is on.
 
     Returns:
         A dict with the final primitive ``state``, the ``config``,
@@ -296,12 +360,16 @@ def run_cwb(num_cells):
             num_injection_cells=num_cells // 32,
             # wind_injection_scheme=EI,
             trace_wind_density=False,
+            analytic_wind_zone=analytic_wind_zone,
         ),
         
         nbody_config=NBodyConfig(
             nbody=False,
             deposit_particles=NGP,
             central_object_only=False,
+        ),
+        cosmic_ray_grey_config=CosmicRayGreyConfig(
+            grey_cosmic_rays=True, diffusive_shock_acceleration=True
         ),
         # FIXES_TODO.md item 1b, round 14: radiative cooling, disabled by
         # default (CoolingConfig()'s own default is cooling=False), enabled
@@ -319,7 +387,7 @@ def run_cwb(num_cells):
         # to have stalled a previous run (SILCC-ISM M4) indefinitely under
         # exactly this "one persistently fast-cooling cell" pattern.
         cooling_config=CoolingConfig(
-            cooling=True,
+            cooling=False,   
             cooling_method=IMPLICIT_COOLING,
             subcycle_stiff_cooling=True,
             cooling_curve_config=CoolingCurveConfig(
@@ -382,6 +450,12 @@ def run_cwb(num_cells):
             # falls back to this field for source positions, and its default
             # ([[0,0,0]]) is a single source at the box center, not two stars.
             wind_injection_positions=STAR_POSITIONS,
+            # Only read when analytic_wind_zone=True.
+            wind_base_radii=jnp.array([WIND_BASE_RADIUS, WIND_BASE_RADIUS]),
+            wind_base_temperatures=jnp.array(
+                [WIND_BASE_TEMPERATURE, WIND_BASE_TEMPERATURE]
+            ),
+            wind_zone_stagnation_fraction=wind_zone_stagnation_fraction,
         ),
         # Inert unless config.cooling_config.cooling=True (see above).
         cooling_params=CoolingParams(
@@ -389,6 +463,10 @@ def run_cwb(num_cells):
             metal_mass_fraction=METAL_MASS_FRACTION,
             floor_temperature=FLOOR_TEMPERATURE,
             cooling_curve_params=COOLING_CURVE_PARAMS,
+        ),
+        cosmic_ray_grey_params=CosmicRayGreyParams(
+            dsa_efficiency=dsa_efficiency, dsa_mach_min=MACH_MIN,
+            reduced_streaming_speed=REDUCED_STREAMING_SPEED,
         ),
     )
 
@@ -413,6 +491,7 @@ def run_cwb(num_cells):
     return dict(
         state=state,
         config=config,
+        params=params,
         helper_data=helper_data,
         registered_variables=registered_variables,
         sf_result=sf_result,
@@ -420,7 +499,8 @@ def run_cwb(num_cells):
 
 
 def axis_profile(run):
-    """Density / pressure / x-velocity profile along the binary (x) axis.
+    """Density / pressure / CR pressure / x-velocity profile along the binary
+    (x) axis.
 
     Samples the line of cells through the domain's y/z center -- i.e. through
     both fixed wind sources, which sit on the x-axis (y = z = 0 in
@@ -432,20 +512,25 @@ def axis_profile(run):
         run: The dict returned by ``run_cwb``.
 
     Returns:
-        ``(x, density, pressure, velocity_x)``, each a 1D numpy array in
-        box-centered x-coordinates.
+        ``(x, density, pressure, pressure_cr, velocity_x)``, each a 1D numpy
+        array in box-centered x-coordinates. ``pressure_cr`` is
+        ``(gamma_cr - 1) * e_cr`` and is exactly zero everywhere for a
+        ``dsa_efficiency=0`` control run.
     """
     state = run["state"]
     registered_variables = run["registered_variables"]
     helper_data = run["helper_data"]
+    params = run["params"]
     num_cells = run["config"].num_cells.x
 
     y = num_cells // 2
     z = num_cells // 2
     density = np.array(state[registered_variables.density_index])[:, y, z]
     pressure = np.array(state[registered_variables.pressure_index])[:, y, z]
+    e_cr = np.array(state[registered_variables.cosmic_ray_e_index])[:, y, z]
+    pressure_cr = (params.cosmic_ray_grey_params.gamma_cr - 1.0) * e_cr
     velocity_x = np.array(
         state[registered_variables.velocity_index.x]
     )[:, y, z]
     x = np.array(helper_data.geometric_centers)[:, y, z, 0] - BOX_SIZE / 2
-    return x, density, pressure, velocity_x
+    return x, density, pressure, pressure_cr, velocity_x

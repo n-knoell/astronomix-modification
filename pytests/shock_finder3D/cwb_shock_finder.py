@@ -43,6 +43,17 @@ Writes three diagnostic figures to ``figures/``: the 3D shocked-cell scatter
 plane through both fixed sources) 2-panel figure of shocked cells next to a
 density slice, and a 4-panel correctness plot (axis profile + shock geometry
 + Mach histogram + mirror-symmetry check).
+
+Grey two-moment cosmic rays (diffusive shock acceleration at the shocks this
+same finder detects, ``_cwb_setup.py``'s ``cosmic_ray_grey_config``) are now
+always active in ``run_cwb`` -- see that module for the
+``dsa_efficiency=0`` control vs. ``dsa_efficiency=DSA_EFFICIENCY`` (CR-on)
+convention. ``__main__`` below runs both and writes two further diagnostic
+figures showing CR influence: ``cwb_cr_influence_<N>.png`` (control-vs-DSA
+axis profiles, shock Mach/position distributions, and the domain energy
+partition -- see :func:`plot_cr_influence`) and
+``cwb_cr_orbital_slice_<N>.png`` (orbital-plane ``e_cr`` and
+``P_cr/P_gas`` maps for the DSA run -- see :func:`plot_cr_orbital_slice`).
 """
 
 # ==== GPU selection ====
@@ -66,6 +77,7 @@ from astronomix.shock_finder3D.plot_helper import plot_shock_surface_3d
 
 from _cwb_setup import (
     BOX_SIZE,
+    DSA_EFFICIENCY,
     GAMMA,
     MACH_MIN,
     SEPARATION,
@@ -214,6 +226,251 @@ def plot_shocked_cells_2d(run, num_cells=NUM_CELLS):
     return fig, axes
 
 
+def _compute_energies(run):
+    """Thermal / kinetic / CR energy budget of a run's final state.
+
+    Args:
+        run: The dict returned by ``run_cwb``.
+
+    Returns:
+        A dict with ``E_thermal``, ``E_kinetic``, ``E_cr`` and ``E_total``
+        (their sum), each integrated over the whole domain. ``E_cr`` is
+        exactly zero for a ``dsa_efficiency=0`` control run.
+    """
+    state = run["state"]
+    registered_variables = run["registered_variables"]
+    num_cells = run["config"].num_cells.x
+
+    rho = np.array(state[registered_variables.density_index])
+    vx = np.array(state[registered_variables.velocity_index.x])
+    vy = np.array(state[registered_variables.velocity_index.y])
+    vz = np.array(state[registered_variables.velocity_index.z])
+    p_gas = np.array(state[registered_variables.pressure_index])
+    e_cr = np.array(state[registered_variables.cosmic_ray_e_index])
+
+    cell_volume = (BOX_SIZE / num_cells) ** 3
+    e_thermal = float(np.sum(p_gas / (GAMMA - 1.0)) * cell_volume)
+    e_kinetic = float(np.sum(0.5 * rho * (vx**2 + vy**2 + vz**2)) * cell_volume)
+    e_cr_total = float(np.sum(e_cr) * cell_volume)
+    return dict(
+        E_thermal=e_thermal,
+        E_kinetic=e_kinetic,
+        E_cr=e_cr_total,
+        E_total=e_thermal + e_kinetic + e_cr_total,
+    )
+
+
+def plot_cr_influence(control, dsa, num_cells=NUM_CELLS):
+    """Compare the CR-off control run against the CR-on (DSA) run.
+
+    Six-panel figure isolating what diffusive shock acceleration changes
+    relative to the pure-hydro baseline: the density/velocity/pressure axis
+    profiles (control vs. DSA, with the DSA run's CR pressure overlaid on
+    the gas pressure), the shock-surface Mach-number and x-position
+    distributions (control vs. DSA -- CR feedback softens shocks and can
+    shift where they sit), and the whole-domain energy partition
+    (thermal/kinetic/CR) for both runs.
+
+    Args:
+        control: The dict returned by ``run_cwb(num_cells, dsa_efficiency=0.0)``.
+        dsa: The dict returned by ``run_cwb(num_cells, dsa_efficiency=DSA_EFFICIENCY)``.
+        num_cells: Grid resolution, used only for the title/filename.
+
+    Returns:
+        ``(fig, axes)``.
+    """
+    x_c, rho_c, p_c, pcr_c, vx_c = axis_profile(control)
+    x_d, rho_d, p_d, pcr_d, vx_d = axis_profile(dsa)
+
+    surf_c = np.array(control["sf_result"].shock_surface_cells)
+    surf_d = np.array(dsa["sf_result"].shock_surface_cells)
+    mach_c = np.array(control["sf_result"].mach_numbers)[surf_c]
+    mach_d = np.array(dsa["sf_result"].mach_numbers)[surf_d]
+
+    geometric_centers = np.array(dsa["helper_data"].geometric_centers)
+    x_field = geometric_centers[..., 0] - BOX_SIZE / 2
+    x_surf_c = x_field[surf_c]
+    x_surf_d = x_field[surf_d]
+
+    energies_c = _compute_energies(control)
+    energies_d = _compute_energies(dsa)
+
+    fig, axes = plt.subplots(2, 3, figsize=(17, 9.5))
+
+    ax = axes[0, 0]
+    ax.plot(x_c, rho_c, color="tab:gray", lw=1.5, ls="--", label="control")
+    ax.plot(x_d, rho_d, color="black", lw=1.5, label="DSA (CR-on)")
+    for star_x in (-SEPARATION / 2, SEPARATION / 2):
+        ax.axvline(star_x, color="tab:orange", lw=1, ls=":")
+    ax.set_xlim(-0.9 * BOX_SIZE / 2, 0.9 * BOX_SIZE / 2)
+    ax.set_xlabel("x")
+    ax.set_ylabel("density")
+    ax.set_title("density along binary axis")
+    ax.legend(fontsize=8)
+
+    ax = axes[0, 1]
+    ax.plot(x_c, vx_c, color="tab:gray", lw=1.2, ls="--", label="control")
+    ax.plot(x_d, vx_d, color="tab:blue", lw=1.2, label="DSA (CR-on)")
+    for star_x in (-SEPARATION / 2, SEPARATION / 2):
+        ax.axvline(star_x, color="tab:orange", lw=1, ls=":")
+    ax.set_xlim(-0.9 * BOX_SIZE / 2, 0.9 * BOX_SIZE / 2)
+    ax.set_xlabel("x")
+    ax.set_ylabel("velocity_x")
+    ax.set_title("velocity along binary axis")
+    ax.legend(fontsize=8)
+
+    ax = axes[0, 2]
+    ax.semilogy(x_c, np.maximum(p_c, 1e-300), color="tab:gray", lw=1.2, ls="--",
+                label=r"$P_{\rm gas}$ control")
+    ax.semilogy(x_d, np.maximum(p_d, 1e-300), color="black", lw=1.2,
+                label=r"$P_{\rm gas}$ DSA")
+    ax.semilogy(x_d, np.maximum(pcr_d, 1e-300), color="tab:red", lw=1.2, ls="-.",
+                label=r"$P_{\rm cr}$ DSA")
+    for star_x in (-SEPARATION / 2, SEPARATION / 2):
+        ax.axvline(star_x, color="tab:orange", lw=1, ls=":")
+    ax.set_xlim(-0.9 * BOX_SIZE / 2, 0.9 * BOX_SIZE / 2)
+    ax.set_xlabel("x")
+    ax.set_ylabel("pressure")
+    ax.set_title("gas vs. CR pressure along binary axis")
+    ax.legend(fontsize=7)
+
+    ax = axes[1, 0]
+    mach_max = max(
+        float(mach_c.max()) if mach_c.size else MACH_MIN,
+        float(mach_d.max()) if mach_d.size else MACH_MIN,
+    )
+    bins = np.linspace(MACH_MIN, max(mach_max, MACH_MIN * 1.01), 40)
+    ax.hist(mach_c, bins=bins, color="tab:gray", alpha=0.6, label="control")
+    ax.hist(mach_d, bins=bins, color="tab:red", alpha=0.6, label="DSA (CR-on)")
+    ax.axvline(MACH_MIN, color="black", ls="--", lw=1)
+    ax.set_xlabel("Mach number")
+    ax.set_ylabel("surface-cell count")
+    ax.set_title("shock Mach number: control vs. DSA")
+    ax.legend(fontsize=8)
+
+    ax = axes[1, 1]
+    bins_x = np.linspace(-BOX_SIZE / 2, BOX_SIZE / 2, 60)
+    ax.hist(x_surf_c, bins=bins_x, color="tab:gray", alpha=0.6, label="control")
+    ax.hist(x_surf_d, bins=bins_x, color="tab:red", alpha=0.6, label="DSA (CR-on)")
+    ax.axvline(0.0, color="gray", lw=1, alpha=0.6)
+    ax.set_xlabel("x of surface cells")
+    ax.set_ylabel("count")
+    ax.set_title("shock-surface x position: control vs. DSA")
+    ax.legend(fontsize=8)
+
+    ax = axes[1, 2]
+    labels = ["thermal", "kinetic", "CR"]
+    control_vals = [energies_c["E_thermal"], energies_c["E_kinetic"], energies_c["E_cr"]]
+    dsa_vals = [energies_d["E_thermal"], energies_d["E_kinetic"], energies_d["E_cr"]]
+    xpos = np.arange(len(labels))
+    width = 0.35
+    ax.bar(xpos - width / 2, control_vals, width, label="control", color="tab:gray")
+    ax.bar(xpos + width / 2, dsa_vals, width, label="DSA (CR-on)", color="tab:red")
+    ax.set_xticks(xpos, labels)
+    ax.set_ylabel("energy")
+    ax.set_title(f"domain energy partition at t={T_END:.3f}")
+    ax.legend(fontsize=8)
+
+    fig.suptitle(
+        f"CR influence on the stationary CWB, N={num_cells}^3, "
+        f"dsa_efficiency={DSA_EFFICIENCY} (t={T_END:.3f})"
+    )
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / f"cwb_cr_influence_{num_cells}.png", dpi=150)
+    plt.close(fig)
+
+    return fig, axes
+
+
+def plot_cr_orbital_slice(run, num_cells=NUM_CELLS):
+    """Orbital-plane (xy, through both fixed sources) CR diagnostic slices.
+
+    Two panels: the CR energy density ``e_cr`` itself (log-scale, shows
+    where injected CR energy actually resides in the collision/bow-shock
+    geometry), and the CR-to-gas pressure ratio ``P_cr / P_gas`` (shows
+    where CRs are dynamically significant relative to the thermal gas, as
+    opposed to just energetically present).
+
+    Args:
+        run: The dict returned by ``run_cwb`` (should be a
+            ``dsa_efficiency > 0`` run for a non-trivial result).
+        num_cells: Grid resolution, used only for the title/filename.
+
+    Returns:
+        ``(fig, axes)``.
+    """
+    state = run["state"]
+    helper_data = run["helper_data"]
+    registered_variables = run["registered_variables"]
+    params = run["params"]
+
+    z_index = num_cells // 2
+    gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+
+    geometric_centers = np.array(helper_data.geometric_centers)
+    x_grid = geometric_centers[:, :, z_index, 0] - BOX_SIZE / 2
+    y_grid = geometric_centers[:, :, z_index, 1] - BOX_SIZE / 2
+
+    e_cr_slice = np.array(state[registered_variables.cosmic_ray_e_index])[:, :, z_index]
+    p_gas_slice = np.array(state[registered_variables.pressure_index])[:, :, z_index]
+    p_cr_slice = (gamma_cr - 1.0) * e_cr_slice
+    ratio_slice = p_cr_slice / np.maximum(p_gas_slice, 1e-300)
+
+    star_x = [-SEPARATION / 2, SEPARATION / 2]
+    star_y = [0.0, 0.0]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+
+    ax = axes[0]
+    positive = e_cr_slice[e_cr_slice > 0]
+    if positive.size:
+        vmin, vmax = float(positive.min()), float(positive.max())
+    else:
+        vmin, vmax = 1e-30, 1e-29
+    if vmin >= vmax:
+        vmax = vmin * 10
+    im = ax.imshow(
+        e_cr_slice.T, origin="lower",
+        extent=[-BOX_SIZE / 2, BOX_SIZE / 2, -BOX_SIZE / 2, BOX_SIZE / 2],
+        cmap="magma", norm=LogNorm(vmin=vmin, vmax=vmax),
+    )
+    ax.scatter(star_x, star_y, marker="*", color="cyan", s=150,
+               edgecolor="black", linewidths=0.5, zorder=3)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title(r"CR energy density $e_{\rm cr}$, orbital plane")
+    fig.colorbar(im, ax=ax, label=r"$e_{\rm cr}$", fraction=0.046, pad=0.04)
+
+    ax = axes[1]
+    ratio_positive = ratio_slice[ratio_slice > 0]
+    if ratio_positive.size:
+        rvmin, rvmax = float(ratio_positive.min()), float(ratio_positive.max())
+    else:
+        rvmin, rvmax = 1e-30, 1e-29
+    if rvmin >= rvmax:
+        rvmax = rvmin * 10
+    im2 = ax.imshow(
+        ratio_slice.T, origin="lower",
+        extent=[-BOX_SIZE / 2, BOX_SIZE / 2, -BOX_SIZE / 2, BOX_SIZE / 2],
+        cmap="viridis", norm=LogNorm(vmin=rvmin, vmax=rvmax),
+    )
+    ax.scatter(star_x, star_y, marker="*", color="cyan", s=150,
+               edgecolor="black", linewidths=0.5, zorder=3)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title(r"$P_{\rm cr} / P_{\rm gas}$, orbital plane")
+    fig.colorbar(im2, ax=ax, label=r"$P_{\rm cr}/P_{\rm gas}$", fraction=0.046, pad=0.04)
+
+    fig.suptitle(
+        f"CR dynamical significance, orbital-plane slice, N={num_cells}^3, t={T_END:.3f}"
+    )
+    fig.tight_layout()
+    fig.savefig(FIG_DIR / f"cwb_cr_orbital_slice_{num_cells}.png", dpi=150)
+    plt.close(fig)
+
+    return fig, axes
+
+
 def test_cwb_shock_finder_correctness(num_cells=NUM_CELLS):
     """Run the stationary 3D colliding-wind binary and check the shock
     finder's output is physical.
@@ -315,7 +572,7 @@ def test_cwb_shock_finder_correctness(num_cells=NUM_CELLS):
     # -------------------------------------------------------------
     # ---- diagnostic figure ----
     # -------------------------------------------------------------
-    x_axis, rho_line, p_line, vx_line = axis_profile(run)
+    x_axis, rho_line, p_line, pcr_line, vx_line = axis_profile(run)
 
     fig, axes = plt.subplots(2, 2, figsize=(11, 9))
 
@@ -383,6 +640,24 @@ if __name__ == "__main__":
 
     #some tests in test_cwb_shock_finder_correctness() are not working correctly, so we can only run the plotting functions for now
     num_cells = NUM_CELLS
-    run = run_cwb(num_cells)
-    plot_shocked_cells_3d(run, num_cells)
-    plot_shocked_cells_2d(run, num_cells)
+    control = run_cwb(num_cells, dsa_efficiency=0.0)
+    dsa = run_cwb(num_cells, dsa_efficiency=DSA_EFFICIENCY)
+
+    plot_shocked_cells_3d(dsa, num_cells)
+    plot_shocked_cells_2d(dsa, num_cells)
+    plot_cr_influence(control, dsa, num_cells)
+    plot_cr_orbital_slice(dsa, num_cells)
+
+    energies_c = _compute_energies(control)
+    energies_d = _compute_energies(dsa)
+    print(
+        f"[N={num_cells}] control: E_thermal={energies_c['E_thermal']:.4e}, "
+        f"E_kinetic={energies_c['E_kinetic']:.4e}, E_cr={energies_c['E_cr']:.4e}"
+    )
+    print(
+        f"[N={num_cells}] DSA (efficiency={DSA_EFFICIENCY}): "
+        f"E_thermal={energies_d['E_thermal']:.4e}, "
+        f"E_kinetic={energies_d['E_kinetic']:.4e}, "
+        f"E_cr={energies_d['E_cr']:.4e} "
+        f"(E_cr fraction of total = {energies_d['E_cr'] / energies_d['E_total']:.4%})"
+    )

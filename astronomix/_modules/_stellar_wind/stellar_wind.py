@@ -17,6 +17,10 @@ stellar-evolution tracks (``params.wind_params.real_params``) when
 ``config.wind_config.real_wind_params`` is enabled, else from the static
 ``wind_mass_loss_rates`` / ``wind_final_velocities`` arrays. See
 ``_wind_source_params``.
+
+Optionally (``config.wind_config.analytic_wind_zone``), the 3D EI injection is
+followed by ``_analytic_wind_zone``, which overwrites an extended zone around
+each source with the analytic adiabatically-cooled free-wind state.
 """
 
 # general
@@ -134,6 +138,16 @@ def _wind_injection(
                 params.gamma,
                 registered_variables,
             )
+            if config.wind_config.analytic_wind_zone:
+                primitive_state = _analytic_wind_zone(
+                    params,
+                    primitive_state,
+                    config,
+                    helper_data,
+                    config.wind_config.num_injection_cells,
+                    params.gamma,
+                    registered_variables,
+                )
         else:
             raise ValueError("Invalid wind injection scheme")
     else:
@@ -714,6 +728,188 @@ def _wind_ei3D_source(
     source_term = source_term.at[registered_variables.energy_index].set(delta_energy)
 
     return source_term
+
+def _wind_source_velocities(
+    wind_params: WindParams,
+    config: SimulationConfig,
+    params: SimulationParams,
+):
+    """Per-source velocities, shape (n_sources, 3), matching the positions
+    from ``_wind_source_params``: the current N-body velocities when
+    ``config.nbody_config.nbody`` is active (zero for a fixed central object),
+    else zero (stationary sources).
+    """
+    if config.nbody_config.nbody and not config.nbody_config.central_object_only:
+        n_bodies = params.nbody_params.masses.size
+        return params.nbody_params.nbody_state.reshape((n_bodies, 7))[:, 4:7]
+    source_positions, _, _ = _wind_source_params(wind_params, config, params)
+    return jnp.zeros_like(source_positions)
+
+
+def _wind_zone_radii(
+    wind_params: WindParams,
+    source_positions,
+    mass_rates,
+    vel_scales,
+    injection_radius,
+):
+    """Radius of each source's analytic wind zone, shape (n_sources,).
+
+    ``wind_zone_stagnation_fraction`` times the distance from the source to
+    its nearest ram-pressure stagnation point, clipped to
+    ``[injection_radius, wind_zone_max_radius]``. Between sources i and j at
+    separation d, ram-pressure balance ``Mdot_i v_i / r_i**2 = Mdot_j v_j / r_j**2``
+    with ``r_i + r_j = d`` puts the stagnation point at
+    ``r_i = d sqrt(P_i) / (sqrt(P_i) + sqrt(P_j))``, ``P = Mdot v``. A single
+    source has no stagnation point (``r_i = inf``).
+    """
+    n_sources = source_positions.shape[0]
+    if n_sources > 1:
+        separations = jnp.linalg.norm(
+            source_positions[:, None, :] - source_positions[None, :, :], axis=-1
+        )
+        sqrt_momentum_rate = jnp.sqrt(mass_rates * vel_scales)
+        stagnation_distances = (
+            separations
+            * sqrt_momentum_rate[:, None]
+            / (sqrt_momentum_rate[:, None] + sqrt_momentum_rate[None, :])
+        )
+        stagnation_distances = jnp.where(
+            jnp.eye(n_sources, dtype=bool), jnp.inf, stagnation_distances
+        )
+        stagnation_distance = jnp.min(stagnation_distances, axis=1)
+    else:
+        stagnation_distance = jnp.full((n_sources,), jnp.inf)
+
+    return jnp.clip(
+        wind_params.wind_zone_stagnation_fraction * stagnation_distance,
+        injection_radius,
+        wind_params.wind_zone_max_radius,
+    )
+
+
+@partial(
+    jax.jit,
+    static_argnames=["num_injection_cells", "registered_variables", "config"],
+)
+def _analytic_wind_zone(
+    params: SimulationParams,
+    primitive_state: STATE_TYPE,
+    config: SimulationConfig,
+    helper_data: HelperData,
+    num_injection_cells: int,
+    gamma: Union[float, Float[Array, ""]],
+    registered_variables: RegisteredVariables,
+) -> STATE_TYPE:
+    """Overwrite an extended zone around each wind source with the analytic
+    freely-expanding, adiabatically-cooled wind (3D, finite-volume path).
+
+    Inside source i's zone (radius from ``_wind_zone_radii``), at distance r:
+
+        rho = Mdot_i / (4 pi r**2 v_inf_i)
+        v   = v_source_i + v_inf_i * r_hat
+        p   = rho * T0_i * (r0_i / r)**(2 (gamma - 1))
+
+    i.e. constant entropy along the wind, anchored at the base state
+    ``(wind_base_radii, wind_base_temperatures)``. This prescribes the known
+    pristine-wind solution in a region far larger than the EI injection
+    sphere, so the wind reaches the shock with the temperature it would have
+    after expanding from the true launch radius, which the grid cannot
+    resolve. Ordinary hydro still captures the shock outside the zones.
+
+    ``r`` is floored at half a cell to keep the source cell finite. Where zones
+    overlap (only possible for ``wind_zone_stagnation_fraction > 1`` or
+    three or more sources), the cell belongs to the source it is relatively
+    deepest inside (smallest ``r / zone_radius``). A wind-density tracer, when
+    active, is set to the zone density; all other variables are left as-is.
+
+    Args:
+        params: The simulation parameters (provides the wind and, when
+            active, N-body parameters).
+        primitive_state: The primitive state array.
+        config: The simulation configuration.
+        helper_data: The helper data.
+        num_injection_cells: The number of EI injection cells (lower bound
+            on the zone radius).
+        gamma: The adiabatic index.
+        registered_variables: The registered variables.
+
+    Returns:
+        The primitive state array with the wind zones overwritten.
+    """
+    wind_params = params.wind_params
+    source_positions, mass_rates, vel_scales = _wind_source_params(
+        wind_params, config, params
+    )
+    source_velocities = _wind_source_velocities(wind_params, config, params)
+    n_sources = source_positions.shape[0]
+
+    injection_radius = num_injection_cells * config.grid_spacing
+    zone_radii = _wind_zone_radii(
+        wind_params, source_positions, mass_rates, vel_scales, injection_radius
+    )
+
+    # Offsets of every cell from every source, (n_sources, nx, ny, nz, 3), in
+    # the box-centered coordinates of _wind_source_distances.
+    box_center = jnp.array(
+        [config.box_size.x / 2, config.box_size.y / 2, config.box_size.z / 2]
+    )
+    centered = helper_data.geometric_centers - box_center
+    delta = centered[None, ...] - source_positions[:, None, None, None, :]
+    dist = jnp.linalg.norm(delta, axis=-1)
+    radius = jnp.maximum(dist, 0.5 * config.grid_spacing)
+
+    # Zone ownership: each in-zone cell belongs to exactly one source.
+    expand = lambda a: a[:, None, None, None]
+    in_source_zone = dist <= expand(zone_radii)
+    relative_depth = jnp.where(in_source_zone, dist / expand(zone_radii), jnp.inf)
+    owner = jnp.argmin(relative_depth, axis=0)
+    weights = (
+        (jnp.arange(n_sources)[:, None, None, None] == owner[None]) & in_source_zone
+    ).astype(primitive_state.dtype)
+    in_zone = jnp.any(in_source_zone, axis=0)
+
+    # Analytic free-wind state per source.
+    density_sources = expand(mass_rates / (4 * jnp.pi * vel_scales)) / radius**2
+    pressure_sources = (
+        density_sources
+        * expand(wind_params.wind_base_temperatures)
+        * (expand(wind_params.wind_base_radii) / radius) ** (2 * (gamma - 1))
+    )
+    velocity_sources = (
+        source_velocities[:, None, None, None, :]
+        + expand(vel_scales)[..., None] * delta / radius[..., None]
+    )
+
+    density = jnp.sum(weights * density_sources, axis=0)
+    pressure = jnp.sum(weights * pressure_sources, axis=0)
+    velocity = jnp.sum(weights[..., None] * velocity_sources, axis=0)
+
+    density_index = registered_variables.density_index
+    pressure_index = registered_variables.pressure_index
+    velocity_index = registered_variables.velocity_index
+
+    primitive_state = primitive_state.at[density_index].set(
+        jnp.where(in_zone, density, primitive_state[density_index])
+    )
+    primitive_state = primitive_state.at[pressure_index].set(
+        jnp.where(in_zone, pressure, primitive_state[pressure_index])
+    )
+    for axis, index in enumerate(
+        (velocity_index.x, velocity_index.y, velocity_index.z)
+    ):
+        primitive_state = primitive_state.at[index].set(
+            jnp.where(in_zone, velocity[..., axis], primitive_state[index])
+        )
+
+    if registered_variables.wind_density_active:
+        wind_density_index = registered_variables.wind_density_index
+        primitive_state = primitive_state.at[wind_density_index].set(
+            jnp.where(in_zone, density, primitive_state[wind_density_index])
+        )
+
+    return primitive_state
+
 
 # -------------------------------------------------------------
 # =============== ↑ Wind injection schemes ↑ ==================
