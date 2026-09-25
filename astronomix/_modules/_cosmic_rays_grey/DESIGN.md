@@ -1525,19 +1525,23 @@ pressure reshapes the velocity field, which then exchanges energy with B in `mag
 energy at fixed thermal pressure, so the constant cancels exactly.
 
 **New `pytests/cosmic_rays_grey/cr_mhd_energy_budget.py`.** `cr_energy_budget.py`'s periodic,
-fixed-timestep CR-DSA Sedov blast (48^3, 400 steps, `t_end=0.07`) threaded by uniform `B_x=0.2`,
+fixed-timestep CR-DSA Sedov blast (128^3, 1800 steps -- effective Courant ~0.6; 400 steps would be
+2.77 at this resolution -- `t_end=0.07`) threaded by uniform `B_x=0.2`,
 `numerical_precision=DOUBLE_PRECISION`, DSA + streaming + anisotropic transport on. Relative
 error on thermal + kinetic + magnetic + CR:
 
-    MHD only (CR off)                          1.35e-13
-    MHD + CR, isotropic transport              1.39e-13
-    MHD + CR, anisotropic transport (main)     1.40e-13
-    same, default SINGLE_PRECISION tolerance   1.55e-8
+    MHD only (CR off)                          7.5e-14
+    MHD + CR, isotropic transport              9.4e-14
+    MHD + CR, anisotropic transport (main)     9.4e-14
+    same, default SINGLE_PRECISION tolerance   1.5e-9
 
-Mass `3e-16`. Channels active: `E_mag` 0.0200 -> 0.0237 (`|dE_mag|/E_tot = 3.7e-3`), `E_cr/E_tot =
-0.019`; anisotropic-vs-isotropic states differ well above round-off. Asserts `tol=1e-9` on every
+(48^3/400 steps gave 1.4e-13 / 1.5e-8.) Mass `5e-15`. Channels active: `E_mag` 0.0200 -> 0.0243,
+`E_cr/E_tot = 0.028`; anisotropic-vs-isotropic states differ well above round-off. Asserts `tol=1e-9` on every
 double-precision configuration and that the single-precision tolerance run is `>10x` worse (keeps
-the explanation above pinned). Plot: `pytests/cosmic_rays_grey/pics/cr_mhd_energy_budget_test.svg`.
+the explanation above pinned). Plots: `pytests/cosmic_rays_grey/pics/cr_mhd_energy_budget_test.svg` (budget) and
+`cr_mhd_energy_budget_fields.png` (midplane density, |B|^2 + field lines, plasma beta, e_cr for
+anisotropic vs. isotropic transport, centre cuts along/across B). With anisotropic transport CRs
+reach further into the cavity along B than across it (cavity 0.45-0.55 in x vs. 0.37-0.63 in y).
 
 **Not changed (flagged for a decision):** `magnetic_update` could pick its tolerance from the array
 dtype instead of `config.numerical_precision`, which would make float64 MHD runs conserve energy by

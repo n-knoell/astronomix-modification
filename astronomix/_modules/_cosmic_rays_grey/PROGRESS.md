@@ -8,17 +8,18 @@ file is what's actually done against it.
 
 **Item 18 now covers thermal + kinetic + magnetic + CR.** New
 `pytests/cosmic_rays_grey/cr_mhd_energy_budget.py`: item 18's periodic, fixed-dt CR-DSA Sedov blast
-(48^3, 400 steps) threaded by uniform `B_x=0.2`, DSA + streaming + anisotropic transport on,
-`numerical_precision=DOUBLE_PRECISION`. Relative total-energy error `1.40e-13` (isotropic
-transport `1.39e-13`, CR-off MHD control `1.35e-13`); mass `3e-16`. `E_mag` 0.0200 -> 0.0237,
-`E_cr/E_tot=0.019`. Passes (GPU 0, float64).
+(now 128^3, 1800 steps for effective Courant ~0.6) threaded by uniform `B_x=0.2`, DSA + streaming +
+anisotropic transport on, `numerical_precision=DOUBLE_PRECISION`. Relative total-energy error
+`9.4e-14` (isotropic `9.4e-14`, CR-off MHD control `7.5e-14`, SINGLE_PRECISION tolerance `1.5e-9`);
+mass `5e-15`. `E_mag` 0.0200 -> 0.0243, `E_cr/E_tot=0.028`. Passes (GPU 0, float64, ~70 min for the
+four runs). Also writes `pics/cr_mhd_energy_budget_fields.png` (midplane MHD/CR field maps).
 
 **The ~1e-6 "MHD truncation residual" from 2026-09-18 was misdiagnosed -- it's the magnetic
 update's fixed-point tolerance.** Instrumented a real `time_integration` run's sub-steps: gas
 half-steps conserve energy to `~1e-14`, all of the residual is in `magnetic_update`, whose
 implicit-midpoint scheme is exactly conservative at convergence (discrete summation by parts,
 `-2.9e-16`) but whose loop stops at `1e-5` because `config.numerical_precision` defaults to
-`SINGLE_PRECISION` even under `jax_enable_x64`. Same run with that default: `1.55e-8`. Plain-MHD
+`SINGLE_PRECISION` even under `jax_enable_x64`. Same run with that default: `1.5e-8` at 48^3, `1.5e-9` at 128^3. Plain-MHD
 baseline (`pytests/mhd/mhd_energy_conservation.py`) re-run with `DOUBLE_PRECISION`: `7.5e-12`
 (N=8) / `2.1e-12` (N=16), was `6.3e-6` / `2.3e-6`; its docstring, tolerance (`1e-5` -> `1e-9`) and
 the "must shrink with resolution" assertion were corrected. `cr_energy_budget.py`'s docstring
