@@ -103,6 +103,10 @@ def run_sedov(num_cells):
     sf_result = find_shocks_pfrommer(
         state, config, registered_variables, helper_data, mach_min=MACH_MIN,
         mach_sampling_adaptive=True, mach_sampling_steps=15,
+        # FIXES_TODO.md round 23: walk past the zone exit while the pressure
+        # keeps falling/rising, post-shock sample at the pressure peak --
+        # median Mach 125.9 -> 132.8 at N=256 (exact ~142.1), p10 116 -> 131.
+        mach_sampling_extend=True,
     )
 
     return dict(

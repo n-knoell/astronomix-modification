@@ -225,13 +225,15 @@ def get_post_pre_shock_values(
         field_b_pre,
     )
 
-@partial(jax.jit, static_argnames=["max_steps"])
+@partial(jax.jit, static_argnames=["max_steps", "extend_monotone"])
 def get_post_pre_shock_values_adaptive(
     shock_direction,
     field_a,
     field_b,
     shock_zones,
     max_steps=15,
+    extend_monotone=False,
+    extension_tolerance=0.02,
 ):
     """
     Sample two scalar fields on both sides of a candidate shock, walking each
@@ -279,6 +281,23 @@ def get_post_pre_shock_values_adaptive(
         max_steps: Safety cap on how far a ray can walk before giving up (a
             ray that never leaves the zone within this many steps falls back
             to its value at ``max_steps`, rather than walking indefinitely).
+        extend_monotone: Opt-in (default False). The zone exit can still lie
+            inside the numerically smeared shock (the zone criteria stop
+            holding before the jump is complete -- e.g. a Mach ~190 CWB
+            shock spread over 3 cells, FIXES_TODO.md round 22). When on, a
+            ray keeps walking past the exit while ``field_a`` keeps moving
+            away from the shock monotonically -- falling by more than
+            ``extension_tolerance`` (relative) per step on the pre-shock
+            side, rising by more than that on the post-shock side -- and
+            samples the last cell of that monotone run, i.e. the start of
+            the upstream/downstream plateau. On the post-shock side the
+            sample is the peak of ``field_a`` along the whole walk instead
+            (the same point for an isolated shock; the right one when a thin
+            shocked layer shares its zone with a second shock behind it, where
+            the zone exit lies beyond that second shock). Still capped by
+            ``max_steps``.
+        extension_tolerance: Minimum relative change per step for the
+            monotone extension to continue (only with ``extend_monotone``).
 
     Returns:
         ``(field_a_post, field_a_pre, field_b_post, field_b_pre, exited_post,
@@ -314,7 +333,7 @@ def get_post_pre_shock_values_adaptive(
         # steps materializes several full-grid intermediates at once) --
         # this is a real resource-usage fix, not just a style preference.
         def body_fun(step, carry):
-            a_val, b_val, exited_ever, still_inside = carry
+            a_val, b_val, exited_ever, still_inside, extending, a_peak, b_peak = carry
             step = step.astype(dtype)
             coords = base_coords + sign * step * shock_direction
             coords_list = [coords[d] for d in range(ndim)]
@@ -323,14 +342,43 @@ def get_post_pre_shock_values_adaptive(
 
             a_here = _sample(field_a, coords_list)
             b_here = _sample(field_b, coords_list)
+
+            if extend_monotone and sign < 0:
+                # Post side: running peak of field_a over the whole walk (zone,
+                # exit cell, monotone extension). A thin shocked layer can
+                # share one zone with the next shock behind it, so the zone
+                # exit may lie beyond that second shock; the peak is the
+                # post-shock state either way.
+                walking = ~exited_ever | extending
+                higher = walking & (a_here > a_peak)
+                a_peak = jnp.where(higher, a_here, a_peak)
+                b_peak = jnp.where(higher, b_here, b_peak)
+
+            if extend_monotone:
+                # Past the exit: keep going while field_a still moves away
+                # from the shock (down on the pre side, up on the post side).
+                if sign > 0:
+                    monotone = a_here < a_val * (1.0 - extension_tolerance)
+                else:
+                    monotone = a_here > a_val * (1.0 + extension_tolerance)
+                advance = extending & monotone
+                a_val = jnp.where(advance, a_here, a_val)
+                b_val = jnp.where(advance, b_here, b_val)
+                extending = advance | newly_exited
+
             a_val = jnp.where(newly_exited, a_here, a_val)
             b_val = jnp.where(newly_exited, b_here, b_val)
 
             exited_ever = exited_ever | newly_exited
-            return a_val, b_val, exited_ever, inside_here
+            return a_val, b_val, exited_ever, inside_here, extending, a_peak, b_peak
 
-        init_carry = (field_a, field_b, jnp.zeros(shape, dtype=jnp.bool_), shock_zones)
-        a_val, b_val, exited_ever, _ = jax.lax.fori_loop(1, max_steps + 1, body_fun, init_carry)
+        no_cells = jnp.zeros(shape, dtype=jnp.bool_)
+        init_carry = (field_a, field_b, no_cells, shock_zones, no_cells, field_a, field_b)
+        a_val, b_val, exited_ever, _, _, a_peak, b_peak = jax.lax.fori_loop(
+            1, max_steps + 1, body_fun, init_carry
+        )
+        if extend_monotone and sign < 0:
+            a_val, b_val = a_peak, b_peak
 
         # Rays still inside the zone after max_steps: fall back to the value
         # at the cap rather than extrapolating further (matches the safety

@@ -513,6 +513,10 @@ def run_cwb(
     sf_result = find_shocks_pfrommer(
         state, config, registered_variables, helper_data, mach_min=MACH_MIN,
         mach_sampling_adaptive=True, mach_sampling_steps=15,
+        # FIXES_TODO.md round 23: walk past the zone exit while the pressure
+        # keeps falling/rising, post-shock sample at the pressure peak --
+        # on the saved round-22 states: star-1 apex Mach 4.6-30.7 -> 146-151 (DE + 1e4 K floor).
+        mach_sampling_extend=True,
     )
 
     return dict(

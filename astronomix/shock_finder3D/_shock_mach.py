@@ -25,7 +25,7 @@ but only keep it at the shock surface (where shock_surface is True) via filter
 """
 @partial(
     jax.jit,
-    static_argnames=["registered_variables", "config", "sampling_steps", "adaptive"],
+    static_argnames=["registered_variables", "config", "sampling_steps", "adaptive", "extend_monotone"],
 )
 def _calculate_mach_at_surface(
     primitive_state: STATE_TYPE,
@@ -36,6 +36,7 @@ def _calculate_mach_at_surface(
     sampling_steps: int = 1,
     adaptive: bool = False,
     shock_zones: BOOL_FIELD_TYPE = None,
+    extend_monotone: bool = False,
 ) -> FIELD_TYPE:
     gamma_gas = 5 / 3
 
@@ -56,6 +57,7 @@ def _calculate_mach_at_surface(
             raise ValueError("adaptive=True requires shock_zones to be passed.")
         p_post, p_pre, _, _, exited_post, exited_pre = get_post_pre_shock_values_adaptive(
             shock_direction, pressure, temperature, shock_zones, max_steps=sampling_steps,
+            extend_monotone=extend_monotone,
         )
         converged = exited_post & exited_pre
     else:

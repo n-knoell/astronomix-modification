@@ -72,8 +72,9 @@ def summarize(label, run):
     box_center = 0.5 * (centers[0, 0, 0] + centers[-1, -1, -1])
     rel = centers - box_center
     near_axis = (np.hypot(rel[..., 1], rel[..., 2]) <= 2 * dx) & (np.abs(rel[..., 0]) < SEPARATION / 2)
-    # split at the contact (hottest cell on the axis between the stars)
-    between = np.abs(x) < SEPARATION / 2
+    # split at the contact: hottest cell on the axis between the stars,
+    # excluding the (hot) plain-EI injection spheres around them
+    between = np.abs(x) < SEPARATION / 2 - 4 * dx
     x_contact = x[between][np.argmax(temperature[between])]
     mach_all = np.asarray(sf.mach_numbers)
     apex1 = mach_all[surface & near_axis & (rel[..., 0] < x_contact)]

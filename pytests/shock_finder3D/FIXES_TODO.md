@@ -2721,12 +2721,85 @@ dominated by star 2's weak reverse shock).
 
 ---
 
+## 2026-09-26, round 23: pre-/post-shock sampling fixed (opt-in `mach_sampling_extend`) — star-1 apex Mach 146-151 on the round-22 state, Sedov median 125.9 -> 132.8 (exact ~142)
+
+`find_shocks_pfrommer(..., mach_sampling_adaptive=True, mach_sampling_extend=True)`
+(new flag, default False; requires the adaptive walk). In
+`get_post_pre_shock_values_adaptive(..., extend_monotone=True)`:
+1. **Pre side:** after the zone exit the ray keeps walking while the pressure
+   still drops by >2% per step, and samples the last cell of that run (the
+   start of the upstream plateau). Fixes the round-22 finding: the zone ends
+   inside a smeared strong shock (cells 34-35 of the CWB axis, p ~ 9e-5,
+   while the plateau at p ~ 4e-6 is two cells further).
+2. **Post side:** the sample is the pressure peak along the whole walk (zone
+   + exit + rising extension). Found while checking (1): in the CWB the
+   ~3-cell shocked layer between star 1's shock and the contact shares one
+   zone with star 2's reverse shock, so the post-side ray walked through the
+   hot layer (p ~ 0.103), through the second shock, and exited on star 2's
+   *pre*-shock side (p ~ 2.6e-3) -> Mach ~20. The peak is the same point for
+   an isolated shock.
+Thermal-energy flux (fixed-step sampler) is unchanged. Enabled in
+`_cwb_setup.py` and `_sedov_setup.py`; every other caller (CR-grey DSA
+injection, cosmic_rays_grey pytests) is untouched.
+
+Validation:
+- New `synthetic_smeared_shock.py` (passes): exact Rankine-Hugoniot planar
+  shocks, tanh-smeared, 64^3. Median finder Mach / exact:
+
+  | M | w [cells] | adaptive | + extend |
+  |---|---|---|---|
+  | 3 | 0.5 / 1 / 2 | 3.00 / 2.84 / 2.16 | 3.00 / 2.99 / 2.96 |
+  | 30 | 0.5 / 1 / 2 | 29.95 / 29.01 / 24.48 | 29.99 / 29.71 / 29.38 |
+  | 150 | 0.5 / 1 / 2 | 149.8 / 142.0 / 119.7 | 150.0 / 149.3 / 148.1 |
+
+  (w = 3 at M = 150 is not reachable: a linear-space tanh tail across a 3e4
+  pressure jump is still at 1.7 p1 at the box edge.)
+- Sedov (exact self-similar ~142.1), median (p10):
+
+  | N | adaptive | + extend |
+  |---|---|---|
+  | 64 | 114.6 (14.5) | 119.6 (115.5) |
+  | 128 | 122.2 (113.0) | 127.5 (124.8) |
+  | 256 | 125.9 (116.0) | 132.8 (130.8) |
+
+  `sedov_shock_finder.py` correctness test passes at N=64 with the flag on.
+- CWB, finder re-run on the saved round-22 N=64 states:
+
+  | | all median / p90 / max | star-1 axis cells | star-2 axis cells |
+  |---|---|---|---|
+  | zone, adaptive | 10.4 / 25.0 / 34.2 | 30.3-32.3 | 3.5-3.8 |
+  | zone, + extend | 27.2 / 36.5 / 54.9 | 30.3-32.3 | 19.4-27.5 |
+  | zone + DE + floor, adaptive | 9.2 / 20.8 / 38.9 | 4.6, 4.9, 5.7, 30.7 | — |
+  | zone + DE + floor, + extend | 60.7 / 93.7 / 151.4 | 145.7-151.4 | — |
+
+  Full `cwb_dual_energy.py` rerun with the flag on (figures in
+  `figures/cwb_new_inj/` regenerated), apex median / max:
+
+  | | all max / median / p90 | star-1 apex | star-2 apex | upstream local Mach |
+  |---|---|---|---|---|
+  | plain EI | 45.2 / 7.49 / 21.6 | (split failed, fixed since: 24 cells 4.7 / 7.9) | | 6.9 |
+  | zone | 54.9 / 27.2 / 36.5 | 31.4 / 33.6 | 19.6 / 27.7 | ~30 at the shock |
+  | zone + DE | 3381 / 1962 / 2798 | 3362 / 3379 | — | 3998 |
+  | zone + floor | 54.5 / 27.2 / 36.4 | 32.3 / 34.0 | 11.2 / 14.6 | 87 |
+  | zone + DE + floor | 151.4 / 60.7 / 93.7 | 146.8 / 151.4 | 90.0 / 98.3 | 187 (star 2: 158) |
+
+  The finder now tracks the upstream state in every case.
+  The remaining gap to the naive 187 (wind speed / 1e4 K sound speed) is in
+  the simulated state: the sampled pre-shock pressure is right (3.8e-6), but
+  the post-shock peak (0.103) is below the RH value for M=187 (0.17); the
+  wind already decelerates inside the smeared shock (v_x 818 -> 760).
+
+---
+
 ## Suggested order for next session
 
-1. **After round 22 (DE + 1e4 K floor):** the wind is right (Mach ~187 on
-   axis); fix the shock finder's pre-shock sampling so it steps past the
-   3-cell numerical shock (e.g. continue the walk while T keeps falling, or
-   take the minimum pressure within k cells upstream of the zone exit).
+1. **Next step (not started, per user 2026-09-26):** port the finder's
+   thermal-energy flux (`calculate_thermal_energy_flux`, still fixed-step
+   sampling) to the adaptive + extended walk, so its pre-shock density /
+   pressure match the Mach number; then switch CR-grey DSA injection
+   (`cr_grey_injection.py`, calls `find_shocks_pfrommer` with the default
+   1-cell sampling for both Mach and flux) to the adaptive + extended walk,
+   and re-check the DSA ladder tests (items 7-11, 15) against it.
 2. **Only if an orbiting binary is required:** reopen item 4 for
    `nbody=True`, starting from round 8's hypotheses (moving source changes
    which cells are freshly injected every step; orbital velocity is a

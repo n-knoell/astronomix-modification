@@ -4,6 +4,15 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Open next step (2026-09-26): DSA injection and the fixed shock-finder sampling
+
+The shock finder gained an opt-in `mach_sampling_extend` (with `mach_sampling_adaptive`) that fixes
+the Mach underestimate for strong, smeared shocks (`pytests/shock_finder3D/FIXES_TODO.md` round 23:
+Sedov N=256 median 125.9 -> 132.8 vs exact ~142; CWB apex ~150 instead of ~16-35). DSA injection
+(`cr_grey_injection.py`) still calls `find_shocks_pfrommer` with the default 1-cell sampling, and the
+finder's thermal-energy flux has not been ported to the adaptive/extended walk. **Not started (user
+decision):** port the flux first, then switch DSA injection over and re-check ladder items 7-11 and 15.
+
 ## Where things stand (2026-09-23, latest: ladder item 18 MHD extension -- DONE, closes to ~1e-13)
 
 **Item 18 now covers thermal + kinetic + magnetic + CR.** New
