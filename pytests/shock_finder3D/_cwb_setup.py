@@ -178,6 +178,13 @@ WIND_BASE_RADIUS = (20 * u.R_sun).to(CODE_UNITS.code_length).value
 WIND_BASE_TEMPERATURE = (3.5e4 * u.K * const.k_B / const.m_p).to(
     CODE_UNITS.code_velocity**2
 ).value
+
+# Wind temperature floor (WindConfig.wind_temperature_floor, opt-in via
+# run_cwb's wind_floor_kelvin argument; FIXES_TODO.md round 22): a
+# photoionised O-star wind sits near 1e4 K instead of cooling adiabatically.
+# Same mu = 1 convention as above. The ambient medium (1.5e4 K) is above it.
+def kelvin_to_code_temperature(kelvin):
+    return (kelvin * u.K * const.k_B / const.m_p).to(CODE_UNITS.code_velocity**2).value
 WIND_ZONE_STAGNATION_FRACTION = 0.5
 
 # diffusive shock acceleration: inject this fraction of each detected shock's
@@ -249,6 +256,9 @@ def run_cwb(
     dsa_efficiency=DSA_EFFICIENCY,
     analytic_wind_zone=False,
     wind_zone_stagnation_fraction=WIND_ZONE_STAGNATION_FRACTION,
+    dual_energy=False,
+    dual_energy_shock_dilation=1,
+    wind_floor_kelvin=None,
 ):
     """Run one 3D stationary colliding-wind-binary simulation and find its shocks.
 
@@ -275,6 +285,16 @@ def run_cwb(
             star's distance to the stagnation point
             (``WindParams.wind_zone_stagnation_fraction``). Only read when
             ``analytic_wind_zone`` is on.
+        dual_energy: Use the dual-energy (entropy) pressure in cold,
+            unshocked, supersonic cells (``SimulationConfig.dual_energy``),
+            so the free wind is not re-heated by kinetic-energy truncation
+            error between injection and the shock. ``False`` is the plain
+            total-energy scheme.
+        dual_energy_shock_dilation: Shock-zone widening (cells) for the
+            dual-energy switch (``SimulationConfig.dual_energy_shock_dilation``).
+        wind_floor_kelvin: Wind temperature floor in K
+            (``WindConfig.wind_temperature_floor``), e.g. ``1e4``. ``None``
+            (default) leaves the wind unfloored.
 
     Returns:
         A dict with the final primitive ``state``, the ``config``,
@@ -355,12 +375,15 @@ def run_cwb(
         box_size=BOX_SIZE,
         num_cells=num_cells,
         exact_end_time=True,
+        dual_energy=dual_energy,
+        dual_energy_shock_dilation=dual_energy_shock_dilation,
         wind_config=WindConfig(
             stellar_wind=True,
             num_injection_cells=num_cells // 32,
             # wind_injection_scheme=EI,
             trace_wind_density=False,
             analytic_wind_zone=analytic_wind_zone,
+            wind_temperature_floor=wind_floor_kelvin is not None,
         ),
         
         nbody_config=NBodyConfig(
@@ -456,6 +479,10 @@ def run_cwb(
                 [WIND_BASE_TEMPERATURE, WIND_BASE_TEMPERATURE]
             ),
             wind_zone_stagnation_fraction=wind_zone_stagnation_fraction,
+            wind_floor_temperature=(
+                0.0 if wind_floor_kelvin is None
+                else kelvin_to_code_temperature(wind_floor_kelvin)
+            ),
         ),
         # Inert unless config.cooling_config.cooling=True (see above).
         cooling_params=CoolingParams(

@@ -148,6 +148,16 @@ def _wind_injection(
                     params.gamma,
                     registered_variables,
                 )
+            if config.wind_config.wind_temperature_floor:
+                # Outside the analytic zone (inside it the profile is already
+                # floored): p >= rho * T_floor, see WindConfig.wind_temperature_floor.
+                density = primitive_state[registered_variables.density_index]
+                primitive_state = primitive_state.at[registered_variables.pressure_index].set(
+                    jnp.maximum(
+                        primitive_state[registered_variables.pressure_index],
+                        density * params.wind_params.wind_floor_temperature,
+                    )
+                )
         else:
             raise ValueError("Invalid wind injection scheme")
     else:
@@ -811,7 +821,9 @@ def _analytic_wind_zone(
         p   = rho * T0_i * (r0_i / r)**(2 (gamma - 1))
 
     i.e. constant entropy along the wind, anchored at the base state
-    ``(wind_base_radii, wind_base_temperatures)``. This prescribes the known
+    ``(wind_base_radii, wind_base_temperatures)``. With
+    ``WindConfig.wind_temperature_floor`` the temperature factor is floored
+    at ``wind_floor_temperature``. This prescribes the known
     pristine-wind solution in a region far larger than the EI injection
     sphere, so the wind reaches the shock with the temperature it would have
     after expanding from the true launch radius, which the grid cannot
@@ -876,6 +888,10 @@ def _analytic_wind_zone(
         * expand(wind_params.wind_base_temperatures)
         * (expand(wind_params.wind_base_radii) / radius) ** (2 * (gamma - 1))
     )
+    if config.wind_config.wind_temperature_floor:
+        pressure_sources = jnp.maximum(
+            pressure_sources, density_sources * wind_params.wind_floor_temperature
+        )
     velocity_sources = (
         source_velocities[:, None, None, None, :]
         + expand(vel_scales)[..., None] * delta / radius[..., None]

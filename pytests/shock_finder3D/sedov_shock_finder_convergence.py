@@ -16,7 +16,7 @@ Both diagnostics are cross-checked two ways: once directly from the shock
 finder's own surface cells (immediate pre/post neighbours along the shock
 direction), and once from a shock-finder-independent spherically-binned
 radial density profile (the peak of the binned profile over the ambient
-density). Writes a convergence figure to ``figures/``.
+density). Writes a convergence figure to ``figures/sedov/``.
 """
 
 # ==== GPU selection ====
@@ -38,8 +38,8 @@ from astronomix.shock_finder3D._shock_zones import get_post_pre_shock_values
 
 from _sedov_setup import GAMMA, RHO_AMBIENT, binned_radial_profile, run_sedov
 
-FIG_DIR = Path(__file__).resolve().parent / "figures"
-FIG_DIR.mkdir(exist_ok=True)
+FIG_DIR = Path(__file__).resolve().parent / "figures" / "sedov"
+FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 RESOLUTIONS = [24, 32, 48, 64, 96, 128, 256]
 STRONG_SHOCK_RHO_RATIO = (GAMMA + 1.0) / (GAMMA - 1.0)  # = 4 for gamma = 5/3

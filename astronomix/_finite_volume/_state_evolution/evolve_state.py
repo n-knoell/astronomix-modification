@@ -60,9 +60,136 @@ from astronomix._modules._gravity._gravity import (
 )
 from astronomix._geometry.boundaries import _boundary_handler
 from astronomix._fluid_equations._equations import (
+    get_absolute_velocity,
     primitive_state_from_conserved,
     conserved_state_from_primitive,
 )
+from astronomix.shock_finder3D._gradients import _calculate_shock_direction
+from astronomix.shock_finder3D._shock_zones import identify_shock_zones
+
+# -------------------------------------------------------------
+# ==================== ↓ Dual energy ↓ ========================
+# -------------------------------------------------------------
+
+# Dual-energy (entropy) formalism, opt-in via config.dual_energy. A total-
+# energy scheme recovers p = (gamma - 1) (E - 0.5 rho u^2); in cold, highly
+# supersonic flow the thermal energy is a tiny difference of two large
+# numbers, so ordinary truncation error in the kinetic energy shows up as
+# spurious heating (measured ~75x per cell in the CWB wind, see
+# pytests/shock_finder3D/FIXES_TODO.md round 19). The entropy density
+# s = p rho^(1 - gamma) = rho * (p / rho^gamma) is advected as an extra
+# density-like row -- the generic passive-row treatment in the Riemann
+# solvers, reconstruction and conversions is already exactly right for it --
+# and, away from shocks, gives an uncorrupted pressure p_s = s rho^(gamma-1).
+# Shock zones come from the Pfrommer shock finder (phases 1-2 only), so
+# genuine shock heating is always taken from the total energy.
+
+
+def _velocity_rows(config: SimulationConfig, registered_variables: RegisteredVariables):
+    """Row indices of the velocity (= momentum) components."""
+    if config.dimensionality == 1:
+        return jnp.array([registered_variables.velocity_index])
+    vi = registered_variables.velocity_index
+    return jnp.array([vi.x, vi.y, vi.z][: config.dimensionality])
+
+
+def _dual_energy_shock_mask(
+    primitive_state: STATE_TYPE,
+    config: SimulationConfig,
+    params: SimulationParams,
+    helper_data: HelperData,
+    registered_variables: RegisteredVariables,
+):
+    """Shock-zone mask for the dual-energy switch, from the pre-step state.
+
+    Pfrommer shock zones (converging flow, aligned temperature/density
+    gradients, minimum Rankine-Hugoniot jump), widened by
+    ``config.dual_energy_shock_dilation`` cells along every axis so shocks
+    that move during the step stay covered.
+    """
+    pressure = primitive_state[registered_variables.pressure_index]
+    density = primitive_state[registered_variables.density_index]
+    r = helper_data.geometric_centers if config.geometry == SPHERICAL else None
+    shock_direction = _calculate_shock_direction(pressure, density, config, r)
+    mask = identify_shock_zones(
+        primitive_state,
+        config,
+        registered_variables,
+        helper_data,
+        shock_direction,
+        params.dual_energy_mach_min,
+    )
+    # non-periodic shift (jnp.roll would wrap a shock at one open boundary
+    # onto the opposite one)
+    def _shift(field, offset, axis):
+        shifted = jnp.roll(field, offset, axis=axis)
+        edge = [slice(None)] * field.ndim
+        edge[axis] = slice(0, 1) if offset > 0 else slice(-1, None)
+        return shifted.at[tuple(edge)].set(False)
+
+    for _ in range(config.dual_energy_shock_dilation):
+        dilated = mask
+        for axis in range(mask.ndim):
+            dilated = dilated | _shift(mask, 1, axis) | _shift(mask, -1, axis)
+        mask = dilated
+    return mask
+
+
+def _dual_energy_sync(
+    primitive_state: STATE_TYPE,
+    gamma: Union[float, Float[Array, ""]],
+    registered_variables: RegisteredVariables,
+) -> STATE_TYPE:
+    """Set the entropy row from the current pressure, s = p rho^(1-gamma)."""
+    rho = primitive_state[registered_variables.density_index]
+    p = primitive_state[registered_variables.pressure_index]
+    return primitive_state.at[registered_variables.entropy_index].set(
+        p * rho ** (1.0 - gamma)
+    )
+
+
+def _dual_energy_select(
+    primitive_state: STATE_TYPE,
+    shock_mask,
+    gamma: Union[float, Float[Array, ""]],
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+) -> STATE_TYPE:
+    """Pick the entropy pressure in cold, unshocked, supersonic cells.
+
+    Expects ``primitive_state`` straight out of
+    ``primitive_state_from_conserved``: the pressure row holds the
+    total-energy pressure (not yet floored) and the entropy row the advected
+    entropy density. Returns the state with the selected pressure and the
+    entropy row re-synced to it.
+    """
+    rho = primitive_state[registered_variables.density_index]
+    p_energy = primitive_state[registered_variables.pressure_index]
+    p_entropy = primitive_state[registered_variables.entropy_index] * rho ** (gamma - 1.0)
+    u = get_absolute_velocity(primitive_state, config, registered_variables)
+    kinetic = 0.5 * rho * u**2
+
+    cold = (p_entropy / (gamma - 1.0) < params.dual_energy_eta * kinetic) | (
+        p_energy <= params.minimum_pressure
+    )
+    valid = (p_entropy > 0) & jnp.isfinite(p_entropy)
+    use_entropy = (~shock_mask) & valid & cold
+    # Cold cells inside the (widened) shock band keep the total-energy
+    # pressure, which carries the shock heating, but never drop below the
+    # entropy pressure: in a hypersonic pre-shock cell p_energy is dominated
+    # by kinetic-energy error and can undershoot to the floor, and physical
+    # entropy cannot decrease anyway.
+    bounded = shock_mask & valid & cold
+
+    p = jnp.where(
+        use_entropy,
+        p_entropy,
+        jnp.where(bounded, jnp.maximum(p_energy, p_entropy), p_energy),
+    )
+    primitive_state = primitive_state.at[registered_variables.pressure_index].set(p)
+    return _dual_energy_sync(primitive_state, gamma, registered_variables)
+
 
 # -------------------------------------------------------------
 # ====================== ↓ Self-gravity ↓ =====================
@@ -108,6 +235,7 @@ def _apply_gravity_source(
     registered_variables: RegisteredVariables,
 ) -> STATE_TYPE:
     """Add the pre-computed self-gravity source to the post-hydro state."""
+    primitive_before = primitive_state
     conserved_state = (
         conserved_state_from_primitive(
             primitive_state, gamma, config, registered_variables
@@ -117,6 +245,28 @@ def _apply_gravity_source(
     primitive_state = primitive_state_from_conserved(
         conserved_state, gamma, config, registered_variables
     )
+
+    # Dual energy: the round trip above recovers p = (gamma-1)(E - KE), which
+    # in a cold hypersonic cell is lost to rounding (in float32 at Mach ~1e3
+    # the thermal energy is below E's resolution) -- and the entropy row is
+    # re-synced from that pressure at the next sweep. Update the pressure
+    # from the source's thermal part instead, with the kinetic-energy change
+    # written in terms of the increments (algebraically identical,
+    # well-conditioned).
+    if registered_variables.entropy_active:
+        rho = primitive_before[registered_variables.density_index]
+        d_rho = gravity_source[registered_variables.density_index]
+        velocity_rows = _velocity_rows(config, registered_variables)
+        momentum = rho * primitive_before[velocity_rows, ...]
+        d_momentum = gravity_source[velocity_rows, ...]
+        d_kinetic = (
+            jnp.sum(2.0 * momentum * d_momentum + d_momentum**2, axis=0) / (2.0 * (rho + d_rho))
+            - jnp.sum(momentum**2, axis=0) * d_rho / (2.0 * rho * (rho + d_rho))
+        )
+        d_thermal = gravity_source[registered_variables.pressure_index] - d_kinetic
+        primitive_state = primitive_state.at[registered_variables.pressure_index].set(
+            primitive_before[registered_variables.pressure_index] + (gamma - 1.0) * d_thermal
+        )
 
     # Positivity floor (2026-09-16): unlike _evolve_gas_state_unsplit_inner's
     # RK2 hydro stages (floored since M4, 2026-09-15), this operator-split
@@ -168,10 +318,14 @@ def _evolve_state_along_axis(
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
     axis: int,
+    dual_energy_shock_mask=None,
 ) -> STATE_TYPE:
     
     if config.boundary_handling == GHOST_CELLS:
         primitive_state = _boundary_handler(primitive_state, config, registered_variables, params)
+
+    if registered_variables.entropy_active:
+        primitive_state = _dual_energy_sync(primitive_state, gamma, registered_variables)
 
     # get conserved variables
     conservative_states = conserved_state_from_primitive(
@@ -250,6 +404,11 @@ def _evolve_state_along_axis(
         conservative_states, gamma, config, registered_variables
     )
 
+    if registered_variables.entropy_active:
+        primitive_state = _dual_energy_select(
+            primitive_state, dual_energy_shock_mask, gamma, config, params, registered_variables
+        )
+
     # Positivity floor, split-scheme counterpart of
     # _evolve_gas_state_unsplit_inner's identical unconditional post-sweep
     # floor (added 2026-09-15/16 for an unrelated SILCC-ISM bug). The
@@ -325,6 +484,12 @@ def _evolve_gas_state_split(
         config.gravity_config.gravity or registered_variables.cosmic_ray_e_active
     )
 
+    shock_mask = None
+    if registered_variables.entropy_active:
+        shock_mask = _dual_energy_shock_mask(
+            primitive_state, config, params, helper_data, registered_variables
+        )
+
     if config.dimensionality == 1:
         if apply_operator_split_sources:
             gravity_source = _gravity_source_presolve(
@@ -341,6 +506,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             1,
+            dual_energy_shock_mask=shock_mask,
         )
 
         if apply_operator_split_sources:
@@ -364,6 +530,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             1,
+            dual_energy_shock_mask=shock_mask,
         )
         primitive_state = _evolve_state_along_axis(
             primitive_state,
@@ -375,6 +542,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             2,
+            dual_energy_shock_mask=shock_mask,
         )
         primitive_state = _evolve_state_along_axis(
             primitive_state,
@@ -386,6 +554,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             1,
+            dual_energy_shock_mask=shock_mask,
         )
 
         if apply_operator_split_sources:
@@ -409,6 +578,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             1,
+            dual_energy_shock_mask=shock_mask,
         )
         primitive_state = _evolve_state_along_axis(
             primitive_state,
@@ -420,6 +590,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             2,
+            dual_energy_shock_mask=shock_mask,
         )
         primitive_state = _evolve_state_along_axis(
             primitive_state,
@@ -431,6 +602,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             3,
+            dual_energy_shock_mask=shock_mask,
         )
         primitive_state = _evolve_state_along_axis(
             primitive_state,
@@ -442,6 +614,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             2,
+            dual_energy_shock_mask=shock_mask,
         )
         primitive_state = _evolve_state_along_axis(
             primitive_state,
@@ -453,6 +626,7 @@ def _evolve_gas_state_split(
             helper_data,
             registered_variables,
             1,
+            dual_energy_shock_mask=shock_mask,
         )
 
         if apply_operator_split_sources:
@@ -485,10 +659,14 @@ def _evolve_gas_state_unsplit_inner(
     params: SimulationParams,
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
+    dual_energy_shock_mask=None,
 ) -> STATE_TYPE:
     
     if config.boundary_handling == GHOST_CELLS:
         primitive_state = _boundary_handler(primitive_state, config, registered_variables, params)
+
+    if registered_variables.entropy_active:
+        primitive_state = _dual_energy_sync(primitive_state, gamma, registered_variables)
 
     conservative_states = conserved_state_from_primitive(
         primitive_state, gamma, config, registered_variables
@@ -595,6 +773,11 @@ def _evolve_gas_state_unsplit_inner(
         conservative_states, gamma, config, registered_variables
     )
 
+    if registered_variables.entropy_active:
+        primitive_state = _dual_energy_select(
+            primitive_state, dual_energy_shock_mask, gamma, config, params, registered_variables
+        )
+
     # Positivity floor: this unsplit scheme sums all axes' flux-divergence
     # contributions into the one conserved-state update above *before* ever
     # recovering the primitive state -- unlike the per-axis Strang-split
@@ -684,6 +867,17 @@ def _evolve_gas_state_unsplit(
             primitive_state, dt, gamma, config, params, helper_data, registered_variables
         )
 
+    # Dual energy: one shock mask per step, from the pre-step state, shared
+    # by both RK stages and the final combination.
+    shock_mask = None
+    if registered_variables.entropy_active:
+        shock_mask = _dual_energy_shock_mask(
+            primitive_state, config, params, helper_data, registered_variables
+        )
+        # u0 enters the final RK average directly, so its entropy row must be
+        # in sync too (other modules and the initial condition leave it stale).
+        primitive_state = _dual_energy_sync(primitive_state, gamma, registered_variables)
+
     if config.time_integrator == RK2_SSP:
         # Generic SSP-RK2 (Heun) over the conserved state.  The stage
         # increment is one forward-Euler hydro step expressed in conserved
@@ -700,6 +894,7 @@ def _evolve_gas_state_unsplit(
                 params,
                 helper_data,
                 registered_variables,
+                dual_energy_shock_mask=shock_mask,
             )
             du = (
                 conserved_state_from_primitive(
@@ -720,6 +915,11 @@ def _evolve_gas_state_unsplit(
         primitive_state = primitive_state_from_conserved(
             u_final, gamma, config, registered_variables
         )
+        # The RK combination averages E and s separately, so re-select.
+        if registered_variables.entropy_active:
+            primitive_state = _dual_energy_select(
+                primitive_state, shock_mask, gamma, config, params, registered_variables
+            )
     else:
         raise ValueError(
             "Only the RK2 SSP time integrator is currently supported for the unsplit scheme."
@@ -849,6 +1049,9 @@ def _split_gas_and_magnetic_state(
         ),
         cosmic_ray_flux_index=_shift_field_past_removed_rows(
             registered_variables.cosmic_ray_flux_index, removed_rows_sorted
+        ),
+        entropy_index=_shift_field_past_removed_rows(
+            registered_variables.entropy_index, removed_rows_sorted
         ),
     )
 

@@ -38,7 +38,7 @@ reports a compression above the single-shock limit. This is expected,
 physical compound-shock behaviour, not a finder bug -- see the majority-based
 Rankine-Hugoniot check below.
 
-Writes three diagnostic figures to ``figures/``: the 3D shocked-cell scatter
+Writes three diagnostic figures to ``figures/cwb_default/``: the 3D shocked-cell scatter
 (analogous to ``sedov_shocked_cells_3d_<N>.png``), an orbital-plane (xy, the
 plane through both fixed sources) 2-panel figure of shocked cells next to a
 density slice, and a 4-panel correctness plot (axis profile + shock geometry
@@ -49,7 +49,7 @@ same finder detects, ``_cwb_setup.py``'s ``cosmic_ray_grey_config``) are now
 always active in ``run_cwb`` -- see that module for the
 ``dsa_efficiency=0`` control vs. ``dsa_efficiency=DSA_EFFICIENCY`` (CR-on)
 convention. ``__main__`` below runs both and writes two further diagnostic
-figures showing CR influence: ``cwb_cr_influence_<N>.png`` (control-vs-DSA
+figures showing CR influence to ``figures/cwb_cr/``: ``cwb_cr_influence_<N>.png`` (control-vs-DSA
 axis profiles, shock Mach/position distributions, and the domain energy
 partition -- see :func:`plot_cr_influence`) and
 ``cwb_cr_orbital_slice_<N>.png`` (orbital-plane ``e_cr`` and
@@ -87,7 +87,11 @@ from _cwb_setup import (
 )
 
 FIG_DIR = Path(__file__).resolve().parent / "figures"
-FIG_DIR.mkdir(exist_ok=True)
+# default (hydro) shock-finder figures and CR-influence figures
+DEFAULT_FIG_DIR = FIG_DIR / "cwb_default"
+CR_FIG_DIR = FIG_DIR / "cwb_cr"
+for _directory in (DEFAULT_FIG_DIR, CR_FIG_DIR):
+    _directory.mkdir(parents=True, exist_ok=True)
 
 NUM_CELLS = 256
 STRONG_SHOCK_RHO_RATIO = (GAMMA + 1.0) / (GAMMA - 1.0)  # = 4 for gamma = 5/3
@@ -98,19 +102,22 @@ STRONG_SHOCK_RHO_RATIO = (GAMMA + 1.0) / (GAMMA - 1.0)  # = 4 for gamma = 5/3
 STRONG_SHOCK_COMPLIANT_FRACTION = 0.8
 
 
-def plot_shocked_cells_3d(run, num_cells=NUM_CELLS):
+def plot_shocked_cells_3d(run, num_cells=NUM_CELLS, filename=None, title=None, fig_dir=None):
     """Render the shock finder's detected surface cells in 3D.
 
     Colors each surface cell by its Rankine-Hugoniot Mach number and draws
     the local shock-direction vector, reusing
     :func:`astronomix.shock_finder3D.plot_helper.plot_shock_surface_3d`.
-    Writes the figure to ``figures/``. Directly analogous to
+    Writes the figure to ``figures/cwb_default/``. Directly analogous to
     ``sedov_shock_finder.plot_shocked_cells_3d``.
 
     Args:
         run: The dict returned by ``run_cwb`` (must include ``helper_data``
             and ``sf_result``).
         num_cells: Grid resolution, used only for the title/filename.
+        filename: Output file name (default ``cwb_shocked_cells_3d_<N>.png``).
+        fig_dir: Output directory (default ``figures/cwb_default/``).
+        title: Figure title (default: resolution and end time).
 
     Returns:
         ``(fig, ax)``.
@@ -131,17 +138,20 @@ def plot_shocked_cells_3d(run, num_cells=NUM_CELLS):
         x[surface], y[surface], z[surface],
         shock_dir_x[surface], shock_dir_y[surface], shock_dir_z[surface],
         mach[surface],
-        title=f"CWB shocked cells (N={num_cells}^3, t={T_END})",
+        title=title or f"CWB shocked cells (N={num_cells}^3, t={T_END})",
         mode="SCATTER",
         center_label="contact discontinuity",
     )
-    fig.savefig(FIG_DIR / f"cwb_shocked_cells_3d_{num_cells}.png", dpi=150)
+    fig.savefig(
+        (fig_dir or DEFAULT_FIG_DIR) / (filename or f"cwb_shocked_cells_3d_{num_cells}.png"),
+        dpi=150,
+    )
     plt.close(fig)
 
     return fig, ax
 
 
-def plot_shocked_cells_2d(run, num_cells=NUM_CELLS):
+def plot_shocked_cells_2d(run, num_cells=NUM_CELLS, filename=None, title=None, fig_dir=None):
     """Render the orbital-plane (xy, through both fixed sources) shock cells,
     next to a density slice through the same plane.
 
@@ -153,6 +163,9 @@ def plot_shocked_cells_2d(run, num_cells=NUM_CELLS):
         run: The dict returned by ``run_cwb`` (must include ``state``,
             ``helper_data`` and ``sf_result``).
         num_cells: Grid resolution, used only for the title/filename.
+        filename: Output file name (default ``cwb_shocked_cells_2d_<N>.png``).
+        fig_dir: Output directory (default ``figures/cwb_default/``).
+        title: Figure suptitle (default: resolution).
 
     Returns:
         ``(fig, axes)``.
@@ -218,9 +231,12 @@ def plot_shocked_cells_2d(run, num_cells=NUM_CELLS):
     ax.set_title(f"density, orbital plane (t={T_END})")
     fig.colorbar(im, ax=ax, label="density", fraction=0.046, pad=0.04)
 
-    fig.suptitle(f"Stationary CWB, orbital-plane slice, N={num_cells}^3")
+    fig.suptitle(title or f"Stationary CWB, orbital-plane slice, N={num_cells}^3")
     fig.tight_layout()
-    fig.savefig(FIG_DIR / f"cwb_shocked_cells_2d_{num_cells}.png", dpi=150)
+    fig.savefig(
+        (fig_dir or DEFAULT_FIG_DIR) / (filename or f"cwb_shocked_cells_2d_{num_cells}.png"),
+        dpi=150,
+    )
     plt.close(fig)
 
     return fig, axes
@@ -376,7 +392,7 @@ def plot_cr_influence(control, dsa, num_cells=NUM_CELLS):
         f"dsa_efficiency={DSA_EFFICIENCY} (t={T_END:.3f})"
     )
     fig.tight_layout()
-    fig.savefig(FIG_DIR / f"cwb_cr_influence_{num_cells}.png", dpi=150)
+    fig.savefig(CR_FIG_DIR / f"cwb_cr_influence_{num_cells}.png", dpi=150)
     plt.close(fig)
 
     return fig, axes
@@ -465,7 +481,7 @@ def plot_cr_orbital_slice(run, num_cells=NUM_CELLS):
         f"CR dynamical significance, orbital-plane slice, N={num_cells}^3, t={T_END:.3f}"
     )
     fig.tight_layout()
-    fig.savefig(FIG_DIR / f"cwb_cr_orbital_slice_{num_cells}.png", dpi=150)
+    fig.savefig(CR_FIG_DIR / f"cwb_cr_orbital_slice_{num_cells}.png", dpi=150)
     plt.close(fig)
 
     return fig, axes
@@ -622,7 +638,7 @@ def test_cwb_shock_finder_correctness(num_cells=NUM_CELLS):
         f"Stationary CWB shock-finder correctness check, N={num_cells}^3, t={T_END}"
     )
     fig.tight_layout()
-    fig.savefig(FIG_DIR / f"cwb_shock_finder_correctness_{num_cells}.png", dpi=150)
+    fig.savefig(DEFAULT_FIG_DIR / f"cwb_shock_finder_correctness_{num_cells}.png", dpi=150)
     plt.close(fig)
 
     print(

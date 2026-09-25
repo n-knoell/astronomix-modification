@@ -151,6 +151,9 @@ def _fv_pallas_evolve_supported(state, config: SimulationConfig) -> bool:
         return False
     if config.diffusion:
         return False
+    if config.dual_energy:
+        # The fused kernel has no dual-energy pressure selection.
+        return False
     if config.geometry != 0:  # CARTESIAN == 0
         return False
     if config.mhd and state.shape[0] != 8:

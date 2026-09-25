@@ -111,6 +111,12 @@ def _reconstruct_at_interface_split(
         A_W = A_W.at[axis, registered_variables.pressure_index].set(
             1 / rho_floor_for_jacobian
         )
+        # Dual-energy entropy density s is density-like (d_t s + d_x(s u) = 0),
+        # so its primitive-form row carries s * du/dx like the density row.
+        if registered_variables.entropy_active:
+            A_W = A_W.at[registered_variables.entropy_index, axis].set(
+                primitive_state[registered_variables.entropy_index]
+            )
 
         # ====================================================================================================
 
@@ -230,7 +236,9 @@ def _reconstruct_at_interface_split(
 
         density_index = registered_variables.density_index
         pressure_index = registered_variables.pressure_index
-        vx0 = registered_variables.velocity_index.x
+        # 1D registries store the velocity index as a plain int
+        velocity_index = registered_variables.velocity_index
+        vx0 = velocity_index if isinstance(velocity_index, int) else velocity_index.x
 
         def _positivity_scale(primitives_side):
             delta = primitives_side - primitive_state

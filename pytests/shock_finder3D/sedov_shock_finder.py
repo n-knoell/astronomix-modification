@@ -18,7 +18,7 @@ to the final state. Checks that the detected shock:
   surface cells.
 
 Writes a diagnostic figure (radial profile + shock geometry + Mach
-histogram) to ``figures/``.
+histogram) to ``figures/sedov/``.
 """
 
 # ==== GPU selection ====
@@ -48,8 +48,8 @@ from _sedov_setup import (
     run_sedov,
 )
 
-FIG_DIR = Path(__file__).resolve().parent / "figures"
-FIG_DIR.mkdir(exist_ok=True)
+FIG_DIR = Path(__file__).resolve().parent / "figures" / "sedov"
+FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 NUM_CELLS = 256
 STRONG_SHOCK_RHO_RATIO = (GAMMA + 1.0) / (GAMMA - 1.0)  # = 4 for gamma = 5/3
@@ -89,7 +89,7 @@ def plot_shocked_cells_3d(run, num_cells=NUM_CELLS):
     Colors each surface cell by its Rankine-Hugoniot Mach number and draws
     the local shock-direction vector, reusing
     :func:`astronomix.shock_finder3D.plot_helper.plot_shock_surface_3d`.
-    Writes the figure to ``figures/``.
+    Writes the figure to ``figures/sedov/``.
 
     Args:
         run: The dict returned by ``run_sedov`` (must include ``helper_data``

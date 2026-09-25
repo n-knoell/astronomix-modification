@@ -656,6 +656,29 @@ class SimulationConfig(NamedTuple):
     #: Fallback to the first order Godunov scheme.
     first_order_fallback: bool = False
 
+    #: Dual-energy (entropy) formalism for the finite-volume hydro solver
+    #: (opt-in). An extra advected row carries the entropy density
+    #: ``s = p * rho**(1 - gamma)``; after every hydro update, cells that are
+    #: outside any shock zone (Pfrommer shock finder, widened by
+    #: ``dual_energy_shock_dilation`` cells) and thermally negligible
+    #: (``p_s / (gamma - 1) < params.dual_energy_eta * 0.5 * rho * u**2``, or
+    #: total-energy pressure at the floor) take their pressure from ``s``
+    #: instead of ``E - 0.5 rho u**2``. Removes the spurious heating of cold,
+    #: highly supersonic flow (e.g. stellar winds) that a total-energy scheme
+    #: gets from ordinary kinetic-energy truncation error. Energy is then not
+    #: conserved exactly in the switched cells. FV, hydro (no MHD), ideal gas
+    #: only; not available on the fused Pallas FV path (falls back to native).
+    #: Default False: no row is allocated and the solver is unchanged.
+    dual_energy: bool = False
+
+    #: Number of cells the dual-energy shock-zone mask is widened by in every
+    #: direction, as a margin for shocks moving during the step (the
+    #: Pfrommer zone is already ~3-4 cells thick, and a shock moves < 1 cell
+    #: per step). Widening costs accuracy upstream of hypersonic shocks: band
+    #: cells keep max(p_energy, p_entropy), so their kinetic-energy-error
+    #: heating survives there. Only used when ``dual_energy`` is on.
+    dual_energy_shock_dilation: int = 1
+
     # physical modules
 
     #: Turbulent forcing configuration.
@@ -856,6 +879,14 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
             print("Setting MUSCL time integrator for spherical geometry")
             config = config._replace(time_integrator=MUSCL)
 
+    if config.dual_energy:
+        if config.solver_mode != FINITE_VOLUME:
+            raise ValueError("dual_energy is only implemented for the finite-volume solver.")
+        if config.mhd:
+            raise ValueError("dual_energy is not implemented for MHD.")
+        if config.equation_of_state != IDEAL_GAS:
+            raise ValueError("dual_energy requires the ideal-gas equation of state.")
+
     # master gravity switch: active if self-gravity and/or an external
     # potential is used. This gates the (shared) gravity source-term machinery.
     config = config._replace(gravity_config=config.gravity_config._replace(
@@ -969,6 +1000,18 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
     ):
         raise ValueError(
             "wind_config.analytic_wind_zone requires stellar_wind=True, "
+            "dimensionality == 3, wind_injection_scheme == EI and "
+            "solver_mode == FINITE_VOLUME."
+        )
+
+    if config.wind_config.wind_temperature_floor and not (
+        config.wind_config.stellar_wind
+        and config.dimensionality == 3
+        and config.wind_config.wind_injection_scheme == EI
+        and config.solver_mode == FINITE_VOLUME
+    ):
+        raise ValueError(
+            "wind_config.wind_temperature_floor requires stellar_wind=True, "
             "dimensionality == 3, wind_injection_scheme == EI and "
             "solver_mode == FINITE_VOLUME."
         )

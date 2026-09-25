@@ -99,6 +99,16 @@ class SimulationParams(NamedTuple):
     #: ``POSITIVITY_REDISTRIBUTE``.
     positivity_max_velocity: float = 50.0
 
+    #: Dual-energy formalism (``config.dual_energy``): a cell outside any
+    #: shock zone takes its pressure from the advected entropy when its
+    #: entropy-based thermal energy is below this fraction of its kinetic
+    #: energy.
+    dual_energy_eta: float = 1e-2
+
+    #: Dual-energy formalism: minimum Mach number for a cell to count as part
+    #: of a shock zone (passed to the Pfrommer shock-zone criteria).
+    dual_energy_mach_min: float = 1.3
+
     #: The maximum time step.
     dt_max: float = jnp.inf
 

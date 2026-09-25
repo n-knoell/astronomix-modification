@@ -2593,12 +2593,140 @@ needs your decision.
 
 ---
 
+## 2026-09-25, round 21: dual-energy (entropy) formalism with a shock-finder switch — the pre-shock wind now stays cold (T ~0.02, local Mach ~4000 on axis), but the shock finder's measured Mach barely moves
+
+Opt-in solver option `SimulationConfig.dual_energy` (default False; with it
+off the traced program is unchanged — verified bit-identical to HEAD on 2D
+split and unsplit runs, with and without CR-grey). An extra advected row
+carries `s = p rho^(1-gamma)`; after each hydro update a cell takes
+`p_s = s rho^(gamma-1)` instead of `(gamma-1)(E - KE)` when it is outside the
+Pfrommer shock zones (phases 1-2 of the finder, widened by
+`dual_energy_shock_dilation` cells, default 1) and cold
+(`p_s/(gamma-1) < dual_energy_eta * KE`, default 1e-2, or `p_E` at the floor).
+Cold cells inside the shock band get `max(p_E, p_s)`. `s` is re-synced from
+the pressure at the start of every sweep, so no other module maintains it.
+Hydro, FV, ideal gas only (MHD/FD rejected in `finalize_config`; fused Pallas
+FV path disabled when on). Touched: `simulation_config.py`,
+`simulation_params.py` (`dual_energy_eta`, `dual_energy_mach_min`),
+`registered_variables.py` (`entropy_index`), `evolve_state.py`
+(`_dual_energy_shock_mask/_sync/_select`, split + unsplit wiring,
+`_apply_gravity_source`), `reconstruction.py` (MUSCL `A_W` row for `s`),
+`_pallas_evolve.py`. `run_cwb(..., dual_energy=, dual_energy_shock_dilation=)`.
+
+Validation (`pytests/hydrodynamics/dual_energy.py`, passes, split/MUSCL and
+unsplit/RK2): cold Hubble expansion at Mach ~10^3 keeps `p/rho^gamma` to
+2e-6 - 4e-4 (total energy: 0.9 - 26, and NaN for 2D unsplit); colliding
+Mach-10^3 streams with `eta=1e6` (entropy pressure everywhere except shock
+zones) hit Rankine-Hugoniot to <0.3%, and fail to heat at all with shock
+detection disabled; Sod unchanged (0.0 difference).
+
+Three things found while testing:
+1. **Pre-existing bug fixed:** the split-path MINMOD/VAN_ALBADA_PP positivity
+   scaling read `velocity_index.x`, so *every* 1D split + MINMOD run crashed
+   (`reconstruction.py`). One-line fix. 1D split/MUSCL Sod also NaNs at
+   `C_cfl=0.8` with or without dual energy (fine at 0.4) — not investigated.
+2. **float32 round-trip:** `_apply_gravity_source` (which carries CR-grey
+   feedback, so it runs every step in the CWB) converts primitive -> conserved
+   -> primitive. At Mach ~10^3 the thermal energy is below float32 resolution
+   of E, so this set scattered cold cells to the pressure floor (T ~5e-7 dips)
+   and the next sweep re-synced `s` from that. With the flag on the pressure
+   is now updated from the source's thermal part with the KE change written
+   in increments (algebraically identical). The dips are gone.
+3. **Stagnation points:** where u -> 0 (expansion centre, and the x/y centre
+   lines in split sweeps) the gas is not cold relative to its KE, the switch
+   does not engage, and both schemes share the same local heating/density bump.
+
+**CWB, N=64, float32, zone f=0.5** (`cwb_dual_energy.py`; apex = surface cells
+within 2 cells of the axis):
+
+| | Mach max | median | p90 | apex median / max | star-1 pre-shock T_min |
+|---|---|---|---|---|---|
+| plain EI | 24.65 | 4.36 | 9.71 | 4.5 / 7.9 | 6.4e3 |
+| plain EI + DE | 10.38 | 3.37 | 5.72 | 4.5 / 7.9 | 6.4e3 |
+| zone | 34.16 | 10.38 | 24.99 | 13.2 / 33.6 | 7.3 |
+| zone + DE, dil=0 | 496.6 | 9.12 | 22.61 | 16.0 / 346 | 0.026 |
+| zone + DE, dil=1 | 39.78 | 8.34 | 19.61 | 5.3 / 5.7 (n=12) | 0.026 |
+| zone + DE, dil=2 | 32.83 | 7.30 | 14.76 | 15.9 / 32.8 | 0.026 |
+
+(float64 zone / zone+DE, dil=2: identical to float32 in the zone-only case,
+T_min 8.2; smooth adiabatic DE profile 0.68 -> 0.022 up to the shock.)
+Figures: `figures/cwb_dual_energy_{axis_profile,mach_hist}_64.png`.
+
+Reading:
+- **Plain EI:** DE does not engage on the axis — that wind is only Mach ~7
+  (thermal/kinetic ~0.03 > eta), its heat comes from the injection itself.
+- **Zone + DE:** the wind between the zone edge and the shock now follows the
+  adiabat (T 0.7 -> 0.02, ~300x colder than zone alone). That is the analytic
+  zone's own base state (T0 = 3.5e4 K at 20 Rsun, pure adiabatic cooling)
+  carried to the shock, i.e. local Mach ~4000 — far colder than a real
+  photoionised O-star wind (~1e4 K). A temperature floor would be the physical
+  choice if Mach ~100 is the target.
+- **The shock finder does not see it.** Post-shock T ~1.4e5 (matches 3/16 v^2),
+  so the true apex jump is Mach ~10^3, but the measured apex Mach stays 5-16
+  (one dil=0 cell at 346), and the numbers scatter between dilations. On the
+  axis there are one or two intermediate cells (T ~10-300) between the cold wind and the
+  shocked gas; the finder's pre-shock sample (walk to the zone exit) lands on
+  it. So the remaining gap is now in the finder's sampling of a ~1-cell,
+  six-decade jump, not in the pre-shock thermodynamics.
+- dil=2 leaves a warm patch in star 2's wind (T ~2 vs 0.05) from band cells
+  keeping `max(p_E, p_s)`; dil=0 and 1 give the same profiles. Default set to 1.
+
+Not done: energy-conservation cost of the switched cells not measured;
+the Pfrommer interior mask means the outermost cell layer is never "shocked".
+
+---
+
+## 2026-09-26, round 22: 1e4 K wind temperature floor — with dual energy the pre-shock wind now sits at the floor (Mach 187 on axis, expected 188); the finder still reports ~6-31 because its pre-shock walk stops inside the 3-cell numerical shock
+
+New opt-in `WindConfig.wind_temperature_floor` + `WindParams.wind_floor_temperature`
+(code p/rho; 3D EI FV only, validated in `finalize_config`). The analytic
+zone profile uses `max(T_adiabatic(r), T_floor)`; outside the zone
+`p >= rho T_floor` is applied in every cell after injection (3D EI does not
+tag wind material, so this is not restricted to wind gas — fine here: ambient
+is 1.5e4 K and shocked gas is far hotter). `_cwb_setup.run_cwb(...,
+wind_floor_kelvin=1e4)`, `kelvin_to_code_temperature()` (mu = 1 convention,
+same as ambient/base temperature: 1e4 K = 11.63 code, expected pre-shock Mach
+188 / 158 for star 1 / 2).
+
+`cwb_dual_energy.py` now runs plain EI / zone / zone+DE / zone+floor /
+zone+DE+floor and saves `figures/cwb_dual_energy_shocked_cells_{2d,3d}_<case>_64.png`
+in the same layout as `cwb_shock_finder.py`'s `cwb_shocked_cells_{2d,3d}`
+(`plot_shocked_cells_{2d,3d}` gained optional `filename`/`title`), plus the
+axis-profile and Mach-histogram figures. Apex statistics are now split at the
+contact into star 1's and star 2's shock (the old combined apex median was
+dominated by star 2's weak reverse shock).
+
+**N=64, float32, zone f=0.5:**
+
+| | Mach max / median | star-1 apex Mach median / max | star-2 apex | star-1 pre-shock T_min | local Mach |
+|---|---|---|---|---|---|
+| plain EI | 24.7 / 4.36 | — (4.5 / 7.9 combined) | | 5.5e6 K | 6.9 |
+| zone | 34.2 / 10.4 | 31.4 / 33.6 | 3.6 / 4.0 | 6.3e3 K | 236 (re-heated to ~30 in front of the shock) |
+| zone + DE | 39.8 / 8.34 | — (5.3 / 5.7 combined) | | 22 K | 3998 |
+| zone + floor | 34.3 / 10.3 | — (13.9 / 34.0 combined) | | 4.6e4 K | 87 |
+| zone + DE + floor | 38.9 / 9.15 | 15.9 / 34.9 | 5.8 / 7.6 | 9.75e3 K | 187 |
+
+- Floor without DE does nothing useful: the total-energy scheme re-heats the
+  wind above the floor anyway.
+- DE + floor: on-axis wind flat at T = 11.6 (floor; T_min 3% under it because
+  the floor is applied once per step before the hydro sweep) and local Mach
+  187 up to the shock — the intended physical state.
+- **Finder:** cell-by-cell on the axis (DE + floor): cells ..33 at T=11.6,
+  then the shock is smeared over 3 cells (34: T=210, 35: 4.2e3, 36: surface,
+  6.8e4). The finder's pre-shock walk stops at the zone exit, cell 35, inside
+  the numerical shock: p2/p1 ~ 90 -> M ~ 6-9. Sampling cell 33 would give
+  p2/p1 ~ 3e4 -> M ~ 155. In the zone-only run the walk reaches the (heated,
+  T~325-614) wind and its ~32 is correct for that wind. So what is left is a
+  finder sampling limit for strong shocks spread over >2 cells.
+
+---
+
 ## Suggested order for next session
 
-1. **Analytic wind zone follow-up (round 19).** First try the cheap knob:
-   `wind_zone_stagnation_fraction` 0.8-0.9. If the zone-edge re-heating
-   still dominates, decide whether a dual-energy / entropy pressure fix
-   is worth doing at the solver level.
+1. **After round 22 (DE + 1e4 K floor):** the wind is right (Mach ~187 on
+   axis); fix the shock finder's pre-shock sampling so it steps past the
+   3-cell numerical shock (e.g. continue the walk while T keeps falling, or
+   take the minimum pressure within k cells upstream of the zone exit).
 2. **Only if an orbiting binary is required:** reopen item 4 for
    `nbody=True`, starting from round 8's hypotheses (moving source changes
    which cells are freshly injected every step; orbital velocity is a

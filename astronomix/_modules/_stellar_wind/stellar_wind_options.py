@@ -45,6 +45,18 @@ class WindConfig(NamedTuple):
     #: default injection untouched.
     analytic_wind_zone: bool = False
 
+    #: Keep the wind at or above ``WindParams.wind_floor_temperature``
+    #: (e.g. ~1e4 K for a photoionised O-star wind, which radiative
+    #: heating/cooling holds near that value rather than letting it cool
+    #: adiabatically). Applied after injection every step: the analytic wind
+    #: zone profile uses ``max(T_adiabatic(r), T_floor)``, and outside the zone
+    #: ``p >= rho * T_floor`` is enforced in every cell. The 3D EI injection
+    #: does not tag its material, so outside the zone the floor is not
+    #: restricted to wind gas -- only use it where the ambient medium and all
+    #: shocked gas are hotter than the floor anyway. 3D EI finite-volume path
+    #: only; ``False`` leaves the injection untouched.
+    wind_temperature_floor: bool = False
+
 
 class WindParams(NamedTuple):
     # Single-source parameters, used by the 1D injection schemes
@@ -95,6 +107,10 @@ class WindParams(NamedTuple):
     #: which must then be set to a finite value.
     wind_zone_stagnation_fraction: float = 0.5
     wind_zone_max_radius: float = float("inf")
+
+    #: ``WindConfig.wind_temperature_floor`` only: the floor pseudo-temperature
+    #: ``p / rho`` in code units (same convention as ``wind_base_temperatures``).
+    wind_floor_temperature: float = 0.0
 
     #: Set internally, once per step, by the time-integration loop (see
     #: astronomix.time_stepping.time_integration) to the current simulation

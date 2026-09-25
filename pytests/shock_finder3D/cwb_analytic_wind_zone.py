@@ -3,7 +3,7 @@
 
 Runs ``_cwb_setup.run_cwb`` once with plain EI injection and once per
 ``ZONE_FRACTIONS`` entry with the analytic wind zone on. Writes three figures
-to ``figures/``:
+to ``figures/cwb_new_inj/``:
 
 * ``cwb_wind_zone_axis_profile_<N>.png``: temperature ``p/rho``, density and
   local Mach number ``|v_x| / sqrt(gamma p / rho)`` along the binary axis,
@@ -49,8 +49,8 @@ from _cwb_setup import (
     v_inf2,
 )
 
-FIG_DIR = Path(__file__).resolve().parent / "figures"
-FIG_DIR.mkdir(exist_ok=True)
+FIG_DIR = Path(__file__).resolve().parent / "figures" / "cwb_new_inj"
+FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 NUM_CELLS = 64
 ZONE_FRACTIONS = (0.5, 0.9)

@@ -118,6 +118,12 @@ class RegisteredVariables(NamedTuple):
     cosmic_ray_flux_index: Union[int, StaticIntVector] = -1
     cosmic_ray_flux_active: bool = False
 
+    #: dual-energy entropy density s = p * rho**(1 - gamma)
+    #: (config.dual_energy, FV only). Re-synced from the pressure at the start
+    #: of every hydro update, so other modules need not maintain it.
+    entropy_index: int = -1
+    entropy_active: bool = False
+
     # here you can add more variables
 
 
@@ -240,6 +246,13 @@ def get_registered_variables(config: SimulationConfig) -> RegisteredVariables:
                     num_vars=registered_variables.num_vars + 3
                 )
             registered_variables = registered_variables._replace(cosmic_ray_flux_active=True)
+
+        if config.dual_energy:
+            registered_variables = registered_variables._replace(
+                entropy_index=registered_variables.num_vars,
+                num_vars=registered_variables.num_vars + 1,
+                entropy_active=True,
+            )
 
 
     if config.solver_mode == FINITE_DIFFERENCE:

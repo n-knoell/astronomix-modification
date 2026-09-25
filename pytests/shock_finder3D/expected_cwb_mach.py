@@ -8,7 +8,7 @@ answers the question FIXES_TODO.md's item 1b investigation keeps running
 into: "the shock finder measures some Mach number on the real simulation --
 but what Mach number should a real colliding-wind binary with these
 parameters actually produce?" Round 13 re-ran this comparison against the
-real N=512, a=50 au stationary run (``figures/cwb_shocked_cells_{2d,3d}_512_stat.png``)
+real N=512, a=50 au stationary run (``figures/cwb_default/cwb_shocked_cells_{2d,3d}_512_stat.png``)
 and found the same ~11x gap as every earlier resolution (round 12's N=64):
 increasing resolution 8x and fixing the separation bug (see below) did not
 close it. See ``FIXES_TODO.md`` round 13 for the full writeup.
@@ -107,7 +107,7 @@ T_WIND_BASE_ASSUMED = 3.5e4 * u.K
 # The shock finder's default (Tier-1, mach_sampling_steps=1 -- _cwb_setup.py
 # does not opt into any sampling improvement) global max Mach measured on the
 # real N=512, a=50 au stationary CWB run (FIXES_TODO.md round 13), read off
-# figures/cwb_shocked_cells_3d_512_stat.png's colorbar (no raw data was
+# figures/cwb_default/cwb_shocked_cells_3d_512_stat.png's colorbar (no raw data was
 # saved, so this is a calibrated-pixel reading, not an exact value -- see
 # round 13's writeup for the calibration method and error bar). Essentially
 # unchanged from round 12's N=64, a=0.8 au (bugged separation) measurement of
