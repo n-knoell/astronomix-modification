@@ -79,7 +79,7 @@ class CosmicRayGreyConfig(NamedTuple):
     #: Default True since 2026-09-26: ladder items 7-11, 15, 16-18 and Phase D
     #: re-validated with it (items 11/15 at 128^3; 256^3 does not fit an
     #: 11 GB GPU in either mode). Costs ~2x per injection call.
-    dsa_adaptive_shock_sampling: bool = False
+    dsa_adaptive_shock_sampling: bool = True
 
     #: maximum number of steps of the adaptive walk (only with
     #: dsa_adaptive_shock_sampling).

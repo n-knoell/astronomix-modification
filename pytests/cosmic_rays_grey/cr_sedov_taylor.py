@@ -31,12 +31,15 @@ relative to the control run must equal the CR energy it gained:
 
 Calibrated at N=48, t_end=0.07 (chosen so the shock stays well inside the
 open-boundary domain -- r_shock ~= 0.455 vs. domain half-width 0.5, checked
-below): this identity holds to a relative error of ~2.1e-5, and
-``E_cr_dsa / E_total ~= 5.3%`` of the total (initial) energy budget, a
+below), with the default adaptive shock sampling
+(``CosmicRayGreyConfig.dsa_adaptive_shock_sampling=True``, re-run
+2026-10-02): this identity holds to a relative error of ~1.8e-5, and
+``E_cr_dsa / E_total ~= 6.1%`` of the total (initial) energy budget, a
 clearly nonzero and physically bounded signal at ``dsa_efficiency = 0.1``,
 ``dsa_mach_min = 1.3``. Each run's own total-energy conservation (initial
 ambient + E_EXPLOSION vs. final thermal+kinetic+CR) independently holds to
-~1.7e-5.
+~1.6e-5 (control) / ~1.7e-5 (DSA). (Old fixed 1-cell sampling: identity
+~2.1e-5, conservation ~1.7e-5.)
 """
 
 # ==== GPU selection ====
@@ -175,7 +178,7 @@ def test_cr_sedov_taylor(
     Args:
         energy_partition_tol: Maximum allowed relative error on the
             control-vs-DSA energy-partition identity described in the module
-            docstring. Calibrated observed error ~2.1e-5 at NUM_CELLS=48; this
+            docstring. Calibrated observed error ~1.8e-5 at NUM_CELLS=48; this
             leaves a >450x margin.
         conservation_tol: Maximum allowed relative error on each run's own
             total-energy conservation (initial ambient + E_EXPLOSION vs.
@@ -234,7 +237,7 @@ def test_cr_sedov_taylor(
 
     # E_cr should be a clearly nonzero but bounded fraction of the total
     # energy budget at dsa_efficiency=0.1, dsa_mach_min=1.3 (calibrated
-    # ~5.6% -- see module docstring).
+    # ~6.1% -- see module docstring).
     cr_fraction = dsa["E_cr"] / E_total_initial
     assert 0.01 < cr_fraction < 0.3, (
         f"DSA run's CR energy fraction ({cr_fraction:.4f}) is outside the "
