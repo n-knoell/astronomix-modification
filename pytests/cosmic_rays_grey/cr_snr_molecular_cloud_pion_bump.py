@@ -138,6 +138,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_emission_leptonic import (
     inverse_compton_photon_spectrum_planck,
 )
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
+from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_shock_finder_kwargs
 
 # ---- physical setup: item 11's scaffold, unchanged unless noted ----
 GAMMA = 5.0 / 3.0
@@ -275,7 +276,8 @@ def _run_snr_molecular_cloud():
     final_state = time_integration(initial_state, config, params, registered_variables)
 
     shock_result = find_shocks_pfrommer(
-        final_state, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN
+        final_state, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN,
+        **dsa_shock_finder_kwargs(config.cosmic_ray_grey_config),
     )
     surf = np.array(shock_result.shock_surface_cells)
     r_np = np.array(radius)

@@ -30,6 +30,11 @@ class ShockFinderResult:
         integer array, 
         1 where shock_surface is True, 0 elsewhere (stub for future multi-shock labeling)
     * shock_zone_ids: same idea but for the broader zone
+    * post_shock_steps (adaptive sampling only, else None):
+        float array, number of steps along -shock_direction from each cell
+        to its post-shock sample point (FIXES_TODO.md round 24)
+    * pre_shock_pressure (adaptive sampling only, else None):
+        float array, the sampled pre-shock pressure of each cell
     """
     shock_surface_cells: BOOL_FIELD_TYPE
     shock_direction:     FIELD_TYPE
@@ -39,6 +44,8 @@ class ShockFinderResult:
     num_shocks:          int
     shock_ids:           INT_FIELD_TYPE
     shock_zone_ids:      INT_FIELD_TYPE
+    post_shock_steps:    FIELD_TYPE = None
+    pre_shock_pressure:  FIELD_TYPE = None
 
 
 def _shockresult_flatten(result):
@@ -51,6 +58,8 @@ def _shockresult_flatten(result):
         result.shock_ids,
         result.shock_zone_ids,
         result.num_shocks,
+        result.post_shock_steps,
+        result.pre_shock_pressure,
     )
 
     return children, None
@@ -65,6 +74,8 @@ def _shockresult_unflatten(aux, children):
         shock_ids=children[5],
         shock_zone_ids=children[6],
         num_shocks=children[7],
+        post_shock_steps=children[8],
+        pre_shock_pressure=children[9],
     )
 
 tree_util.register_pytree_node(

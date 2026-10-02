@@ -4,14 +4,101 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Open next step (2026-09-26): DSA injection and the fixed shock-finder sampling
+## Known limitation (2026-10-02): shock Mach numbers, and hence DSA injection, are resolution-limited
 
-The shock finder gained an opt-in `mach_sampling_extend` (with `mach_sampling_adaptive`) that fixes
-the Mach underestimate for strong, smeared shocks (`pytests/shock_finder3D/FIXES_TODO.md` round 23:
-Sedov N=256 median 125.9 -> 132.8 vs exact ~142; CWB apex ~150 instead of ~16-35). DSA injection
-(`cr_grey_injection.py`) still calls `find_shocks_pfrommer` with the default 1-cell sampling, and the
-finder's thermal-energy flux has not been ported to the adaptive/extended walk. **Not started (user
-decision):** port the flux first, then switch DSA injection over and re-check ladder items 7-11 and 15.
+**The shock finder underestimates the Mach number by the same factor at every shock strength, and
+that factor only converges slowly with resolution.** Measured on the item-8 Sedov blasts
+(`pytests/cosmic_rays_grey/cr_dsa_mach_dependence.py`, E=1, rho=1, t=0.07, adaptive + extended
+sampling) against a converged 1D spherical reference of the same blasts (4096 cells, no CRs; Mach
+from shock speed and from the pressure jump, agreeing to <1%; strong blast 175 vs analytic Sedov
+176):
+
+| p_ambient | 1D reference | 48^3 finder median | 96^3 finder median | 48^3 / ref | 96^3 / ref |
+|---|---|---|---|---|---|
+| 1e-4 | 175.0 | 140.2 | 152.5 | 0.80 | 0.87 |
+| 0.02 | 12.43 | 9.96 | 10.83 | 0.80 | 0.87 |
+| 0.03 | 10.17 | 8.16 | 8.86 | 0.80 | 0.87 |
+| 0.08 | 6.30 | 5.07 | 5.51 | 0.81 | 0.87 |
+| 0.16 | 4.53 | 3.67 | 3.98 | 0.81 | 0.88 |
+| 0.4 | 3.00 | 2.47 | 2.67 | 0.82 | 0.89 |
+
+- **Cause:** the post-shock pressure peak (thin Sedov shell) is smeared over a few cells, so the
+  sampled post-shock pressure is too low. Not a walk failure: the error is the same fraction at
+  every Mach number and shrinks under refinement. Error ~ N^-0.6 (20% -> 13% per doubling),
+  consistent with the shock-finder Sedov convergence in `FIXES_TODO.md` round 23 (median
+  119 / 127 / 133 at N = 64 / 128 / 256 vs exact ~142). <5% would need roughly 400^3.
+- **Consequences for DSA (why this matters beyond the finder):**
+  - The dissipated flux scales as delta(M) M^3, so at 48^3 it is ~0.5x everywhere, plateau included.
+  - With a Mach-dependent efficiency (KR13), the steep rising part (Ms ~ 3-5) amplifies the error:
+    eta(finder Mach) / eta(true Mach) ~ 0.3 at 48^3, ~0.5 at 96^3. Combined with the flux, CR
+    injection at weak shocks is ~6x too low at 48^3.
+  - Everything that integrates CR injection therefore depends on resolution:
+    `cr_dsa_mach_dependence` strong-blast E_cr/E_total 12.4% (48^3) -> 15.0% (96^3), and its
+    CS14/KR13 ratio check moves from 3.7% to 5.4% error (fails its 5% tolerance at 96^3; the
+    weak-blast Mach-span check fails too, because the medians move towards the true values).
+- **Probably present in every DSA ladder test and production run at low resolution** (items 7-11,
+  15, 18, Phase D, the CWB runs): absolute CR energies, CR-to-thermal ratios and anything
+  calibrated against them (e.g. item 9 Test B's `dsa_efficiency=0.01`, the item-8 tolerances) are
+  resolution-dependent and biased low at coarse resolution. Only the 48/96^3 Sedov case is
+  quantified so far; other setups not yet checked.
+- **Not fixed.** Options if it matters: a resolution study per ladder item; correcting the sampled
+  post-shock state (e.g. from the RH jump of the better-resolved density/velocity, or a Mach
+  correction calibrated against 1D references); or quoting CR results only as converged trends.
+  Reference script used: a 1D spherical rerun of the same blasts (not in the repo yet).
+- Separate open question found in the same check: `inject_crs_at_shocks` multiplies the KR13 eta
+  by the *dissipated thermal* flux, while KR13 / Vazza et al. define eta relative to the *kinetic*
+  flux 0.5 rho_1 v_s^3 (Dubois et al. 2019 use the dissipated-flux convention with a renormalised
+  KR13 shape). The code therefore injects delta(M) (0.3-0.56) times KR13's own fraction. User
+  decision pending.
+
+## Where things stand (2026-09-26, DSA injection switched to the adaptive shock sampling -- DONE)
+
+**`CosmicRayGreyConfig.dsa_adaptive_shock_sampling` (new, default True).** DSA injection now takes
+Mach number and dissipated flux from the shock finder's adaptive + extended walk
+(`find_shocks_pfrommer(mach_sampling_adaptive=True, mach_sampling_extend=True)`, steps
+`dsa_shock_sampling_max_steps=15`) and spreads each shock's injection over the surface cell and the
+numerically broadened post-shock cells along its post-side ray, weighted by `max(p - p_pre, 0)`
+(`cr_grey_injection._spread_over_post_shock_cells`; Pfrommer et al. 2017 Sec. 3.1.2). `False`
+restores the old fixed 1-cell sampling with surface-cell-only injection. Details of the finder side
+(flux port, post-side compression gate, stop_gradient on the sampling direction, slab processing):
+`pytests/shock_finder3D/FIXES_TODO.md` round 24.
+
+**Why both parts are needed.** The old 1-cell sampler underestimated strong shocks badly: the young
+item-7 Sedov blast (ambient p=1e-4, true Mach ~1000-1400) read as Mach ~2; the item-9 Mach-2 piston
+shock read as 1.30, i.e. exactly at `dsa_mach_min`. With the correct flux, taking all of it out of the
+surface cell (the foot of the smeared shock) drained that cell to the pressure floor and NaN'd item 7
+within ~5e-4 time units; spreading into the post-shock cells, where the dissipated heat is, fixes it
+(minimum pressure stays at ambient).
+
+**Re-validation (all with the new default):**
+
+| ladder item | test | result |
+|---|---|---|
+| 7 | `cr_sedov_taylor` | PASS |
+| 8 | `cr_dsa_mach_dependence` (both) | PASS; cross-check now uses `dsa_shock_finder_kwargs` and checks the spread conserves the total |
+| 9 | `test_cr_dsa_shock_jump` | PASS (reference flux now from the injection's own sampling) |
+| 9 | `test_cr_precursor_ode` | PASS with Test-B `dsa_efficiency=0.01` (see below) |
+| 10 | `cr_wind_bubble` | PASS (1909 s) |
+| 11 | `cr_snr_clumpy_medium` | PASS at 128^3 |
+| 15 | `cr_snr_molecular_cloud_pion_bump` | PASS at 128^3 |
+| 16-17 | `cr_gradient_check` (4 tests) | PASS |
+| 18 | `cr_energy_budget`, `cr_mhd_energy_budget` | PASS (MHD 9e-14; 5210 s vs ~4200 s) |
+| D2 | `cr_phase_d_injection_efficiency_inference` | PASS: recovered 1.0625 (was 1.0635); Step-1 AD-vs-FD 6.9% (was 0.10%) |
+
+- **Item 9 Test B recalibrated.** At the correctly measured Mach (~1.96) the module's
+  `dsa_efficiency=0.1` injects ~8x more CR energy than the old near-threshold injection did, and with
+  Test B's diffusive precursor (kappa=0.2, v_red=8) the subshock is smoothed away by t~0.2 (a real
+  CR-modified-shock outcome). Scan: 0.04 fails, 0.02 and 0.01 pass; Test B now uses 0.01 (documented
+  in its docstring). Test A keeps 0.1.
+- **Items 11/15 at 256^3 do not fit an 11 GB GPU in either mode**: the compiled time-step program
+  needs 10.3 GiB temp + 0.56 GiB args with fixed *and* adaptive sampling (measured with
+  `memory_analysis`; the fixed run OOMs identically). Validated at 128^3 instead; their committed
+  256^3 figures were left untouched.
+- **Phase D gradient.** First run NaN'd: the walk's trilinear sampling propagated gradients into the
+  sample positions, i.e. into `-grad T/|grad T|` (singular at |grad T|=0) -- fixed with
+  `stop_gradient` on the direction. The remaining 6.9% AD-vs-FD gap at 48^3 (0.2% at 20^3) is the
+  discrete walk/spread choices, the same kind of effect item 16 documented; the fit is unaffected.
+- Figures regenerated with the new default: items 7, 8, 9 (both), 10, 16 rollout, 18 (hydro, MHD), D2.
 
 ## Where things stand (2026-09-23, latest: ladder item 18 MHD extension -- DONE, closes to ~1e-13)
 

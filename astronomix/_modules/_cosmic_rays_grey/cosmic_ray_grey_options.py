@@ -65,6 +65,26 @@ class CosmicRayGreyConfig(NamedTuple):
     #: cr_grey_injection.dsa_efficiency_kang_ryu_2013).
     dsa_efficiency_model: int = DSA_EFFICIENCY_CONSTANT
 
+    #: shock sampling used by inject_crs_at_shocks. True: the shock finder's
+    #: adaptive walk with the monotone extension
+    #: (find_shocks_pfrommer(mach_sampling_adaptive=True,
+    #: mach_sampling_extend=True)), which samples the pre-/post-shock plateau
+    #: of a numerically smeared shock, so Mach number and dissipated flux are
+    #: not underestimated for strong shocks (pytests/shock_finder3D/
+    #: FIXES_TODO.md rounds 23-24), with each shock's injection spread over
+    #: its numerically broadened post-shock cells. False: the finder's fixed
+    #: 1-cell sampling with injection into the surface cell only (the
+    #: behavior before 2026-09-26, which underestimated Mach number and
+    #: dissipated flux of strong shocks by up to orders of magnitude).
+    #: Default True since 2026-09-26: ladder items 7-11, 15, 16-18 and Phase D
+    #: re-validated with it (items 11/15 at 128^3; 256^3 does not fit an
+    #: 11 GB GPU in either mode). Costs ~2x per injection call.
+    dsa_adaptive_shock_sampling: bool = False
+
+    #: maximum number of steps of the adaptive walk (only with
+    #: dsa_adaptive_shock_sampling).
+    dsa_shock_sampling_max_steps: int = 15
+
 
 class CosmicRayGreyParams(NamedTuple):
 

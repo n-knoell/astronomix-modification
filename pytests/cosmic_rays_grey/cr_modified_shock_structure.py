@@ -126,6 +126,7 @@ from astronomix.option_classes.simulation_config import (
 from astronomix.time_stepping.time_integration import time_integration
 from astronomix.variable_registry.registered_variables import get_registered_variables
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
+from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_shock_finder_kwargs
 from astronomix.test_setups.reference_solutions.cr_modified_shock_structure import (
     cr_precursor_ode_rhs,
     modified_rankine_hugoniot_with_cr_injection,
@@ -163,7 +164,8 @@ U2 = V_SHOCK * (1.0 - 1.0 / _R)
 P2 = P1 * (2.0 * GAMMA * _M0**2 - (GAMMA - 1.0)) / (GAMMA + 1.0)
 
 
-def _run_moving_shock(reduced_streaming_speed, diffusive_relaxation, diffusion_coefficient=1.0):
+def _run_moving_shock(reduced_streaming_speed, diffusive_relaxation, diffusion_coefficient=1.0,
+                      dsa_efficiency=DSA_EFFICIENCY):
     """Build and run the shared moving-shock IC; return per-snapshot data."""
     config = SimulationConfig(
         solver_mode=FINITE_VOLUME,
@@ -204,7 +206,7 @@ def _run_moving_shock(reduced_streaming_speed, diffusive_relaxation, diffusion_c
             gamma_cr=GAMMA_CR,
             reduced_streaming_speed=reduced_streaming_speed,
             diffusion_coefficient=diffusion_coefficient,
-            dsa_efficiency=DSA_EFFICIENCY,
+            dsa_efficiency=dsa_efficiency,
             dsa_mach_min=DSA_MACH_MIN,
         ),
     )
@@ -220,6 +222,7 @@ def _shock_diagnostics(states, x, config, registered_variables, helper_data):
         sf = find_shocks_pfrommer(
             jnp.asarray(states[i]), config, registered_variables, helper_data,
             mach_min=DSA_MACH_MIN,
+            **dsa_shock_finder_kwargs(config.cosmic_ray_grey_config),
         )
         mach = np.asarray(sf.mach_numbers)
         idx = int(np.argmax(mach)) if float(mach.max()) > 0.0 else -1
@@ -305,7 +308,8 @@ def test_cr_dsa_shock_jump(
 
     # Subshock RH-jump-with-injection cross-check, at the final snapshot.
     st_b = jnp.asarray(states[-1])
-    sf_b = find_shocks_pfrommer(st_b, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN)
+    sf_b = find_shocks_pfrommer(st_b, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN,
+                                **dsa_shock_finder_kwargs(config.cosmic_ray_grey_config))
     mach_b = np.asarray(sf_b.mach_numbers)
     shock_idx = int(np.argmax(mach_b))
     zone = np.asarray(sf_b.shock_zones)
@@ -392,6 +396,7 @@ def test_cr_precursor_ode(
     reduced_streaming_speed: float = 8.0,
     diffusion_coefficient: float = 0.2,
     precursor_window_cells: int = 150,
+    dsa_efficiency: float = 0.01,
 ):
     """Test B: precursor ODE local cross-check (diffusive_relaxation on).
 
@@ -424,11 +429,22 @@ def test_cr_precursor_ode(
             with cancellation, see ``cr_precursor_ode_rhs``'s derivation).
         precursor_window_cells: Number of cells upstream of the shock zone to
             include in the sampled precursor window.
-    """
+        dsa_efficiency: Constant DSA efficiency for this test (default 0.01, not
+            the module's 0.1). With the adaptive shock sampling
+            (``CosmicRayGreyConfig.dsa_adaptive_shock_sampling``, FIXES_TODO.md
+            round 24) the finder measures this nominal Mach-2 shock at ~1.96;
+            the old 1-cell sampler read it at 1.30, right at ``dsa_mach_min``,
+            so injection only ever ran near threshold. At the correctly measured
+            Mach, 0.1 injects ~8x more CR energy and, with this test's diffusive
+            precursor, smooths the subshock away by t~0.2 (0.04 does too; 0.02
+            and 0.01 keep it) -- a genuine CR-modified-shock outcome, but the
+            precursor ODE comparison needs a persistent subshock.
+"""
     snapshot_data, x, config, registered_variables, helper_data, params = _run_moving_shock(
         reduced_streaming_speed=reduced_streaming_speed,
         diffusive_relaxation=True,
         diffusion_coefficient=diffusion_coefficient,
+        dsa_efficiency=dsa_efficiency,
     )
     times = np.asarray(snapshot_data.time_points)
     states = np.asarray(snapshot_data.states)
@@ -451,7 +467,8 @@ def test_cr_precursor_ode(
     )
 
     st_b = jnp.asarray(states[-1])
-    sf_b = find_shocks_pfrommer(st_b, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN)
+    sf_b = find_shocks_pfrommer(st_b, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN,
+                                **dsa_shock_finder_kwargs(config.cosmic_ray_grey_config))
     mach_b = np.asarray(sf_b.mach_numbers)
     shock_idx = int(np.argmax(mach_b))
     zone = np.asarray(sf_b.shock_zones)

@@ -12,11 +12,23 @@ from astronomix.option_classes.simulation_config import (
 )
 
 from astronomix.shock_finder3D._data_structures import ShockFinderResult
-from astronomix.shock_finder3D._gradients import _calculate_shock_direction
-from astronomix.shock_finder3D._shock_zones import identify_shock_zones
+from astronomix.shock_finder3D._gradients import (
+    _calculate_shock_direction,
+    _calculate_velocity_divergence,
+)
+from astronomix.shock_finder3D._shock_zones import (
+    get_post_pre_shock_values_adaptive,
+    identify_shock_zones,
+)
 from astronomix.shock_finder3D._shock_surface import identify_shock_surface
-from astronomix.shock_finder3D._shock_mach import _calculate_mach_at_surface
-from astronomix.shock_finder3D._energy_dissipation import calculate_thermal_energy_flux
+from astronomix.shock_finder3D._shock_mach import (
+    _calculate_mach_at_surface,
+    mach_from_pressure_samples,
+)
+from astronomix.shock_finder3D._energy_dissipation import (
+    calculate_thermal_energy_flux,
+    thermal_energy_flux_from_pre_state,
+)
 
 @partial(
     jax.jit,
@@ -79,18 +91,19 @@ def find_shocks_pfrommer(
             fixed `mach_sampling_steps` cells, and along the continuous
             local shock-normal direction rather than a single dominant grid
             axis. See FIXES_TODO.md item 1b (round 16) for the literature
-            basis and validation. Only affects the Mach-number output
-            (phase 4); thermal-energy flux (phase 5) still uses the
-            fixed-step sampler regardless of this flag.
+            basis and validation. Mach number and thermal-energy flux then
+            both come from this one walk (the flux from the pre-shock
+            pressure/density at the same point the Mach number uses).
         mach_sampling_extend: opt-in (default False), only with
             ``mach_sampling_adaptive=True``: after a ray leaves the shock
             zone, keep walking while the pressure keeps falling (pre-shock
-            side) / rising (post-shock side) by more than 2% per step, and take
+            side) / rising (post-shock side, only while the cell being left is
+            still compressive, div v < 0) by more than 2% per step, and take
             the post-shock sample at the pressure peak along the walk, so the
             samples land on the upstream/downstream plateau even when the
             zone ends inside a numerically smeared strong shock (see
             ``get_post_pre_shock_values_adaptive`` and FIXES_TODO.md round 23).
-            Mach number only; the thermal-energy flux is unaffected.
+            Applies to both the Mach number and the thermal-energy flux.
 
     Returns:
         ShockFinderResult
@@ -117,41 +130,58 @@ def find_shocks_pfrommer(
         config, registered_variables,
     )
 
-    # Phase 4: Mach numbers (*spatial_shape)
-    mach_numbers = _calculate_mach_at_surface(
-        primitive_state, shock_surface, shock_direction,
-        config, registered_variables, sampling_steps=mach_sampling_steps,
-        adaptive=mach_sampling_adaptive, shock_zones=shock_zones,
-        extend_monotone=mach_sampling_extend,
-    )
+    if mach_sampling_adaptive:
+        # Phases 4-5 from one adaptive walk (Schaal & Springel 2015 Sec.
+        # 2.3.3, optionally extended -- see get_post_pre_shock_values_adaptive):
+        # pressure on both sides gives the Mach number, pressure and density
+        # at the *same* pre-shock point give the thermal-energy flux, so the
+        # two are consistent (FIXES_TODO.md round 24; previously the flux
+        # used the fixed 1-cell sampler here). Rays that never leave the
+        # zone within mach_sampling_steps are excluded from both.
+        gamma_gas = 5 / 3
+        # the extension follows the shock's compression (div v < 0) and stops
+        # one cell past it -- see get_post_pre_shock_values_adaptive
+        compressive = (
+            _calculate_velocity_divergence(primitive_state, config, registered_variables, r) < 0
+            if mach_sampling_extend else None
+        )
+        p_post, p_pre, _, rho_pre, exited_post, exited_pre, post_shock_steps, _ = (
+            get_post_pre_shock_values_adaptive(
+                shock_direction, pressure, density, shock_zones,
+                max_steps=mach_sampling_steps, extend_monotone=mach_sampling_extend,
+                compressive=compressive, return_sample_steps=True,
+            )
+        )
+        pre_shock_pressure = p_pre
+        valid = shock_surface & exited_post & exited_pre
+        mach_numbers = jnp.where(
+            valid, mach_from_pressure_samples(p_post, p_pre, gamma_gas), 0.0
+        )
+        thermal_energy_flux = jnp.where(
+            valid,
+            thermal_energy_flux_from_pre_state(mach_numbers, p_pre, rho_pre, gamma_gas),
+            0.0,
+        )
+    else:
+        post_shock_steps = None
+        pre_shock_pressure = None
+        # Phase 4: Mach numbers (*spatial_shape), fixed-step sampling
+        mach_numbers = _calculate_mach_at_surface(
+            primitive_state, shock_surface, shock_direction,
+            config, registered_variables, sampling_steps=mach_sampling_steps,
+        )
 
-    # Phase 5: thermal-energy flux at shock-surface cells. calculate_thermal_
-    # energy_flux has not been ported to the adaptive walk (see
-    # get_post_pre_shock_values_adaptive's docstring) -- it always uses the
-    # fixed-step sampler for its own pre-shock density/pressure. When
-    # mach_sampling_adaptive=False, `mach_sampling_steps` is passed through
-    # unchanged (original behavior: same sampling distance for both, so
-    # pre-shock state stays consistent with the Mach number it's combined
-    # with). When mach_sampling_adaptive=True, `mach_sampling_steps` instead
-    # sizes the adaptive walk's step cap (can be large, e.g. 15) and must
-    # NOT also be used as the flux's own fixed-step distance/boundary-margin
-    # -- doing so was confirmed to desync the two (flux force-zeroed over a
-    # much wider boundary margin than the now margin-free adaptive Mach,
-    # breaking the "flux nonzero exactly at surface" invariant). Falls back
-    # to the pre-existing default (1) instead; this means the flux's own
-    # pre-shock sample point may differ from the Mach's when adaptive is on
-    # -- a known, documented accuracy caveat, not yet resolved by porting
-    # flux to the adaptive walk too.
-    flux_sampling_steps = 1 if mach_sampling_adaptive else mach_sampling_steps
-    thermal_energy_flux = calculate_thermal_energy_flux(
-        primitive_state=primitive_state,
-        shock_surface=shock_surface,
-        shock_direction=shock_direction,
-        mach_numbers=mach_numbers,
-        config=config,
-        registered_variables=registered_variables,
-        sampling_steps=flux_sampling_steps,
-    )
+        # Phase 5: thermal-energy flux at shock-surface cells, same fixed
+        # sampling distance as the Mach number.
+        thermal_energy_flux = calculate_thermal_energy_flux(
+            primitive_state=primitive_state,
+            shock_surface=shock_surface,
+            shock_direction=shock_direction,
+            mach_numbers=mach_numbers,
+            config=config,
+            registered_variables=registered_variables,
+            sampling_steps=mach_sampling_steps,
+        )
 
     num_shocks     = jnp.sum(shock_surface, dtype=jnp.int32)
     shock_ids      = jnp.where(shock_surface, 1, 0)
@@ -166,4 +196,6 @@ def find_shocks_pfrommer(
         num_shocks=num_shocks,
         shock_ids=shock_ids,
         shock_zone_ids=shock_zone_ids,
+        post_shock_steps=post_shock_steps,
+        pre_shock_pressure=pre_shock_pressure,
     )

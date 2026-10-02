@@ -48,6 +48,12 @@ check):
      ``dsa_efficiency_mach_scale`` but the *time-integrated* ``E_cr`` only
      approximately does. The exact, no-feedback version of this comparison
      is the cross-check below.
+   - Further control runs, weak blasts (``WEAK_P_AMBIENTS``, 200-4000x the
+     ambient pressure), whose shocks at T_END together cover KR13's rising
+     part (Ms ~ 2-10); the strong blast's shock (exact Sedov Ms~176) sits on
+     the plateau everywhere and would never test the Mach dependence on its
+     own. Their median surface Mach numbers must span that range, and the
+     formula cross-check below runs on every control state.
    - **The main check**: an *exact* formula cross-check. A third run
      (control, ``DSA_EFFICIENCY_CONSTANT`` with ``dsa_efficiency=0`` --
      identical to ``cr_sedov_taylor.py``'s control) produces a final state
@@ -101,7 +107,9 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     DSA_EFFICIENCY_KANG_RYU_2013,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
+    _spread_over_post_shock_cells,
     dsa_efficiency_kang_ryu_2013,
+    dsa_shock_finder_kwargs,
     inject_crs_at_shocks,
 )
 
@@ -115,6 +123,15 @@ P_AMBIENT = 1e-4
 R_EXPLOSION = 0.05
 SMOOTH_CELLS = 2.0
 DSA_MACH_MIN = 1.3
+
+# Weak blasts: same explosion into higher ambient pressures, so that the
+# shocks at T_END together cover KR13's rising part (Ms ~ 2-10) instead of
+# its plateau. The strong blast's shock is far above Ms=15 everywhere at
+# T_END, so on its own it never samples the Mach dependence.
+WEAK_P_AMBIENTS = (0.02, 0.03, 0.08, 0.16, 0.4)
+
+# Sedov-Taylor similarity constant for gamma=5/3: R = xi (E t^2 / rho)^(1/5)
+SEDOV_XI = 1.15167
 
 # arbitrary but fixed dt for the standalone one-step formula cross-check
 # (layer 2's main check) -- any concrete value works equally well, since
@@ -149,13 +166,24 @@ def test_dsa_efficiency_kang_ryu_2013_shape():
     assert abs(plateau - 0.211) < 1e-6, f"Strong-shock plateau should be 0.211, got {plateau}."
 
 
+def sedov_mach(t, p_ambient, e_explosion=E_EXPLOSION, rho_ambient=RHO_AMBIENT):
+    """Exact Sedov-Taylor shock Mach number, v_s / c_ambient with
+    v_s = dR/dt = 0.4 R / t. Ignores the ambient counter-pressure, so it is
+    exact only for a strong shock (the P_AMBIENT blast, not the weak one)."""
+    radius = SEDOV_XI * (e_explosion * t**2 / rho_ambient) ** 0.2
+    return 0.4 * radius / t / (GAMMA * p_ambient / rho_ambient) ** 0.5
+
+
 def _run_sedov(dsa_efficiency_model: int, dsa_efficiency: float = 0.1,
-                dsa_efficiency_mach_scale: float = 1.0):
+                dsa_efficiency_mach_scale: float = 1.0, p_ambient: float = P_AMBIENT):
     """Run one 3D CR-DSA Sedov blast; return the final state and diagnostics.
 
     Identical physical setup to ``cr_sedov_taylor.py``'s ``_run_sedov``, with
     ``dsa_efficiency_model``/``dsa_efficiency_mach_scale`` exposed so this
-    module can select the Mach-dependent path.
+    module can select the Mach-dependent path, and ``p_ambient`` for the weak
+    blast. Uses the adaptive shock sampling explicitly
+    (``dsa_adaptive_shock_sampling=True``): the fixed 1-cell sampler reads
+    the strong blast's Ms~140-180 shock as Ms~3-30 (FIXES_TODO.md round 24).
     """
     config = SimulationConfig(
         geometry=CARTESIAN,
@@ -169,6 +197,7 @@ def _run_sedov(dsa_efficiency_model: int, dsa_efficiency: float = 0.1,
             grey_cosmic_rays=True,
             diffusive_shock_acceleration=True,
             dsa_efficiency_model=dsa_efficiency_model,
+            dsa_adaptive_shock_sampling=True,
         ),
     )
     helper_data = get_helper_data(config)
@@ -184,7 +213,7 @@ def _run_sedov(dsa_efficiency_model: int, dsa_efficiency: float = 0.1,
     weight = 0.5 * (1.0 - jnp.tanh((radius - R_EXPLOSION) / smooth_width))
     cell_volume = dx**3
     delta_p = E_EXPLOSION * (GAMMA - 1.0) / (jnp.sum(weight) * cell_volume)
-    gas_pressure = P_AMBIENT + delta_p * weight
+    gas_pressure = p_ambient + delta_p * weight
 
     initial_state = construct_primitive_state(
         config=config,
@@ -239,103 +268,13 @@ def _run_sedov(dsa_efficiency_model: int, dsa_efficiency: float = 0.1,
     )
 
 
-def test_cr_dsa_mach_dependence(
-    conservation_tol: float = 1e-3,
-    scale_ratio_tol: float = 0.05,
-    cross_check_tol: float = 1e-5,
-    domain_half_width: float = 0.5,
-    containment_margin: float = 0.03,
-):
-    """CR-DSA Mach-dependent efficiency: live-simulation checks (layer 2).
+def _formula_cross_check(control, cross_check_tol):
+    """Exact formula cross-check (layer 2's main check, see module docstring)
+    on one control run's final state: ``inject_crs_at_shocks`` with the KR13
+    model vs. an independent computation from the same finder output.
 
-    Args:
-        conservation_tol: Maximum allowed relative error on each DSA run's
-            own total-energy conservation, same identity/tolerance family as
-            ``cr_sedov_taylor.py``.
-        scale_ratio_tol: Maximum allowed relative error on
-            ``E_cr(scale=0.5) / E_cr(scale=1.0) == 0.5``. Calibrated observed
-            error ~1.9% at NUM_CELLS=48 -- not near-machine-precision, since
-            these are two independent full time integrations with a genuine
-            (if small) dynamical feedback between them (see module
-            docstring); 0.05 leaves a >2.5x margin.
-        cross_check_tol: Maximum allowed relative error on the exact
-            formula cross-check (layer 2's main check) -- both sides use the
-            same deterministic computation, so any mismatch beyond float32
-            precision (this module runs in float32; calibrated observed
-            error ~8e-8, consistent with that and not with a real formula
-            mismatch, which would show up at the percent level or worse)
-            means the injection code isn't using the documented formula.
-            1e-5 leaves a >100x margin over the calibrated value.
-        domain_half_width: Half the (unit, default) box size.
-        containment_margin: Minimum gap the shock front must stay within the
-            domain, same purpose as in ``cr_sedov_taylor.py``.
+    Returns the finder result and the relative error.
     """
-    control = _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_CONSTANT, dsa_efficiency=0.0)
-    kr13 = _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013,
-                       dsa_efficiency_mach_scale=1.0)
-    cs14 = _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013,
-                       dsa_efficiency_mach_scale=0.5)
-
-    for name, run in (("control", control), ("kr13", kr13), ("cs14", cs14)):
-        assert not bool(jnp.any(jnp.isnan(run["final_state"]))), (
-            f"CR-DSA Mach-dependence ({name} run) produced NaNs."
-        )
-
-    # Containment (see cr_sedov_taylor.py for the same check/rationale).
-    rho_flat = control["rho"].reshape(-1)
-    r_flat = control["radius"].reshape(-1)
-    shocked = jnp.abs(rho_flat / RHO_AMBIENT - 1.0) > 0.01
-    r_shock = float(jnp.max(jnp.where(shocked, r_flat, 0.0)))
-    assert r_shock < domain_half_width - containment_margin, (
-        f"Shock front (r={r_shock:.4f}) is too close to the open boundary "
-        f"for the energy-budget checks below to be meaningful."
-    )
-
-    assert control["E_cr"] == 0.0, (
-        f"Control run (dsa_efficiency=0) injected nonzero CR energy: "
-        f"E_cr={control['E_cr']:.6e}."
-    )
-
-    total_volume = 1.0**3
-    E_ambient_initial = P_AMBIENT / (GAMMA - 1.0) * total_volume
-    E_total_initial = E_ambient_initial + E_EXPLOSION
-    for name, run in (("kr13", kr13), ("cs14", cs14)):
-        rel_err = abs(run["E_total"] - E_total_initial) / E_total_initial
-        assert rel_err < conservation_tol, (
-            f"{name} run's total energy is not conserved: final "
-            f"{run['E_total']:.6f} vs. initial {E_total_initial:.6f} "
-            f"(rel. err {rel_err:.4e} >= tol {conservation_tol})."
-        )
-
-    # E_cr should be a clearly nonzero but bounded fraction of the total
-    # energy budget. Calibrated at NUM_CELLS=48: KR13 ~4.8%, CS14-like
-    # ~2.4% -- comparable to (modestly below) item 7's flat-10%-efficiency
-    # model's ~5.3%. The blast's shock is genuinely strong at t=0.07 (the
-    # control run's shock-surface cells span Ms~3-29, mean~11 -- see the
-    # diagnostic plot), so most cells sit well above where KR13's efficiency
-    # reaches 10% (~Ms=5); the total is a time-integrated quantity over the
-    # whole run, including the shock's earlier (Mach-decreasing-over-time,
-    # so even stronger) history, not just this final-time snapshot, so no
-    # precise a priori match to item 7's flat model is expected either way.
-    for name, run in (("kr13", kr13), ("cs14", cs14)):
-        cr_fraction = run["E_cr"] / E_total_initial
-        assert 0.001 < cr_fraction < 0.3, (
-            f"{name} run's CR energy fraction ({cr_fraction:.4f}) is outside "
-            f"the expected [0.001, 0.3] band -- either injection is not "
-            f"happening, or is wildly over-injecting."
-        )
-
-    # dsa_efficiency_mach_scale=0.5 should give almost exactly half the CR
-    # energy of scale=1.0, in a real run -- confirms the scale multiplies
-    # the per-cell efficiency field itself (see module docstring).
-    ratio = cs14["E_cr"] / kr13["E_cr"]
-    ratio_rel_err = abs(ratio - 0.5) / 0.5
-    assert ratio_rel_err < scale_ratio_tol, (
-        f"CS14-like/KR13 E_cr ratio ({ratio:.6f}) should be almost exactly "
-        f"0.5 -- rel. err {ratio_rel_err:.4e} >= tol {scale_ratio_tol}."
-    )
-
-    # Main check: exact formula cross-check (layer 2, see module docstring).
     # Reuse the control run's final state (a real, fully-formed shock, zero
     # CR energy yet) and grid/config, only swapping in the KR13 model.
     kr13_config = control["config"]._replace(
@@ -352,15 +291,34 @@ def test_cr_dsa_mach_dependence(
     helper_data = control["helper_data"]
     control_state = control["final_state"]
 
+    # same shock sampling as inject_crs_at_shocks uses for this config
+    cr_config = kr13_config.cosmic_ray_grey_config
+    adaptive = cr_config.dsa_adaptive_shock_sampling
     sf_result = find_shocks_pfrommer(
         control_state, kr13_config, registered_variables, helper_data,
-        mach_min=DSA_MACH_MIN,
+        mach_min=DSA_MACH_MIN, **dsa_shock_finder_kwargs(cr_config),
     )
     expected_efficiency = dsa_efficiency_kang_ryu_2013(sf_result.mach_numbers)
     expected_delta_e_cr = (
         expected_efficiency * sf_result.thermal_energy_flux
         / kr13_config.grid_spacing * CROSS_CHECK_DT
     )
+    if adaptive:
+        # adaptive sampling spreads each shock's injection over its post-shock
+        # cells (cr_grey_injection._spread_over_post_shock_cells); the spread
+        # must conserve the total, and per cell the injection must match the
+        # formula spread the same way
+        surface_total = float(jnp.sum(expected_delta_e_cr))
+        expected_delta_e_cr = _spread_over_post_shock_cells(
+            expected_delta_e_cr, sf_result.shock_direction, sf_result.post_shock_steps,
+            control_state[registered_variables.pressure_index],
+            sf_result.pre_shock_pressure, cr_config.dsa_shock_sampling_max_steps,
+        )
+        spread_err = abs(float(jnp.sum(expected_delta_e_cr)) - surface_total) / surface_total
+        assert spread_err < cross_check_tol, (
+            f"spreading over post-shock cells does not conserve the injected "
+            f"total (rel. err {spread_err:.3e})"
+        )
     assert float(jnp.max(expected_delta_e_cr)) > 0.0, (
         "Cross-check setup produced zero expected CR injection everywhere -- "
         "the control run's shock apparently never exceeds Ms=2, so this "
@@ -386,40 +344,200 @@ def test_cr_dsa_mach_dependence(
         f"{cross_check_rel_err:.4e} >= tol {cross_check_tol}. This means the "
         f"injection code is not actually using the documented formula."
     )
+    return sf_result, cross_check_rel_err
+
+
+def _surface_mach(sf_result):
+    mach = jnp.asarray(sf_result.mach_numbers).reshape(-1)
+    return mach[mach > 0.0]
+
+
+def test_cr_dsa_mach_dependence(
+    conservation_tol: float = 1e-3,
+    scale_ratio_tol: float = 0.05,
+    cross_check_tol: float = 1e-5,
+    domain_half_width: float = 0.5,
+    containment_margin: float = 0.03,
+    weak_mach_low: float = 2.6,
+    weak_mach_high: float = 9.0,
+):
+    """CR-DSA Mach-dependent efficiency: live-simulation checks (layer 2).
+
+    Args:
+        conservation_tol: Maximum allowed relative error on each DSA run's
+            own total-energy conservation, same identity/tolerance family as
+            ``cr_sedov_taylor.py``.
+        scale_ratio_tol: Maximum allowed relative error on
+            ``E_cr(scale=0.5) / E_cr(scale=1.0) == 0.5``. Calibrated observed
+            error ~3.7% at NUM_CELLS=48 with the adaptive shock sampling
+            (~1.9% with the old fixed 1-cell sampling) -- not
+            near-machine-precision, since these are two independent full time
+            integrations with a genuine (if small) dynamical feedback between
+            them (see module docstring); 0.05 leaves only a ~1.4x margin.
+        cross_check_tol: Maximum allowed relative error on the exact
+            formula cross-check (layer 2's main check) -- both sides use the
+            same deterministic computation, so any mismatch beyond float32
+            precision (this module runs in float32; calibrated observed
+            error ~8e-8, consistent with that and not with a real formula
+            mismatch, which would show up at the percent level or worse)
+            means the injection code isn't using the documented formula.
+            1e-5 leaves a >100x margin over the calibrated value.
+        domain_half_width: Half the (unit, default) box size.
+        containment_margin: Minimum gap the shock front must stay within the
+            domain, same purpose as in ``cr_sedov_taylor.py``.
+        weak_mach_low, weak_mach_high: The weak blasts' median surface
+            Mach numbers must reach below ``weak_mach_low`` and above
+            ``weak_mach_high``, so that together they cover KR13's rising
+            part and the cross-checks on them exercise the Mach dependence.
+    """
+    control = _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_CONSTANT, dsa_efficiency=0.0)
+    weak = {
+        p_ambient: _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_CONSTANT,
+                              dsa_efficiency=0.0, p_ambient=p_ambient)
+        for p_ambient in WEAK_P_AMBIENTS
+    }
+    weak_runs = tuple((f"weak p_amb={p:g}", run) for p, run in weak.items())
+    kr13 = _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013,
+                       dsa_efficiency_mach_scale=1.0)
+    cs14 = _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013,
+                       dsa_efficiency_mach_scale=0.5)
+
+    for name, run in (("control", control), ("kr13", kr13), ("cs14", cs14)) + weak_runs:
+        assert not bool(jnp.any(jnp.isnan(run["final_state"]))), (
+            f"CR-DSA Mach-dependence ({name} run) produced NaNs."
+        )
+
+    # Containment (see cr_sedov_taylor.py for the same check/rationale).
+    for name, run in (("control", control),) + weak_runs:
+        rho_flat = run["rho"].reshape(-1)
+        r_flat = run["radius"].reshape(-1)
+        shocked = jnp.abs(rho_flat / RHO_AMBIENT - 1.0) > 0.01
+        r_shock = float(jnp.max(jnp.where(shocked, r_flat, 0.0)))
+        assert r_shock < domain_half_width - containment_margin, (
+            f"{name} run: shock front (r={r_shock:.4f}) is too close to the "
+            f"open boundary for the checks below to be meaningful."
+        )
+
+        assert run["E_cr"] == 0.0, (
+            f"{name} control run (dsa_efficiency=0) injected nonzero CR "
+            f"energy: E_cr={run['E_cr']:.6e}."
+        )
+
+    total_volume = 1.0**3
+    E_ambient_initial = P_AMBIENT / (GAMMA - 1.0) * total_volume
+    E_total_initial = E_ambient_initial + E_EXPLOSION
+    for name, run in (("kr13", kr13), ("cs14", cs14)):
+        rel_err = abs(run["E_total"] - E_total_initial) / E_total_initial
+        assert rel_err < conservation_tol, (
+            f"{name} run's total energy is not conserved: final "
+            f"{run['E_total']:.6f} vs. initial {E_total_initial:.6f} "
+            f"(rel. err {rel_err:.4e} >= tol {conservation_tol})."
+        )
+
+    # E_cr should be a clearly nonzero but bounded fraction of the total
+    # energy budget. Calibrated at NUM_CELLS=48 with the adaptive shock
+    # sampling (2026-10-02): KR13 ~12.4%, CS14-like ~6.4% (the old fixed
+    # 1-cell sampling gave ~4.8% / ~2.4%, from Mach numbers 6-60x too low).
+    # The blast's shock is genuinely strong at t=0.07 (exact Sedov Ms~176;
+    # the finder's surface cells read ~120-150 -- see the diagnostic plot), so
+    # every cell sits on KR13's plateau; the total is a time-integrated quantity over the
+    # whole run, including the shock's earlier (Mach-decreasing-over-time,
+    # so even stronger) history, not just this final-time snapshot, so no
+    # precise a priori match to item 7's flat model is expected either way.
+    for name, run in (("kr13", kr13), ("cs14", cs14)):
+        cr_fraction = run["E_cr"] / E_total_initial
+        assert 0.001 < cr_fraction < 0.3, (
+            f"{name} run's CR energy fraction ({cr_fraction:.4f}) is outside "
+            f"the expected [0.001, 0.3] band -- either injection is not "
+            f"happening, or is wildly over-injecting."
+        )
+
+    # dsa_efficiency_mach_scale=0.5 should give almost exactly half the CR
+    # energy of scale=1.0, in a real run -- confirms the scale multiplies
+    # the per-cell efficiency field itself (see module docstring).
+    ratio = cs14["E_cr"] / kr13["E_cr"]
+    ratio_rel_err = abs(ratio - 0.5) / 0.5
+    print(
+        f"E_cr / E_total: KR13 {kr13['E_cr'] / E_total_initial:.4f}, CS14-like "
+        f"{cs14['E_cr'] / E_total_initial:.4f}; ratio {ratio:.4f} (rel. err "
+        f"{ratio_rel_err:.3%})"
+    )
+    assert ratio_rel_err < scale_ratio_tol, (
+        f"CS14-like/KR13 E_cr ratio ({ratio:.6f}) should be almost exactly "
+        f"0.5 -- rel. err {ratio_rel_err:.4e} >= tol {scale_ratio_tol}."
+    )
+
+    # Main check: exact formula cross-check, on the strong blast (shock on
+    # KR13's plateau) and on each weak blast (shocks on its rising part, where
+    # the per-cell efficiency actually varies with Mach number).
+    sf_result, rel_err = _formula_cross_check(control, cross_check_tol)
+    mach_strong = _surface_mach(sf_result)
+    mach_sedov = sedov_mach(T_END, P_AMBIENT)
+    print(
+        f"strong blast (p_amb={P_AMBIENT:g}): surface Ms median "
+        f"{float(jnp.median(mach_strong)):.1f} (exact Sedov {mach_sedov:.1f}), "
+        f"cross-check rel. err {rel_err:.3e}"
+    )
+    mach_weak = {}
+    for p_ambient, run in weak.items():
+        sf_weak, rel_err_weak = _formula_cross_check(run, cross_check_tol)
+        mach_weak[p_ambient] = _surface_mach(sf_weak)
+        print(
+            f"weak blast (p_amb={p_ambient:g}): surface Ms median "
+            f"{float(jnp.median(mach_weak[p_ambient])):.2f}, cross-check rel. "
+            f"err {rel_err_weak:.3e}"
+        )
 
     # Diagnostic plot: E_cr fraction by config (left), and the KR13
-    # efficiency curve with the control run's actual shock-cell Mach numbers
-    # marked on it (right) -- ties the pure-function shape (layer 1) to what
-    # a real blast actually samples.
+    # efficiency curve with both control runs' shock-cell Mach numbers marked
+    # on it (right). The markers lie on the curve by construction (y is
+    # KR13 evaluated at the finder's Mach number); what the panel shows is
+    # where along the curve each blast samples, and, for the strong blast,
+    # how the finder's Mach numbers compare with the exact Sedov value.
     fig, (ax_bars, ax_curve) = plt.subplots(1, 2, figsize=(12, 5))
 
     labels = ["KR13 (scale=1.0)", "CS14-like (scale=0.5)"]
     fractions = [kr13["E_cr"] / E_total_initial, cs14["E_cr"] / E_total_initial]
     ax_bars.bar(labels, fractions, color=["C0", "C1"])
     ax_bars.set_ylabel(r"$E_{\rm cr} / E_{\rm total}$")
-    ax_bars.set_title(f"CR energy fraction at t={T_END}")
+    ax_bars.set_title(f"CR energy fraction at t={T_END} (strong blast)")
 
-    ms_curve = jnp.linspace(0.0, 20.0, 400)
-    ax_curve.plot(ms_curve, dsa_efficiency_kang_ryu_2013(ms_curve), "-", color="C2",
+    ms_max = 1.2 * max(float(jnp.max(mach_strong)), mach_sedov, 20.0)
+    ms_curve = jnp.geomspace(1.0, ms_max, 600)
+    ax_curve.plot(ms_curve, dsa_efficiency_kang_ryu_2013(ms_curve), "-", color="black", lw=1,
                   label="KR13 fit")
-    shock_mach = sf_result.mach_numbers.reshape(-1)
-    shock_mach = shock_mach[shock_mach > 0.0]
-    if shock_mach.size > 0:
-        ax_curve.scatter(
-            shock_mach, dsa_efficiency_kang_ryu_2013(shock_mach),
-            s=8, color="C3", label="control run's shock cells",
-        )
+    blasts = [
+        (mach, f"C{i}", f"p_amb={p:g} shock cells")
+        for i, (p, mach) in enumerate(sorted(mach_weak.items(), reverse=True))
+    ]
+    blasts.append((mach_strong, "C9", f"p_amb={P_AMBIENT:g} (strong) shock cells"))
+    for mach, color, label in blasts:
+        if mach.size > 0:
+            ax_curve.scatter(mach, dsa_efficiency_kang_ryu_2013(mach), s=8,
+                             color=color, label=label)
+    ax_curve.axvline(mach_sedov, color="C9", ls=":", lw=1.5,
+                     label=f"strong blast, exact Sedov Ms={mach_sedov:.0f}")
     ax_curve.axvline(2.0, color="grey", ls="--", lw=1, label="Ms=2 (critical)")
+    ax_curve.set_xscale("log")
     ax_curve.set_xlabel(r"$M_s$")
     ax_curve.set_ylabel(r"$\eta_{\rm DSA}$")
-    ax_curve.set_title("Kang & Ryu (2013) efficiency")
+    ax_curve.set_title(f"Kang & Ryu (2013) efficiency, control runs at t={T_END}")
     ax_curve.legend(fontsize=8)
 
     fig.tight_layout()
     pics_dir = Path(__file__).resolve().parent / "pics"
     pics_dir.mkdir(exist_ok=True)
-    fig.savefig(pics_dir / "cr_dsa_mach_dependence_test.svg")
+    suffix = "" if NUM_CELLS == 48 else f"_{NUM_CELLS}"
+    fig.savefig(pics_dir / f"cr_dsa_mach_dependence_test{suffix}.svg")
     plt.close(fig)
+
+    # Together the weak blasts must cover KR13's rising part, Ms ~ 2-10.
+    medians = [float(jnp.median(m)) for m in mach_weak.values()]
+    assert min(medians) < weak_mach_low and max(medians) > weak_mach_high, (
+        f"The weak blasts' median surface Mach numbers {medians} no longer "
+        f"span [{weak_mach_low}, {weak_mach_high}] -- they do not cover "
+        f"KR13's rising part; retune WEAK_P_AMBIENTS."
+    )
 
 
 if __name__ == "__main__":

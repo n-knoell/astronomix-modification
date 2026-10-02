@@ -116,6 +116,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 )
 from astronomix._modules._stellar_wind.weaver import Weaver
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
+from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_shock_finder_kwargs
 
 # ---- physical setup (calibrated 2026-09-10) ----
 GAMMA = 5.0 / 3.0
@@ -214,7 +215,8 @@ def _run_wind_bubble(dsa_efficiency: float):
     E_cr = float(jnp.sum(e_cr) * cell_volume)
 
     shock_result = find_shocks_pfrommer(
-        final_state, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN
+        final_state, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN,
+        **dsa_shock_finder_kwargs(config.cosmic_ray_grey_config),
     )
     surf = np.array(shock_result.shock_surface_cells)
     r_np = np.array(radius)

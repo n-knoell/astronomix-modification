@@ -16,6 +16,16 @@ from astronomix.shock_finder3D._shock_zones import (
     _make_interior_mask,
 )
 
+def mach_from_pressure_samples(p_post, p_pre, gamma_gas=5 / 3):
+    """Rankine-Hugoniot Mach number from sampled post-/pre-shock pressures.
+
+    p2/p1 = (2 gamma M^2 - (gamma - 1)) / (gamma + 1), inverted; the ratio is
+    clamped to >= 1 to avoid numerical issues with very weak shocks.
+    """
+    p_ratio = jnp.maximum(p_post / jnp.maximum(p_pre, 1e-30), 1.0)
+    return jnp.sqrt((p_ratio * (gamma_gas + 1) + (gamma_gas - 1)) / (2 * gamma_gas))
+
+
 """
 Calculate Mach number for all cells,
 but only keep it at the shock surface (where shock_surface is True) via filter
@@ -76,10 +86,7 @@ def _calculate_mach_at_surface(
         converged = jnp.ones_like(shock_surface)
 
     # calculate Mach number for all cells
-    # p₂/p₁ = p_post/p_pre, but clamp to 1 to avoid numerical issues with very weak shocks
-    p_ratio = jnp.maximum(p_post / jnp.maximum(p_pre, 1e-30), 1.0)
-    # as p₂/p₁ = (2γM² − (γ−1)) / (γ+1) so M = √[ (p₂/p₁ · (γ+1) + (γ−1)) / (2γ) ]
-    M = jnp.sqrt((p_ratio * (gamma_gas + 1) + (gamma_gas - 1)) / (2 * gamma_gas))
+    M = mach_from_pressure_samples(p_post, p_pre, gamma_gas)
 
     if adaptive:
         # get_post_pre_shock_values_adaptive clamps at the boundary

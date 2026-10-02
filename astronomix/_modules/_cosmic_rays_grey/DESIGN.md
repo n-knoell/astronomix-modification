@@ -1540,8 +1540,10 @@ error on thermal + kinetic + magnetic + CR:
 double-precision configuration and that the single-precision tolerance run is `>10x` worse (keeps
 the explanation above pinned). Plots: `pytests/cosmic_rays_grey/pics/cr_mhd_energy_budget_test.svg` (budget) and
 `cr_mhd_energy_budget_fields.png` (midplane density, |B|^2 + field lines, plasma beta, e_cr for
-anisotropic vs. isotropic transport, centre cuts along/across B). With anisotropic transport CRs
-reach further into the cavity along B than across it (cavity 0.45-0.55 in x vs. 0.37-0.63 in y).
+anisotropic vs. isotropic transport, centre cuts along/across B). Central CR cavity width (e_cr below 1% of
+peak, through the centre): anisotropic 0.195 along B vs. 0.320 across B; isotropic 0.102 both ways
+-- isotropic transport refills the cavity further and evenly; anisotropic transport leaves a
+larger cavity that is ~40% narrower along B than across it, since CRs can only move along field lines.
 
 **Not changed (flagged for a decision):** `magnetic_update` could pick its tolerance from the array
 dtype instead of `config.numerical_precision`, which would make float64 MHD runs conserve energy by

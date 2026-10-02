@@ -48,6 +48,83 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 
 
+def dsa_shock_finder_kwargs(cr_config) -> dict:
+    """``find_shocks_pfrommer`` sampling options DSA injection uses for this
+    ``CosmicRayGreyConfig`` -- for callers (tests, diagnostics) that need the
+    same Mach numbers / fluxes the injection sees."""
+    if cr_config.dsa_adaptive_shock_sampling:
+        return dict(
+            mach_sampling_adaptive=True,
+            mach_sampling_extend=True,
+            mach_sampling_steps=cr_config.dsa_shock_sampling_max_steps,
+        )
+    return dict()
+
+
+@partial(jax.jit, static_argnames=["max_steps"])
+def _spread_over_post_shock_cells(
+    amount, shock_direction, post_steps, pressure, pre_shock_pressure, max_steps
+):
+    """Redistribute per-surface-cell injection over the post-shock cells.
+
+    For every cell with ``amount > 0`` (a shock-surface cell), the cells
+    ``k = 0 .. post_steps`` steps along ``-shock_direction`` (nearest grid
+    cell; ``k = 0`` is the surface cell itself) each receive a share
+    proportional to their pressure excess over the pre-shock pressure,
+    ``max(p_k - p_pre, 0)`` -- i.e. to their share of the shock-heated thermal
+    energy, the weighting of Pfrommer et al. (2017, Sec. 3.1.2) restricted to
+    thermal energy since that is what the injection draws from. A ray with no
+    positive weight keeps its amount in the surface cell. The total is
+    conserved.
+
+    Args:
+        amount: Per-cell injection (energy density), nonzero at surface cells.
+        shock_direction: Unit shock-direction field, shape (ndim, *shape),
+            pointing to the pre-shock side.
+        post_steps: Steps to each cell's post-shock sample
+            (``ShockFinderResult.post_shock_steps``).
+        pressure: Gas pressure field.
+        pre_shock_pressure: Sampled pre-shock pressure per cell.
+        max_steps: Maximum ray length (static).
+
+    Returns:
+        The redistributed injection field (same total as ``amount``).
+    """
+    shape = amount.shape
+    ndim = amount.ndim
+    base = jnp.stack(jnp.meshgrid(*[jnp.arange(n) for n in shape], indexing="ij"))
+    upper = jnp.array(shape).reshape((ndim,) + (1,) * ndim) - 1
+
+    def ray_cell(k):
+        position = base - k * shock_direction
+        return jnp.clip(jnp.round(position).astype(jnp.int32), 0, upper)
+
+    def weight(k, cell):
+        p_k = pressure[tuple(cell[d] for d in range(ndim))]
+        on_ray = k <= post_steps
+        return jnp.where(on_ray, jnp.maximum(p_k - pre_shock_pressure, 0.0), 0.0)
+
+    def accumulate(k, total):
+        return total + weight(k, ray_cell(k))
+
+    total = jax.lax.fori_loop(0, max_steps + 1, accumulate, jnp.zeros(shape, amount.dtype))
+    has_weight = total > 0
+    safe_total = jnp.where(has_weight, total, 1.0)
+
+    def deposit(k, out):
+        cell = ray_cell(k)
+        share = jnp.where(
+            has_weight,
+            amount * weight(k, cell) / safe_total,
+            jnp.where(k == 0, amount, 0.0),
+        )
+        flat = jnp.ravel_multi_index(tuple(cell[d] for d in range(ndim)), shape, mode="clip")
+        return out.at[flat.ravel()].add(share.ravel())
+
+    out = jax.lax.fori_loop(0, max_steps + 1, deposit, jnp.zeros(amount.size, amount.dtype))
+    return out.reshape(shape)
+
+
 @jax.jit
 def dsa_efficiency_kang_ryu_2013(mach_numbers: FIELD_TYPE) -> FIELD_TYPE:
     """DSA acceleration efficiency vs. sonic Mach number (Kang & Ryu 2013).
@@ -179,6 +256,7 @@ def inject_crs_at_shocks(
         registered_variables,
         helper_data,
         mach_min=cr_params.dsa_mach_min,
+        **dsa_shock_finder_kwargs(cr_config),
     )
 
     if cr_config.dsa_efficiency_model == DSA_EFFICIENCY_KANG_RYU_2013:
@@ -193,6 +271,22 @@ def inject_crs_at_shocks(
     delta_e_cr_density = (
         efficiency * sf_result.thermal_energy_flux / config.grid_spacing * dt
     )
+
+    if cr_config.dsa_adaptive_shock_sampling:
+        # Spread each shock's injection over its surface cell and the
+        # numerically broadened post-shock cells behind it (Pfrommer et al.
+        # 2017, Sec. 3.1.2), where the dissipated heat actually sits. With the
+        # adaptive sampling the flux is the full dissipated flux of the
+        # shock; the surface cell alone (often the foot of the smeared shock)
+        # can hold far less thermal energy than that (FIXES_TODO.md round 24).
+        delta_e_cr_density = _spread_over_post_shock_cells(
+            delta_e_cr_density,
+            sf_result.shock_direction,
+            sf_result.post_shock_steps,
+            primitive_state[registered_variables.pressure_index],
+            sf_result.pre_shock_pressure,
+            cr_config.dsa_shock_sampling_max_steps,
+        )
 
     # Injecting only after a certain amount of time is an ad-hoc guard
     # against spurious detections before a real shock has formed (mirrors

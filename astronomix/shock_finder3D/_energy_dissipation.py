@@ -146,6 +146,25 @@ def calculate_thermal_energy_flux(
         max_steps=sampling_steps,
     )
 
+    thermal_energy_flux = thermal_energy_flux_from_pre_state(
+        mach_numbers, pressure_pre, density_pre, gamma_gas
+    )
+
+    # jnp.roll wraps around at the domain edge, so values within
+    # sampling_steps cells of a boundary are not reliable (same guard as
+    # _shock_mach.py's _calculate_mach_at_surface).
+    valid_interior = _make_interior_mask(shock_surface.shape, margin=sampling_steps)
+
+    return jnp.where(
+        shock_surface & valid_interior,
+        thermal_energy_flux,
+        0.0,
+    )
+
+
+def thermal_energy_flux_from_pre_state(mach_numbers, pressure_pre, density_pre, gamma_gas=5.0 / 3.0):
+    """Dissipated thermal-energy flux delta(M) * 0.5 rho_pre (M c_pre)^3 from a
+    sampled pre-shock state (no masking; see ``calculate_thermal_energy_flux``)."""
     # Avoid invalid sound-speed calculations if numerical noise produces
     # zero or slightly negative pressure or density.
     numerical_floor = 1e-30
@@ -177,15 +196,4 @@ def calculate_thermal_energy_flux(
 
     # Dissipated thermal-energy flux:
     #     f_th = delta(M) * f_kin
-    thermal_energy_flux = (efficiency * kinetic_energy_flux)
-
-    # jnp.roll wraps around at the domain edge, so values within
-    # sampling_steps cells of a boundary are not reliable (same guard as
-    # _shock_mach.py's _calculate_mach_at_surface).
-    valid_interior = _make_interior_mask(shock_surface.shape, margin=sampling_steps)
-
-    return jnp.where(
-        shock_surface & valid_interior,
-        thermal_energy_flux,
-        0.0,
-    )
+    return efficiency * kinetic_energy_flux

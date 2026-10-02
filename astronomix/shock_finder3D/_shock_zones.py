@@ -225,7 +225,7 @@ def get_post_pre_shock_values(
         field_b_pre,
     )
 
-@partial(jax.jit, static_argnames=["max_steps", "extend_monotone"])
+@partial(jax.jit, static_argnames=["max_steps", "extend_monotone", "return_sample_steps"])
 def get_post_pre_shock_values_adaptive(
     shock_direction,
     field_a,
@@ -234,6 +234,8 @@ def get_post_pre_shock_values_adaptive(
     max_steps=15,
     extend_monotone=False,
     extension_tolerance=0.02,
+    compressive=None,
+    return_sample_steps=False,
 ):
     """
     Sample two scalar fields on both sides of a candidate shock, walking each
@@ -298,6 +300,21 @@ def get_post_pre_shock_values_adaptive(
             ``max_steps``.
         extension_tolerance: Minimum relative change per step for the
             monotone extension to continue (only with ``extend_monotone``).
+        compressive: Optional boolean field (``div v < 0``). When given, the
+            post-side monotone extension only steps on from a cell that is
+            itself compressive, i.e. it follows the shock's compression and at
+            most one cell beyond it. Without this, a post-side ray in a young
+            blast (pressure rising all the way to the centre of the expanding
+            interior) walks to the centre and overestimates the Mach number
+            (FIXES_TODO.md round 24). Not applied on the pre side: there the
+            foot of a smeared shock in a diverging upstream flow (e.g. a
+            stellar wind) is already div v > 0, so the gate would stop one
+            cell short of the plateau; the pre-side walk ends by itself where
+            the upstream pressure flattens.
+        return_sample_steps: Also return ``(steps_post, steps_pre)``: how many
+            steps along the ray each side's sample lies from the origin cell
+            (float fields; ``max_steps`` for rays that never left the zone).
+            Used to spread DSA injection over the post-shock cells.
 
     Returns:
         ``(field_a_post, field_a_pre, field_b_post, field_b_pre, exited_post,
@@ -312,6 +329,14 @@ def get_post_pre_shock_values_adaptive(
     shape = field_a.shape
     dtype = shock_direction.dtype
 
+    # Where to sample is a geometric choice, not something to differentiate:
+    # shock_direction = -grad T / |grad T| has a singular derivative wherever
+    # |grad T| -> 0 (e.g. uniform ambient gas), and map_coordinates would
+    # otherwise propagate the sampled fields' gradient into the sample
+    # positions -- NaN through a live-rollout adjoint (FIXES_TODO.md round 24,
+    # Phase D). Gradients still flow through the sampled field values.
+    shock_direction = jax.lax.stop_gradient(shock_direction)
+
     base_coords = jnp.stack(
         jnp.meshgrid(*[jnp.arange(n, dtype=dtype) for n in shape], indexing="ij"),
         axis=0,
@@ -321,10 +346,19 @@ def get_post_pre_shock_values_adaptive(
     def _sample(field, coords):
         return jax.scipy.ndimage.map_coordinates(field, coords, order=1, mode="nearest")
 
-    def _sample_zone(coords):
-        return jax.scipy.ndimage.map_coordinates(zones_f, coords, order=0, mode="nearest") > 0.5
+    def _sample_mask(mask_f, coords):
+        return jax.scipy.ndimage.map_coordinates(mask_f, coords, order=0, mode="nearest") > 0.5
 
-    def _walk(sign):
+    def _sample_zone(coords):
+        return _sample_mask(zones_f, coords)
+
+    compressive_f = compressive.astype(dtype) if compressive is not None else None
+
+    def _walk_block(sign, base_blk, direction_blk, a0_blk, b0_blk, zones0_blk, compressive0_blk):
+        # One block of origin cells (all *_blk arrays have the block's shape,
+        # vector fields with a leading component axis); the sampled fields
+        # themselves are always the full grids.
+        #
         # jax.lax.fori_loop, not a Python-unrolled loop: the loop body is
         # traced/compiled once and executed max_steps times by XLA's own
         # While op, instead of max_steps duplicated copies of the body being
@@ -333,15 +367,20 @@ def get_post_pre_shock_values_adaptive(
         # steps materializes several full-grid intermediates at once) --
         # this is a real resource-usage fix, not just a style preference.
         def body_fun(step, carry):
-            a_val, b_val, exited_ever, still_inside, extending, a_peak, b_peak = carry
+            (a_val, b_val, exited_ever, still_inside, extending, a_peak, b_peak,
+             previous_compressive, val_step, peak_step) = carry
             step = step.astype(dtype)
-            coords = base_coords + sign * step * shock_direction
+            coords = base_blk + sign * step * direction_blk
             coords_list = [coords[d] for d in range(ndim)]
             inside_here = _sample_zone(coords_list)
             newly_exited = still_inside & (~inside_here) & (~exited_ever)
 
             a_here = _sample(field_a, coords_list)
             b_here = _sample(field_b, coords_list)
+
+            if extend_monotone and compressive is not None and sign < 0:
+                # post side: continue past the exit only from a compressive cell
+                extending = extending & previous_compressive
 
             if extend_monotone and sign < 0:
                 # Post side: running peak of field_a over the whole walk (zone,
@@ -353,6 +392,7 @@ def get_post_pre_shock_values_adaptive(
                 higher = walking & (a_here > a_peak)
                 a_peak = jnp.where(higher, a_here, a_peak)
                 b_peak = jnp.where(higher, b_here, b_peak)
+                peak_step = jnp.where(higher, step, peak_step)
 
             if extend_monotone:
                 # Past the exit: keep going while field_a still moves away
@@ -364,39 +404,74 @@ def get_post_pre_shock_values_adaptive(
                 advance = extending & monotone
                 a_val = jnp.where(advance, a_here, a_val)
                 b_val = jnp.where(advance, b_here, b_val)
+                val_step = jnp.where(advance, step, val_step)
                 extending = advance | newly_exited
 
             a_val = jnp.where(newly_exited, a_here, a_val)
             b_val = jnp.where(newly_exited, b_here, b_val)
+            val_step = jnp.where(newly_exited, step, val_step)
 
             exited_ever = exited_ever | newly_exited
-            return a_val, b_val, exited_ever, inside_here, extending, a_peak, b_peak
+            if compressive is not None:
+                previous_compressive = _sample_mask(compressive_f, coords_list)
+            return (a_val, b_val, exited_ever, inside_here, extending, a_peak, b_peak,
+                    previous_compressive, val_step, peak_step)
 
-        no_cells = jnp.zeros(shape, dtype=jnp.bool_)
-        init_carry = (field_a, field_b, no_cells, shock_zones, no_cells, field_a, field_b)
-        a_val, b_val, exited_ever, _, _, a_peak, b_peak = jax.lax.fori_loop(
-            1, max_steps + 1, body_fun, init_carry
+        block_shape = a0_blk.shape
+        no_cells = jnp.zeros(block_shape, dtype=jnp.bool_)
+        no_steps = jnp.zeros(block_shape, dtype=dtype)
+        init_carry = (a0_blk, b0_blk, no_cells, zones0_blk, no_cells, a0_blk, b0_blk,
+                      compressive0_blk, no_steps, no_steps)
+        a_val, b_val, exited_ever, _, _, a_peak, b_peak, _, val_step, peak_step = (
+            jax.lax.fori_loop(1, max_steps + 1, body_fun, init_carry)
         )
         if extend_monotone and sign < 0:
-            a_val, b_val = a_peak, b_peak
+            a_val, b_val, val_step = a_peak, b_peak, peak_step
 
         # Rays still inside the zone after max_steps: fall back to the value
         # at the cap rather than extrapolating further (matches the safety
         # bound _energy_dissipation.py/_shock_mach.py already rely on for
         # the fixed-step walk's own max_steps).
-        coords_final = base_coords + sign * max_steps * shock_direction
+        coords_final = base_blk + sign * max_steps * direction_blk
         coords_final_list = [coords_final[d] for d in range(ndim)]
         a_val = jnp.where(exited_ever, a_val, _sample(field_a, coords_final_list))
         b_val = jnp.where(exited_ever, b_val, _sample(field_b, coords_final_list))
+        val_step = jnp.where(exited_ever, val_step, jnp.asarray(max_steps, dtype))
 
-        return a_val, b_val, exited_ever
+        return a_val, b_val, exited_ever, val_step
+
+    # Origin cells are processed in slabs along the first axis when the grid
+    # is large: every ray only reads the full fields, so this is exact, and
+    # it bounds the walk's temporary memory (the per-step trilinear gathers
+    # over all origin cells at once did not fit a 256^3 float64 run next to
+    # the simulation on an 11 GB GPU -- FIXES_TODO.md round 24).
+    compressive0 = compressive if compressive is not None else jnp.zeros(shape, jnp.bool_)
+    num_blocks = _num_origin_blocks(shape)
+
+    def _walk(sign):
+        if num_blocks == 1:
+            return _walk_block(sign, base_coords, shock_direction, field_a, field_b,
+                               shock_zones, compressive0)
+        rows = shape[0] // num_blocks
+
+        def scalar_blocks(x):
+            return x.reshape((num_blocks, rows) + shape[1:])
+
+        def vector_blocks(x):
+            return jnp.moveaxis(x.reshape((ndim, num_blocks, rows) + shape[1:]), 1, 0)
+
+        blocks = (vector_blocks(base_coords), vector_blocks(shock_direction),
+                  scalar_blocks(field_a), scalar_blocks(field_b),
+                  scalar_blocks(shock_zones), scalar_blocks(compressive0))
+        outs = jax.lax.map(lambda blk: _walk_block(sign, *blk), blocks)
+        return tuple(o.reshape(shape) for o in outs)
 
     # +shock_direction points toward the pre-shock (cold) side, -shock_direction
     # toward the post-shock (hot) side (see get_post_pre_shock_values above).
-    field_a_pre, field_b_pre, exited_pre = _walk(+1)
-    field_a_post, field_b_post, exited_post = _walk(-1)
+    field_a_pre, field_b_pre, exited_pre, steps_pre = _walk(+1)
+    field_a_post, field_b_post, exited_post, steps_post = _walk(-1)
 
-    return (
+    outputs = (
         field_a_post,
         field_a_pre,
         field_b_post,
@@ -404,6 +479,21 @@ def get_post_pre_shock_values_adaptive(
         exited_post,
         exited_pre,
     )
+    if return_sample_steps:
+        outputs = outputs + (steps_post, steps_pre)
+    return outputs
+
+
+def _num_origin_blocks(shape, max_cells_per_block=2**21):
+    """Smallest number of equal slabs along the first axis such that each
+    slab has at most ``max_cells_per_block`` cells (1 for grids up to 128^3)."""
+    cells_per_row = 1
+    for n in shape[1:]:
+        cells_per_row *= n
+    for blocks in range(1, shape[0] + 1):
+        if shape[0] % blocks == 0 and (shape[0] // blocks) * cells_per_row <= max_cells_per_block:
+            return blocks
+    return shape[0]
 
 
 def _make_interior_mask(spatial_shape, margin=1):

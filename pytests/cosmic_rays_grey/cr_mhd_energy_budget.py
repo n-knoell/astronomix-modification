@@ -227,13 +227,33 @@ def _rel_energy_err(run):
     return abs(run["E_total_f"] - run["E_total_0"]) / abs(run["E_total_0"])
 
 
-def _cr_elongation(e_cr_slice, coords):
-    """e_cr-weighted second-moment ratio <(x-x_c)^2> / <(y-y_c)^2> in a
-    midplane slice: > 1 means CRs are spread further along B (x) than across."""
-    w = e_cr_slice / np.sum(e_cr_slice)
-    xx, yy = np.meshgrid(coords, coords, indexing="ij")
-    xc, yc = np.sum(w * xx), np.sum(w * yy)
-    return float(np.sum(w * (xx - xc) ** 2) / np.sum(w * (yy - yc) ** 2))
+# e_cr threshold defining the CR-poor central cavity, as a fraction of the
+# peak midplane e_cr (shared by the anisotropic and isotropic runs).
+CAVITY_THRESHOLD_FRACTION = 1e-2
+
+
+def _cavity_width(cut, coords, threshold):
+    """Width of the CR-poor cavity around the box centre along a 1D cut:
+    distance between the first cells on either side of the centre where
+    ``cut >= threshold``. 0 if the centre itself is above threshold."""
+    c = len(cut) // 2
+    if cut[c] >= threshold:
+        return 0.0
+    above = np.flatnonzero(cut >= threshold)
+    left, right = above[above < c], above[above > c]
+    if len(left) == 0 or len(right) == 0:
+        return float("nan")
+    return float(coords[right[0]] - coords[left[-1]])
+
+
+def _cavity_widths(e_cr_slice, coords, threshold):
+    """Cavity width along x (parallel to B0) and along y (perpendicular),
+    through the centre of a midplane slice indexed [x, y]."""
+    c = e_cr_slice.shape[0] // 2
+    return (
+        _cavity_width(e_cr_slice[:, c], coords, threshold),
+        _cavity_width(e_cr_slice[c, :], coords, threshold),
+    )
 
 
 def _mhd_fields_plot(run, run_iso, path):
@@ -289,6 +309,7 @@ def _mhd_fields_plot(run, run_iso, path):
 
     e_max = float(np.maximum(np.max(an["e_cr"]), np.max(iso["e_cr"])))
     e_min = e_max * 1e-4
+    threshold = CAVITY_THRESHOLD_FRACTION * e_max
     for ax, s, name in ((axes[1, 0], an, "anisotropic"), (axes[1, 1], iso, "isotropic")):
         im = ax.imshow(
             np.log10(np.clip(s["e_cr"], e_min, None)).T,
@@ -297,15 +318,18 @@ def _mhd_fields_plot(run, run_iso, path):
         )
         _field_lines(ax, s)
         fig.colorbar(im, ax=ax, label=r"$\log_{10} e_{\rm cr}$")
+        w_par, w_perp = _cavity_widths(s["e_cr"], coords, threshold)
+        print(f"{name} transport: CR cavity width along B = {w_par:.3f}, across B = {w_perp:.3f}")
         ax.set_title(
             f"CR energy, {name} transport\n"
-            f"elongation along B: {_cr_elongation(s['e_cr'], coords):.3f}"
+            f"cavity width: {w_par:.3f} along B, {w_perp:.3f} across B"
         )
 
     ax = axes[1, 2]
     for s, name, color in ((iso, "isotropic", "C0"), (an, "anisotropic", "C1")):
         ax.semilogy(coords, s["e_cr"][:, NUM_CELLS // 2], color=color, lw=2, label=f"{name}, along x (∥ B)")
         ax.semilogy(coords, s["e_cr"][NUM_CELLS // 2, :], color=color, lw=2, ls="--", label=f"{name}, along y (⊥ B)")
+    ax.axhline(threshold, color="grey", ls=":", lw=1, label=f"cavity threshold ({CAVITY_THRESHOLD_FRACTION:g} × peak)")
     ax.set_ylim(e_min, 2 * e_max)
     ax.set_xlabel("position through box centre")
     ax.set_ylabel(r"$e_{\rm cr}$")
