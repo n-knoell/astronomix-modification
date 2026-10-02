@@ -79,6 +79,9 @@ explicitly deferred):**
 
 # ==== GPU selection ====
 import os
+# Let JAX use 95% of the GPU instead of its default 75% preallocation; the
+# 448^3 default below is sized for that (see NUM_CELLS).
+# os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.95")
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
 from autocvd import autocvd
 autocvd(num_gpus=1, interval = 10)
@@ -142,8 +145,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_shock_fi
 
 # ---- physical setup: item 11's scaffold, unchanged unless noted ----
 GAMMA = 5.0 / 3.0
-NUM_CELLS = 256  # item 11's own lower-cost variant; item 15 doesn't need item 11's tight
-                 # energy-partition calibration precision, just a qualitative emission check.
+NUM_CELLS = int(os.environ.get("CR_NUM_CELLS", 300))
 DSA_MACH_MIN = 1.3
 DSA_EFFICIENCY = 0.1
 
@@ -161,7 +163,9 @@ BOX_SIZE = BOX_SIZE_PHYS.to(CODE_UNITS.code_length).value
 T_END_PHYS = 2000.0 * u.yr
 T_END = T_END_PHYS.to(CODE_UNITS.code_time).value
 
-R_EXPLOSION_PHYS = 2.0 * (BOX_SIZE_PHYS / NUM_CELLS)
+# Explosion radius fixed at 2 cells of the original 256^3 grid (0.156 pc), so
+# that runs at different resolutions start from the same physical blast.
+R_EXPLOSION_PHYS = 2.0 * (BOX_SIZE_PHYS / 256)
 SMOOTH_CELLS = 2.0
 
 _CLUMP_DIRECTIONS_RAW = np.array(
@@ -273,6 +277,10 @@ def _run_snr_molecular_cloud():
         cosmic_ray_grey_params=CosmicRayGreyParams(dsa_efficiency=DSA_EFFICIENCY, dsa_mach_min=DSA_MACH_MIN),
     )
 
+    # free the large setup arrays before the run (they would otherwise stay
+    # alive on the GPU next to the simulation's own memory)
+    del X, Y, Z, dist, weight, density, zeros, explosion_weight, gas_pressure
+
     final_state = time_integration(initial_state, config, params, registered_variables)
 
     shock_result = find_shocks_pfrommer(
@@ -358,7 +366,7 @@ def _build_emission_maps(run):
 
 
 def test_snr_molecular_cloud_pion_bump(
-    hotspot_tolerance_cells: int = 12,
+    hotspot_tolerance_cells: int = round(12 * NUM_CELLS / 256),
     bump_suppression_min: float = 0.5,
     domain_half_width: float = BOX_SIZE / 2,
     containment_margin: float = 0.4,
@@ -368,7 +376,8 @@ def test_snr_molecular_cloud_pion_bump(
     Args:
         hotspot_tolerance_cells: Max allowed distance (grid cells) between
             the projected pion-decay map's brightest pixel and the
-            molecular cloud's own projected center.
+            molecular cloud's own projected center (12 cells at 256^3,
+            i.e. ~0.94 pc, scaled with NUM_CELLS).
         bump_suppression_min: Minimum required fractional suppression of
             the actual low-energy SED value below the naive power-law
             extrapolation from the high-energy slope (Check 2, "the pion
@@ -461,7 +470,8 @@ def test_snr_molecular_cloud_pion_bump(
     fig.tight_layout()
     pics_dir = Path(__file__).resolve().parent / "pics"
     pics_dir.mkdir(exist_ok=True)
-    fig.savefig(pics_dir / "cr_snr_molecular_cloud_pion_bump.svg")
+    suffix = "" if NUM_CELLS == 256 else f"_{NUM_CELLS}"
+    fig.savefig(pics_dir / f"cr_snr_molecular_cloud_pion_bump{suffix}.svg")
     plt.close(fig)
 
 

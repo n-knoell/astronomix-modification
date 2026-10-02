@@ -49,6 +49,7 @@ autocvd(num_gpus=1)
 # =======================
 
 # general
+import os
 from pathlib import Path
 
 # jax
@@ -78,7 +79,9 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 
 # ---- physical setup (matches pytests/shock_finder3D/_sedov_setup.py) ----
 GAMMA = 5.0 / 3.0
-NUM_CELLS = 48
+# grid cells per axis; override with the CR_NUM_CELLS environment variable for
+# resolution studies (tolerances below are calibrated at 48)
+NUM_CELLS = int(os.environ.get("CR_NUM_CELLS", 48))
 T_END = 0.07
 E_EXPLOSION = 1.0
 RHO_AMBIENT = 1.0
@@ -295,7 +298,8 @@ def test_cr_sedov_taylor(
     fig.tight_layout()
     pics_dir = Path(__file__).resolve().parent / "pics"
     pics_dir.mkdir(exist_ok=True)
-    fig.savefig(pics_dir / "cr_sedov_taylor_test.svg")
+    suffix = "" if NUM_CELLS == 48 else f"_{NUM_CELLS}"
+    fig.savefig(pics_dir / f"cr_sedov_taylor_test{suffix}.svg")
     plt.close(fig)
 
 

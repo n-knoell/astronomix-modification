@@ -77,6 +77,7 @@ autocvd(num_gpus=1)
 # =======================
 
 # general
+import os
 from pathlib import Path
 
 # jax
@@ -115,7 +116,9 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
 
 # ---- physical setup (matches cr_sedov_taylor.py / _sedov_setup.py) ----
 GAMMA = 5.0 / 3.0
-NUM_CELLS = 48
+# grid cells per axis; override with the CR_NUM_CELLS environment variable for
+# resolution studies (tolerances below are calibrated at 48)
+NUM_CELLS = int(os.environ.get("CR_NUM_CELLS", 48))
 T_END = 0.07
 E_EXPLOSION = 1.0
 RHO_AMBIENT = 1.0
