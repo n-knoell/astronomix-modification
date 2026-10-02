@@ -57,8 +57,8 @@ partition -- see :func:`plot_cr_influence`) and
 """
 
 # ==== GPU selection ====
-from autocvd import autocvd
-autocvd(num_gpus=1, interval=5)
+# from autocvd import autocvd
+# autocvd(num_gpus=1, interval=5)
 # ruff: noqa: E402
 # =======================
 

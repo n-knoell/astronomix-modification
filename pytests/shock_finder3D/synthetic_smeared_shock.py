@@ -11,7 +11,10 @@ Compares the finder's median surface-cell Mach against the exact value for
 the adaptive walk with and without ``mach_sampling_extend`` (FIXES_TODO.md
 round 23): the plain walk stops at the shock-zone exit, which for strong
 shocks lies inside the ramp; the extension walks on while the pressure keeps
-falling/rising. Writes ``figures/sedov/synthetic_smeared_shock_mach.png``.
+falling/rising. Also checks the dissipated thermal-energy flux against the
+exact ``delta(M) * 0.5 rho1 (M c1)^3`` (round 24: in adaptive mode the flux
+uses the pre-shock state from the same walk as the Mach number). Writes
+``figures/sedov/synthetic_smeared_shock_mach.png``.
 """
 
 # ==== GPU selection ====
@@ -46,6 +49,7 @@ from astronomix.initial_condition_generation.construct_primitive_state import (
     construct_primitive_state,
 )
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
+from astronomix.shock_finder3D._energy_dissipation import _thermalization_efficiency
 
 FIG_DIR = Path(__file__).resolve().parent / "figures" / "sedov"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,8 +65,14 @@ MACH_NUMBERS = (3.0, 30.0, 150.0)
 WIDTHS = (0.5, 1.0, 2.0)
 
 
+def exact_thermal_energy_flux(mach, rho1=1.0, p1=1.0):
+    c1 = np.sqrt(GAMMA * p1 / rho1)
+    return float(_thermalization_efficiency(jnp.asarray(mach), GAMMA)) * 0.5 * rho1 * (mach * c1) ** 3
+
+
 def planar_shock_mach(mach, width_cells, extend):
-    """Median finder Mach on the surface cells of one synthetic shock."""
+    """Median finder Mach and thermal-energy flux on the surface cells of
+    one synthetic shock."""
     open_1d = BoundarySettings1D(left_boundary=OPEN_BOUNDARY, right_boundary=OPEN_BOUNDARY)
     config = SimulationConfig(
         solver_mode=FINITE_VOLUME, dimensionality=3, num_cells=NUM_CELLS, box_size=1.0,
@@ -94,19 +104,25 @@ def planar_shock_mach(mach, width_cells, extend):
         mach_sampling_adaptive=True, mach_sampling_steps=15, mach_sampling_extend=extend,
     )
     surface = np.asarray(sf.shock_surface_cells)
-    mach_found = np.asarray(sf.mach_numbers)[surface & (np.asarray(sf.mach_numbers) > 0)]
-    return float(np.median(mach_found)) if mach_found.size else float("nan")
+    found = surface & (np.asarray(sf.mach_numbers) > 0)
+    if not found.any():
+        return float("nan"), float("nan")
+    return (float(np.median(np.asarray(sf.mach_numbers)[found])),
+            float(np.median(np.asarray(sf.thermal_energy_flux)[found])))
 
 
 def test_synthetic_smeared_shock(tol=0.1):
-    results = {}
-    print(f"{'M':>6s} {'w':>5s} {'adaptive':>10s} {'+extend':>10s}")
+    results, fluxes = {}, {}
+    print(f"{'M':>6s} {'w':>5s} {'adaptive':>10s} {'+extend':>10s}   flux/exact: {'adaptive':>9s} {'+extend':>9s}")
     for mach in MACH_NUMBERS:
+        exact_flux = exact_thermal_energy_flux(mach)
         for width in WIDTHS:
-            plain = planar_shock_mach(mach, width, False)
-            extended = planar_shock_mach(mach, width, True)
+            plain, flux_plain = planar_shock_mach(mach, width, False)
+            extended, flux_extended = planar_shock_mach(mach, width, True)
             results[(mach, width)] = (plain, extended)
-            print(f"{mach:6.0f} {width:5.1f} {plain:10.2f} {extended:10.2f}")
+            fluxes[(mach, width)] = (flux_plain / exact_flux, flux_extended / exact_flux)
+            print(f"{mach:6.0f} {width:5.1f} {plain:10.2f} {extended:10.2f}   "
+                  f"{'':11s} {flux_plain / exact_flux:9.3f} {flux_extended / exact_flux:9.3f}")
 
     fig, axes = plt.subplots(1, len(MACH_NUMBERS), figsize=(13, 4))
     for ax, mach in zip(axes, MACH_NUMBERS):
@@ -123,6 +139,9 @@ def test_synthetic_smeared_shock(tol=0.1):
 
     for (mach, width), (plain, extended) in results.items():
         assert abs(extended / mach - 1) < tol, f"M={mach}, w={width}: extended walk gives {extended}"
+    # f_th ~ delta(M) M^3 c1^3: a few % in M shows up ~3x in the flux
+    for (mach, width), (_, flux_ratio) in fluxes.items():
+        assert abs(flux_ratio - 1) < 3 * tol, f"M={mach}, w={width}: flux/exact = {flux_ratio}"
 
 
 if __name__ == "__main__":

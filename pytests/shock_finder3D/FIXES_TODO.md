@@ -2791,15 +2791,86 @@ Validation:
 
 ---
 
+## 2026-09-26, round 24: thermal-energy flux ported to the adaptive walk; DSA injection switched to it (with post-shock spreading); two walk fixes found on the way
+
+**(a) Flux.** In adaptive mode `find_shocks_pfrommer` now runs *one* walk
+(pressure + density) and derives both the Mach number (pressure on both
+sides, unchanged) and the dissipated flux (`thermal_energy_flux_from_pre_state`,
+pre-shock pressure/density at the same point as the Mach number). Before, the
+flux combined the adaptive Mach with the hot in-ramp state of the 1-cell
+sampler: for a synthetic M=30 shock the old adaptive-mode flux was 5.7e6 vs
+exact 1.6e4 (~350x too high); now 1.62e4. Fixed-step path bit-identical
+(1D/3D, 1- and 3-step sampling, checked against HEAD).
+`synthetic_smeared_shock.py` now also checks the flux: with the extension
+flux / exact = 0.97-1.00 for M = 3/30/150, w = 0.5-2 cells.
+
+**Two walk fixes (both in `get_post_pre_shock_values_adaptive`):**
+1. *Post-side compression gate.* A young Sedov blast (pressure rising all
+   the way to the centre of the expanding interior) made the post-side
+   extension walk to the centre: Mach ~1700 instead of ~1000 (Sedov estimate
+   for R~0.1: ~1400; the old 1-cell sampler said 2). The post-side extension
+   now only steps on from a compressive cell (div v < 0, from
+   `find_shocks_pfrommer`). Not applied on the pre side: at the CWB apex the
+   ramp's foot is already div v > 0 (diverging wind), and gating there cut
+   the star-1 apex Mach back to ~31. CWB (round-22 state, DE + floor) star-1
+   apex stays 145.7-151.4; synthetic results unchanged.
+2. *stop_gradient on the sampling direction.* map_coordinates propagated the
+   field gradient into the sample positions, i.e. into
+   `-grad T / |grad T|`, singular where |grad T| -> 0: NaN AD gradient through
+   a live DSA rollout (Phase D). Now AD -0.4632 vs FD -0.4642 (20^3 check).
+
+Plus: the walk processes origin cells in slabs along axis 0 when a block
+would exceed 2^21 cells (`_num_origin_blocks`; exact, 1 block up to 128^3).
+
+**(b) DSA.** `CosmicRayGreyConfig.dsa_adaptive_shock_sampling` (+
+`dsa_shock_sampling_max_steps`, 15); `cr_grey_injection.dsa_shock_finder_kwargs`
+gives the matching finder options to tests. With the correct (much larger)
+flux, depositing all of it in the surface cell was wrong: the surface cell is
+the foot of the smeared shock (item-7 Sedov: median injected / e_th = 5.75
+there -> pressure drained to 1e-10 -> NaN). Adaptive mode now spreads each
+shock's injection over the surface cell and the post-shock cells along its
+post-side ray, weighted by `max(p - p_pre, 0)` (Pfrommer et al. 2017 Sec.
+3.1.2 inject into "the shock surface cells as well as the numerically
+broadened post-shock cells" with an energy-excess weight). Cost: ~2x per
+injection call (64^3, CPU); item 7 34 s -> 39 s.
+
+(c) results: see `_cosmic_rays_grey/PROGRESS.md` 2026-09-26 -- items 7-11, 15,
+16-18 and Phase D pass with the new default (items 11/15 at 128^3; item 9
+Test B at dsa_efficiency 0.01).
+
+Finder re-checks with the final code: Sedov exact-Mach comparison unchanged
+from round 23 (median 119.2 / 127.4 / 132.8 at N = 64 / 128 / 256, exact
+~142.1); `sedov_shock_finder.py` N=64 and `synthetic_smeared_shock.py` pass.
+CWB round-22 state: star-1 apex 145.7-151.4 unchanged; the all-cell median
+drops 60.7 -> 55.0 (zone+DE+floor) and 27.2 -> 22.1 (zone) because the
+post-side gate now stops some post-side extensions earlier. The
+`figures/cwb_new_inj/` and `figures/cwb_cr/` PNGs predate round 24 (not
+regenerated); CWB runs now also use the new DSA default.
+
+---
+
+## 2026-10-02: Mach underestimate is a resolution effect, quantified against a 1D reference
+
+On the CR item-8 Sedov blasts (`cr_dsa_mach_dependence.py`, adaptive +
+extended sampling) the finder's median Mach is 0.80-0.82x a converged 1D
+spherical reference at 48^3 and 0.87-0.89x at 96^3, the same fraction from
+Ms ~3 to ~175: the smeared post-shock pressure peak is sampled too low, not
+a walk failure. Converges ~N^-0.6, like the round-23 Sedov numbers. Effects
+on DSA injection (flux ~0.5x at 48^3, KR13 efficiency up to ~3x low at
+Ms 3-5) and the full table: `_cosmic_rays_grey/PROGRESS.md`, "Known
+limitation (2026-10-02)". Not fixed.
+
+---
+
 ## Suggested order for next session
 
-1. **Next step (not started, per user 2026-09-26):** port the finder's
-   thermal-energy flux (`calculate_thermal_energy_flux`, still fixed-step
-   sampling) to the adaptive + extended walk, so its pre-shock density /
-   pressure match the Mach number; then switch CR-grey DSA injection
-   (`cr_grey_injection.py`, calls `find_shocks_pfrommer` with the default
-   1-cell sampling for both Mach and flux) to the adaptive + extended walk,
-   and re-check the DSA ladder tests (items 7-11, 15) against it.
+1. **Done 2026-09-26 (round 24):** flux ported, DSA injection switched
+   (`CosmicRayGreyConfig.dsa_adaptive_shock_sampling`, default True) and the
+   DSA ladder re-validated. Left open: the 256^3 variants of CR items 11/15
+   need >11 GB GPU memory (independent of this change); the Phase D
+   AD-vs-FD gap grew from 0.10% to 6.9% at 48^3 (discrete walk/spread
+   choices) -- a smooth (soft-weighted) spread would be the thing to try if
+   gradient accuracy through live injection matters.
 2. **Only if an orbiting binary is required:** reopen item 4 for
    `nbody=True`, starting from round 8's hypotheses (moving source changes
    which cells are freshly injected every step; orbital velocity is a

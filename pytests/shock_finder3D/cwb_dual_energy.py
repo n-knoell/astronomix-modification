@@ -49,7 +49,7 @@ from cwb_shock_finder import plot_shocked_cells_2d, plot_shocked_cells_3d
 FIG_DIR = Path(__file__).resolve().parent / "figures" / "cwb_new_inj"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-NUM_CELLS = 64
+NUM_CELLS = 256
 ZONE_FRACTION = 0.5
 FLOOR_KELVIN = 1e4
 KELVIN_PER_CODE = 1.0 / kelvin_to_code_temperature(1.0)
