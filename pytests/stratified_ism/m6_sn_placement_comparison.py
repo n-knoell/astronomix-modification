@@ -527,7 +527,8 @@ def _girichidis_fig1_style_plot(state, registered_variables, mid_index, t_yr, ou
     face_on_density = rho[:, :, mid_index].T
     face_on_e_cr = e_cr[:, :, mid_index].T
 
-    fig, (ax0, ax1, ax2) = plt.subplots(3, 1, figsize=(6, 15))
+    # one row, left to right: edge-on density, face-on density, midplane e_cr
+    fig, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=(18, 5.2))
 
     im0 = ax0.imshow(
         edge_on_density, origin="lower", extent=x_extent + z_extent,
