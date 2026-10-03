@@ -94,7 +94,12 @@ qualitative claim), mass-loading/outflow-velocity within an order of
 magnitude of the paper -- see PROGRESS.md's 2026-09-16 M5 entries for the
 full numbers.
 
-**Attempt 4 (not yet run -- resolution doubled per-axis, ``_RESOLUTION_FACTOR``
+**Attempt 5 (2026-10-02, to be run by the user on a large-memory GPU):
+``_RESOLUTION_FACTOR = 4`` (128 x 128 x 1024, dx = 0.29 pc), same box and
+physics; output plots now carry an ``_{N_Z}`` suffix. See
+``_RESOLUTION_FACTOR``'s comment for the memory/runtime estimate.**
+
+**Attempt 4 (resolution doubled per-axis, ``_RESOLUTION_FACTOR``
 below, at the user's request to better match Girichidis 2016's own
 resolution; box size unchanged). Also new: ``_girichidis_fig1_style_plot``
 now uses physical units and midplane/box-centered axes to more directly
@@ -193,24 +198,29 @@ H_SCALE = H_SCALE_PHYS.to(CODE_UNITS.code_length).value
 Z0 = 3.0 * H_SCALE
 L_Z = 6.0 * H_SCALE
 L_XY = 0.75 * H_SCALE
-# Resolution doubled in each of the 3 dimensions (2026-09-16, attempt 3's own
-# run measured ~8288 MiB on an RTX 2080 Ti) -- box size held fixed (same
-# physical setup as attempts 1-3, still a cost-scoped-down approximation to
-# Girichidis 2016's box; only resolution changes here), so this codebase's
-# own uniform-grid-spacing requirement (grid_spacing = L_XY/N_XY = L_Z/N_Z,
-# enforced in simulation_helper_data.py's _normalize_config_vectors) forces
-# N_XY and N_Z to scale by the *same* factor. Total cell count scales as
-# that factor cubed, so a factor of 2 gives 2^3=8x the cells -- and, since
-# per-cell state-array memory dominates the GPU footprint, roughly 8x the
-# memory of attempt 3's run (~8288 MiB -> ~66 GB), matching a GPU "with 8x
-# the capacity" (no single GPU on this cluster's 2080 Ti nodes has that much
-# VRAM -- this needs bigger/different hardware, hence not run here).
-# **Not just 8x more expensive: dx also halves, which roughly halves the
-# hydro CFL step too, so expect total wall-clock cost to grow by something
-# closer to ~8x * ~2x = ~16x attempt 3's ~43 minutes (i.e. many hours), not
-# just 8x** -- budget GPU time accordingly before launching this.
-_RESOLUTION_FACTOR = 2
+# Grid resolution, in multiples of attempt 3's N_XY, N_Z = 32, 256 (box size
+# fixed; the uniform-grid-spacing requirement grid_spacing = L_XY/N_XY =
+# L_Z/N_Z, enforced in simulation_helper_data.py's _normalize_config_vectors,
+# forces N_XY and N_Z to scale together). Factor 1: dx = 1.17 pc (attempt 3,
+# ~43 min on an RTX 2080 Ti); 2: 0.59 pc (attempt 4); 4: 0.29 pc (attempt 5,
+# 2026-10-02, 128 x 128 x 1024 = 16.8M cells).
+# Cost at fixed box and t_end scales ~ factor^4 (factor^3 cells x factor
+# more CFL steps). Rough estimate for factor 4 on a 140 GB H100/H200-class
+# GPU: ~10 GiB for the time-step program (double precision, ~0.65 kB/cell,
+# scaled from items 11/15's measured 10.9 GiB at 256^3) plus
+# NUM_SNAPSHOTS x 9 vars x 16.8M cells x 8 B = ~48 GiB of stored snapshots
+# (return_states=True keeps them all on the GPU), i.e. ~60 GiB in total, and
+# ~0.5-1.5 days wall-clock (native JAX path; CR-grey runs never use the Pallas
+# kernels). Copying the snapshots back needs the same ~48 GiB of host RAM;
+# lower NUM_SNAPSHOTS if that is tight. Does not fit an 11 GB 2080 Ti.
+# (The "~8288 MiB" previously quoted for attempt 3 was JAX's default
+# preallocation of 75% of the 2080 Ti's memory, not the run's actual usage.)
+_RESOLUTION_FACTOR = 4
 N_XY, N_Z = 32 * _RESOLUTION_FACTOR, 256 * _RESOLUTION_FACTOR
+# Output plots are tagged with N_Z (e.g. ``m5_cr_driven_outflow_1024.svg``),
+# so runs at different resolutions don't overwrite each other's figures.
+OUT_SUFFIX = f"_{N_Z}"
+NUM_SNAPSHOTS = 20 # 40
 GRID_SPACING_CODE = L_XY / N_XY
 
 T_WARM_REFERENCE_KELVIN = 7500.0
@@ -320,7 +330,7 @@ def _base_config() -> SimulationConfig:
         ),
         progress_bar=True,
         return_snapshots=True,
-        num_snapshots=40,
+        num_snapshots=NUM_SNAPSHOTS,
         snapshot_settings=SnapshotSettings(
             return_states=True,
             return_final_state=True,
@@ -840,7 +850,7 @@ def run_m5():
     fig.tight_layout()
     pics_dir = Path(__file__).resolve().parent / "pics"
     pics_dir.mkdir(exist_ok=True)
-    out_path = pics_dir / "m5_cr_driven_outflow.svg"
+    out_path = pics_dir / f"m5_cr_driven_outflow{OUT_SUFFIX}.svg"
     fig.savefig(out_path)
     plt.close(fig)
     print(f"\nDiagnostic plot written to {out_path}")
@@ -861,19 +871,19 @@ def run_m5():
                       f"(t={time_points_years[last_valid]:.1f} yr)")
         ax.legend()
         fig2.tight_layout()
-        out_path2 = pics_dir / "m5_pressure_profiles.svg"
+        out_path2 = pics_dir / f"m5_pressure_profiles{OUT_SUFFIX}.svg"
         fig2.savefig(out_path2)
         plt.close(fig2)
         print(f"Pressure-profile plot written to {out_path2}")
 
-        out_path3 = pics_dir / "m5_structure_girichidis_fig1_style.svg"
+        out_path3 = pics_dir / f"m5_structure_girichidis_fig1_style{OUT_SUFFIX}.svg"
         _girichidis_fig1_style_plot(
             states[last_valid], registered_variables, mid_index,
             time_points_years[last_valid], out_path3,
         )
         print(f"Girichidis-Fig.1-style structure plot written to {out_path3}")
 
-    out_path4 = pics_dir / "m5_clumpiness_evolution.svg"
+    out_path4 = pics_dir / f"m5_clumpiness_evolution{OUT_SUFFIX}.svg"
     _clumpiness_evolution_plot(
         states, time_points_years, clumpiness_series, registered_variables, mid_index,
         out_path4, title_prefix="M5: SNe random placement",

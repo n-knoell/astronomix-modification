@@ -74,6 +74,7 @@ autocvd(num_gpus=1, interval=10)
 # =======================
 
 # general
+import os
 from pathlib import Path
 
 # jax
@@ -152,10 +153,20 @@ H_SCALE = H_SCALE_PHYS.to(CODE_UNITS.code_length).value
 Z0 = 3.0 * H_SCALE
 L_Z = 6.0 * H_SCALE
 L_XY = 0.75 * H_SCALE
-# Resolution doubled in each of the 3 dimensions compared 
-# to the base run
-_RESOLUTION_FACTOR = 2
+# Grid resolution in multiples of M5 attempt 3's N_XY, N_Z = 32, 256 (box size
+# fixed). Default 4 (128 x 128 x 1024, dx = 0.29 pc, 2026-10-03) matches the
+# M5 run at that resolution, so the M5-vs-M6 comparison below is like for
+# like; override with the M6_RESOLUTION_FACTOR environment variable (1 gives
+# the original 2026-09-22 comparison against M5 attempt 3). Needs a large-memory
+# GPU at factor 4 (see NUM_SNAPSHOTS); expect ~3x M5's runtime at the same
+# resolution (density-weighted placement is more expensive per step).
+_RESOLUTION_FACTOR = int(os.environ.get("M6_RESOLUTION_FACTOR", 4))
 N_XY, N_Z = 32 * _RESOLUTION_FACTOR, 256 * _RESOLUTION_FACTOR
+# Output plots are tagged with N_Z (e.g. ``m6_sn_placement_comparison_1024.svg``).
+OUT_SUFFIX = f"_{N_Z}"
+# Number of stored snapshots (override with M6_NUM_SNAPSHOTS); see the
+# memory note at num_snapshots in _base_config.
+NUM_SNAPSHOTS = int(os.environ.get("M6_NUM_SNAPSHOTS", 10))
 GRID_SPACING_CODE = L_XY / N_XY
 
 T_WARM_REFERENCE_KELVIN = 7500.0
@@ -213,9 +224,11 @@ Z_REF_CODE = Z0 + H_SCALE
 M_STAR_PER_SN_CODE = (100.0 * u.M_sun).to(CODE_UNITS.code_mass).value
 SFR_EQUIVALENT_CODE = SN_RATE_CODE * M_STAR_PER_SN_CODE  # code mass / code time
 
-# ---- M5 attempt 3's already-recorded numbers (RAND placement), for the
-# comparison table at the end of this run -- NOT recomputed here. See
-# PROGRESS.md's 2026-09-16 M5 entries for the full write-up. ----
+# ---- M5's already-recorded numbers (RAND placement) at the matching
+# resolution, for the comparison table at the end of this run -- NOT
+# recomputed here. Attempt 3 (factor 1): PROGRESS.md's 2026-09-16 M5 entries;
+# factor 4: the 128 x 128 x 1024 M5 run (2026-10-03, printed late-time
+# averages). The M5_ATTEMPT3_* names are kept for the factor-1 numbers. ----
 M5_ATTEMPT3_ETA = 6.155
 M5_ATTEMPT3_V_OUT_KMS = 5.83
 M5_ATTEMPT3_H_GAS = 28.41
@@ -227,6 +240,15 @@ M5_ATTEMPT3_H_CR = 86.81
 # same attempt-3 resolution. Same late-time-quarter-average convention as
 # the other M5_ATTEMPT3_* constants above.
 M5_ATTEMPT3_CLUMP = 0.467
+_M5_REFERENCE = {
+    1: dict(label="M5-attempt3", eta=M5_ATTEMPT3_ETA, v_out=M5_ATTEMPT3_V_OUT_KMS,
+            h_gas=M5_ATTEMPT3_H_GAS, h_cr=M5_ATTEMPT3_H_CR, clump=M5_ATTEMPT3_CLUMP),
+    4: dict(label="M5-1024", eta=8.624, v_out=10.01, h_gas=18.69, h_cr=96.05, clump=0.586),
+}
+if _RESOLUTION_FACTOR not in _M5_REFERENCE:
+    raise ValueError(f"No M5 reference numbers recorded for _RESOLUTION_FACTOR={_RESOLUTION_FACTOR}; "
+                     f"run m5_cr_driven_outflow.py at that resolution first and add them to _M5_REFERENCE.")
+M5_REF = _M5_REFERENCE[_RESOLUTION_FACTOR]
 
 
 def _base_config() -> SimulationConfig:
@@ -275,7 +297,9 @@ def _base_config() -> SimulationConfig:
         # result -- fine for this milestone's per-snapshot diagnostics and
         # the clumpiness-evolution filmstrip (only needs ~4 of them), but
         # worth knowing if a future use of this script wants finer sampling.
-        num_snapshots=10,
+        num_snapshots=NUM_SNAPSHOTS,
+        # print the compiled program's memory footprint before the run starts
+        memory_analysis=True,
         snapshot_settings=SnapshotSettings(
             return_states=True,
             return_final_state=True,
@@ -718,14 +742,15 @@ def run_m6():
         p_cr_m6 = float(np.nanmean(np.asarray(p_cr_out_series)[tail]))
         p_ram_m6 = float(np.nanmean(np.asarray(p_ram_out_series)[tail]))
 
+        r = M5_REF
         print("\n--- late-time (last quarter of valid snapshots) averages: "
-              "M6 (density-weighted) vs. M5 attempt 3 (random, already on record) ---")
-        print(f"  mass-loading factor eta : M6={eta_m6:.3e}   M5-attempt3={M5_ATTEMPT3_ETA:.3e}   "
+              f"M6 (density-weighted) vs. {r['label']} (random, already on record) ---")
+        print(f"  mass-loading factor eta : M6={eta_m6:.3e}   {r['label']}={r['eta']:.3e}   "
               f"(Simpson et al. 2016: comparable between placement modes)")
-        print(f"  outflow velocity v_out  : M6={v_out_m6:.2f} km/s   M5-attempt3={M5_ATTEMPT3_V_OUT_KMS:.2f} km/s")
-        print(f"  H_gas                   : M6={h_gas_m6:.2f}   M5-attempt3={M5_ATTEMPT3_H_GAS:.2f}")
-        print(f"  H_cr                    : M6={h_cr_m6:.2f}   M5-attempt3={M5_ATTEMPT3_H_CR:.2f}")
-        print(f"  midplane clumpiness     : M6={clump_m6:.3f}   M5-attempt3={M5_ATTEMPT3_CLUMP:.3f}   "
+        print(f"  outflow velocity v_out  : M6={v_out_m6:.2f} km/s   {r['label']}={r['v_out']:.2f} km/s")
+        print(f"  H_gas                   : M6={h_gas_m6:.2f}   {r['label']}={r['h_gas']:.2f}")
+        print(f"  H_cr                    : M6={h_cr_m6:.2f}   {r['label']}={r['h_cr']:.2f}")
+        print(f"  midplane clumpiness     : M6={clump_m6:.3f}   {r['label']}={r['clump']:.3f}   "
               f"(Simpson et al. 2016: density-weighted placement -> smoother/lower clumpiness "
               f"than random placement; late-time average found these statistically tied -- see "
               f"PROGRESS.md's 2026-09-22 entry: the qualitative signature shows up in the *peak* "
@@ -775,14 +800,14 @@ def run_m6():
     fig.tight_layout()
     pics_dir = Path(__file__).resolve().parent / "pics"
     pics_dir.mkdir(exist_ok=True)
-    out_path = pics_dir / "m6_sn_placement_comparison.svg"
+    out_path = pics_dir / f"m6_sn_placement_comparison{OUT_SUFFIX}.svg"
     fig.savefig(out_path)
     plt.close(fig)
     print(f"\nDiagnostic plot written to {out_path}")
 
     if np.any(valid):
         last_valid = np.where(valid)[0][-1]
-        out_path3 = pics_dir / "m6_structure_girichidis_fig1_style.svg"
+        out_path3 = pics_dir / f"m6_structure_girichidis_fig1_style{OUT_SUFFIX}.svg"
         _girichidis_fig1_style_plot(
             states[last_valid], registered_variables, mid_index,
             time_points_years[last_valid], out_path3,
@@ -790,7 +815,7 @@ def run_m6():
         )
         print(f"Girichidis-Fig.1-style structure plot written to {out_path3}")
 
-    out_path4 = pics_dir / "m6_clumpiness_evolution.svg"
+    out_path4 = pics_dir / f"m6_clumpiness_evolution{OUT_SUFFIX}.svg"
     _clumpiness_evolution_plot(
         states, time_points_years, clumpiness_series, registered_variables, mid_index,
         out_path4, title_prefix="M6: SNe density-weighted placement",
