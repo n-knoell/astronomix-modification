@@ -65,10 +65,17 @@ resolution):
 
 :func:`test_cr_dsa_shock_jump` (**Test A**): ``diffusive_relaxation`` off (DSA
 injection only, no diffusive precursor), ``reduced_streaming_speed`` close to
-the local gas sound speed (Finding-1-safe). Validates
-:func:`modified_rankine_hugoniot_with_cr_injection` against the simulation's
-own converged post-shock state, and is also this module's regression guard for
-Finding 2 (peak ``e_cr`` must plateau, not grow unboundedly).
+the local gas sound speed (Finding-1-safe). Validates the post-shock gas state
+against :func:`rankine_hugoniot_with_downstream_crs` and the injected CR energy
+against :func:`cr_energy_flux_jump_bounds`, and is also this module's
+regression guard for Finding 2 (peak ``e_cr`` must plateau, not grow
+unboundedly). Until 2026-10-03 it compared against
+:func:`modified_rankine_hugoniot_with_cr_injection` instead, which had the
+energy-sink sign wrong for this ``u < 0`` shock *and* assumes ``P_cr``
+continuous through the jump (a precursor), which does not hold here -- the
+two errors partly cancelled, so the old ~1% agreement was not a real
+validation (PROGRESS.md 2026-10-03). :func:`test_modified_rh_reference_formula`
+checks the fixed formula on its own, without a simulation.
 
 :func:`test_cr_precursor_ode` (**Test B**): ``diffusive_relaxation`` on,
 ``reduced_streaming_speed`` well above the shock velocity (deep quasi-steady,
@@ -128,8 +135,10 @@ from astronomix.variable_registry.registered_variables import get_registered_var
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_shock_finder_kwargs
 from astronomix.test_setups.reference_solutions.cr_modified_shock_structure import (
+    cr_energy_flux_jump_bounds,
     cr_precursor_ode_rhs,
     modified_rankine_hugoniot_with_cr_injection,
+    rankine_hugoniot_with_downstream_crs,
 )
 
 # astronomix modules
@@ -240,40 +249,76 @@ def _fit_shock_velocity(times, shock_positions, n_fit=N_FIT):
     return float(v_fit), float(x_fit0)
 
 
+def test_modified_rh_reference_formula(tol: float = 1e-8):
+    """Pure-formula checks of the CR jump conditions (no simulation).
+
+    Guards the 2026-10-03 sign fix: (1) with no injection and no CRs, both
+    jump formulas reduce to the plain ideal-gas Rankine-Hugoniot compression
+    ratio; (2) mirroring the flow direction (``u0 -> -u0``, ``F_cr -> -F_cr``)
+    mirrors the result; (3) removing energy from the gas raises the
+    compression ratio above the plain value, as for any energy sink.
+    """
+    m0 = V_SHOCK / _C1
+    r_plain = (GAMMA + 1.0) * m0**2 / ((GAMMA - 1.0) * m0**2 + 2.0)
+    for u0 in (V_SHOCK, -V_SHOCK):
+        rho2 = modified_rankine_hugoniot_with_cr_injection(RHO1, u0, P1, 0.0, 0.0, GAMMA, GAMMA_CR, 0.0)[0]
+        assert abs(rho2 / RHO1 - r_plain) < tol, f"no-injection limit broken for u0={u0}: {rho2} vs {r_plain}"
+        rho2 = rankine_hugoniot_with_downstream_crs(RHO1, u0, P1, 0.0, 0.0, 0.0, 0.0, GAMMA, GAMMA_CR)[0]
+        assert abs(rho2 / RHO1 - r_plain) < tol, f"no-CR limit broken for u0={u0}: {rho2} vs {r_plain}"
+
+    inj = 0.1 * 0.5 * RHO1 * V_SHOCK**3
+    pos = modified_rankine_hugoniot_with_cr_injection(RHO1, V_SHOCK, P1, 0.01, 0.003, GAMMA, GAMMA_CR, inj)
+    neg = modified_rankine_hugoniot_with_cr_injection(RHO1, -V_SHOCK, P1, 0.01, -0.003, GAMMA, GAMMA_CR, inj)
+    for a, b, sign in zip(pos, neg, (1.0, -1.0, 1.0, -1.0)):
+        assert abs(a - sign * b) < tol * max(abs(a), 1.0), f"not mirror-symmetric: {pos} vs {neg}"
+    assert pos[0] / RHO1 > r_plain, (
+        f"energy sink lowered the compression ratio ({pos[0] / RHO1} <= {r_plain}) -- sign error"
+    )
+
+
 def test_cr_dsa_shock_jump(
-    density_tol: float = 0.03,
-    velocity_tol: float = 0.03,
-    pressure_tol: float = 0.03,
-    f_cr_tol: float = 0.35,
+    density_tol: float = 0.02,
+    velocity_tol: float = 0.02,
+    pressure_tol: float = 0.02,
+    cr_flux_margin: float = 0.1,
     velocity_fit_tol: float = 0.01,
     margin_cells: int = 3,
 ):
-    """Test A: subshock Rankine-Hugoniot-with-injection cross-check, plus the
-    Finding-2 boundedness regression guard (see module docstring).
+    """Test A: post-shock jump cross-check, plus the Finding-2 boundedness
+    regression guard (see module docstring).
+
+    Without ``diffusive_relaxation`` there is no precursor: the injected CRs
+    are created behind the shock, so ``P_cr`` jumps from ~0 to a finite
+    downstream value and carries part of the momentum flux. The gas state is
+    therefore checked against :func:`rankine_hugoniot_with_downstream_crs`
+    (total momentum and energy, with the simulation's downstream ``P_cr``/
+    ``F_cr``), and the amount of injection against
+    :func:`cr_energy_flux_jump_bounds` (the jump in ``u e_cr + F_cr`` must
+    equal the injected flux up to the ``P_cr du`` work done inside the shock).
+
+    ``F_cr`` itself is not checked: without relaxation it is an undamped wave
+    variable driven by the ``P_cr`` gradient, which no jump condition fixes
+    (it comes out positive, against the flow).
 
     Args:
         density_tol/velocity_tol/pressure_tol: Maximum relative error on the
             predicted vs. actual post-shock (density, velocity, pressure).
-            Calibrated observed errors ~0.1-1.1% (ad hoc script, not
-            committed) once the pre/post-shock sampling cells are moved
-            ``margin_cells`` past the shock-finder's own ``shock_zones``
-            boundary (closer cells still carry residual HLL numerical
-            smearing from the discontinuity itself) -- 3% leaves a
-            comfortable margin.
-        f_cr_tol: Maximum relative error on the predicted vs. actual
-            post-shock ``F_cr``. Calibrated observed error ~21% -- looser
-            than the other three fields because, without
-            ``diffusive_relaxation``, ``F_cr`` has no mechanism pinning it to
-            a fixed post-shock plateau the way density/velocity/pressure
-            (governed by strong RH conservation) are; the reference formula
-            is exact only as an instantaneous jump condition right at the
-            subshock, and some residual mismatch from finite cell width is
-            expected. 35% leaves margin over the calibrated value.
+            Calibrated (2026-10-03): 0.24% / 0.51% / 0.46% at the default
+            N=1000, 0.3% / 0.6% / 0.5% at N=2000; 2% leaves margin.
+        cr_flux_margin: Allowed overshoot of the CR energy-flux jump beyond
+            its bracket, as a fraction of the injected flux (covers the
+            shock-finder's own few-percent error on the dissipated flux).
+            Calibrated (2026-10-03): the jump lies *inside* the bracket, at
+            -1.11 / -1.03 x the injected flux for N=1000 / 2000, i.e. close to
+            the "CRs appear after compression" end (``<P_cr>`` ~ 0.13 / 0.04
+            of the downstream value), as expected when injection is spread
+            over the post-shock cells.
         velocity_fit_tol: Maximum relative error on the fitted vs. nominal
             shock velocity -- confirms the RH "piston" IC is genuinely
             propagating at the intended constant velocity, not drifting.
         margin_cells: Cells to step past ``shock_zones`` before sampling the
-            pre-/post-shock reference state (see density_tol docstring).
+            pre-/post-shock reference state (closer cells still carry the
+            HLL smearing of the discontinuity itself).
     """
     snapshot_data, x, config, registered_variables, helper_data, params = _run_moving_shock(
         reduced_streaming_speed=1.0, diffusive_relaxation=False,
@@ -306,7 +351,7 @@ def test_cr_dsa_shock_jump(
         f"growth at a shock that isn't genuinely advecting."
     )
 
-    # Subshock RH-jump-with-injection cross-check, at the final snapshot.
+    # Post-shock jump cross-check, at the final snapshot.
     st_b = jnp.asarray(states[-1])
     sf_b = find_shocks_pfrommer(st_b, config, registered_variables, helper_data, mach_min=DSA_MACH_MIN,
                                 **dsa_shock_finder_kwargs(config.cosmic_ray_grey_config))
@@ -331,54 +376,67 @@ def test_cr_dsa_shock_jump(
     p_cr_b = (GAMMA_CR - 1.0) * e_cr_b
     f_cr_b = states[-1, registered_variables.cosmic_ray_flux_index]
 
+    # Shock-frame velocities; F_cr is the flux relative to the gas, so it is
+    # the same in the lab and shock frames.
     rho0, u0, p_gas0 = float(rho_b[idx0]), float(u_b[idx0] - v_fit), float(p_gas_b[idx0])
     p_cr0, f_cr0 = float(p_cr_b[idx0]), float(f_cr_b[idx0])
+    rho2_act, u2_act, p_gas2_act = float(rho_b[idx2]), float(u_b[idx2] - v_fit), float(p_gas_b[idx2])
+    p_cr2_act, f_cr2_act = float(p_cr_b[idx2]), float(f_cr_b[idx2])
     injected_energy_flux = float(DSA_EFFICIENCY * thermal_flux[shock_idx])
     assert injected_energy_flux > 0.0, (
         "No DSA injection detected at the final snapshot's shock cell -- the "
         "cross-check below isn't exercising anything."
     )
+    assert p_cr2_act > 0.0, "No CR pressure behind the shock -- injection did not reach the post-shock gas."
 
-    rho2_pred, u2_pred, p_gas2_pred, f_cr2_pred = modified_rankine_hugoniot_with_cr_injection(
-        rho0, u0, p_gas0, p_cr0, f_cr0, GAMMA, GAMMA_CR, injected_energy_flux,
+    rho2_pred, u2_pred, p_gas2_pred = rankine_hugoniot_with_downstream_crs(
+        rho0, u0, p_gas0, p_cr0, f_cr0, p_cr2_act, f_cr2_act, GAMMA, GAMMA_CR,
     )
-    rho2_act = float(rho_b[idx2])
-    u2_act = float(u_b[idx2] - v_fit)
-    p_gas2_act = float(p_gas_b[idx2])
-    f_cr2_act = float(f_cr_b[idx2])
-
     checks = [
         ("density", rho2_pred, rho2_act, density_tol),
         ("velocity", u2_pred, u2_act, velocity_tol),
         ("pressure", p_gas2_pred, p_gas2_act, pressure_tol),
-        ("F_cr", f_cr2_pred, f_cr2_act, f_cr_tol),
     ]
     for name, pred, act, tol in checks:
         rel_err = abs(pred - act) / max(abs(act), 1e-12)
         assert rel_err < tol, (
             f"Post-shock {name}: predicted {pred:.5f} vs. actual {act:.5f} "
-            f"(rel. err {rel_err:.4e} >= tol {tol}) -- "
-            f"modified_rankine_hugoniot_with_cr_injection does not match the "
-            f"simulation's own converged post-shock state."
+            f"(rel. err {rel_err:.4e} >= tol {tol}) -- the simulation's "
+            f"post-shock gas state does not conserve total (gas + CR) "
+            f"momentum/energy across the shock."
         )
 
+    # Injected CR energy: jump of the CR energy flux u e_cr + F_cr.
+    cr_flux_jump = (u2_act * float(e_cr_b[idx2]) + f_cr2_act) - (u0 * float(e_cr_b[idx0]) + f_cr0)
+    lo, hi = cr_energy_flux_jump_bounds(u0, u2_act, p_cr0, p_cr2_act, injected_energy_flux)
+    slack = cr_flux_margin * injected_energy_flux
+    assert lo - slack < cr_flux_jump < hi + slack, (
+        f"CR energy-flux jump {cr_flux_jump:.5f} outside [{lo:.5f}, {hi:.5f}] "
+        f"(+/- {slack:.5f}) -- the CR energy carried downstream does not match "
+        f"the injected flux {injected_energy_flux:.5f}."
+    )
+
     # Diagnostic plot: gas/CR profile in the shock-comoving coordinate at the
-    # final snapshot, with the predicted post-shock state marked.
+    # final snapshot. A jump condition predicts only the downstream state, so
+    # the prediction is drawn on the downstream side (xi < 0) only.
     xi = x - (x_fit0 + v_fit * times[-1])
+    xlim = (-0.05, 0.05)
     fig, axes = plt.subplots(1, 4, figsize=(20, 5))
     for ax, field, name, pred_val in [
         (axes[0], rho_b, "Density", rho2_pred),
         (axes[1], u_b - v_fit, "Shock-frame velocity", u2_pred),
         (axes[2], p_gas_b, "Gas pressure", p_gas2_pred),
-        (axes[3], f_cr_b, r"$F_{\rm cr}$", f_cr2_pred),
+        (axes[3], p_cr_b, r"$P_{\rm cr}$", None),
     ]:
         ax.plot(xi, field, color="C0")
-        ax.axhline(pred_val, color="black", ls="--", lw=1, label="RH-jump-with-injection prediction")
+        if pred_val is not None:
+            ax.hlines(pred_val, xlim[0], 0.0, color="black", ls="--", lw=1,
+                      label=r"RH jump (total momentum/energy, measured $P_{\rm cr,2}$)")
+            ax.legend(fontsize=8)
         ax.axvline(0.0, color="grey", ls=":", lw=1)
-        ax.set_xlim(-0.05, 0.05)
+        ax.set_xlim(*xlim)
         ax.set_xlabel(r"$\xi = x - x_{\rm shock}(t)$")
         ax.set_title(name)
-        ax.legend(fontsize=8)
     fig.tight_layout()
     pics_dir = Path(__file__).resolve().parent / "pics"
     pics_dir.mkdir(exist_ok=True)
@@ -561,5 +619,6 @@ def test_cr_precursor_ode(
 
 
 if __name__ == "__main__":
+    test_modified_rh_reference_formula()
     test_cr_dsa_shock_jump()
     test_cr_precursor_ode()

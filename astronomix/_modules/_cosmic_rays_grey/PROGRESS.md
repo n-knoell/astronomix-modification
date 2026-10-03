@@ -4,6 +4,112 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## New (2026-10-03): M7 pilot -- Girichidis et al. (2016)-scale stratified box (built, NOT yet run)
+
+**Why:** M5's Girichidis-Fig.-1-style plot shows no dense midplane layer. Main reasons: the box
+is narrower than one scale height (37.5 pc vs H = 50 pc, so SN bubbles lift the whole column
+instead of venting), SN energy input per area is 26x the paper's, and t_end is 7.4 Myr vs
+250 Myr. Their grid is coarse (15.6 pc), so their box needs fewer cells than M5-1024.
+
+**`pytests/stratified_ism/m7_girichidis_pilot.py`** (`python m7_girichidis_pilot.py
+[both|thermal|cr] [--setup-only]`): 2 x 2 x +-2.5 kpc, 64 x 64 x 160 (31.25 pc; factor 2 ->
+the paper's 15.6 pc), Sigma = 10 Msun/pc^2 Gaussian (sigma 60 pc) hydrostatic in a Kuijken &
+Gilmore potential (Joung & Mac Low 2006 constants, not re-checked against Walch 2015), 1e6 K
+halo at 1e-27 g/cm^3, 60 SNe/Myr/kpc^2, type II/Ia heights 50/325 pc, isotropic kappa = 1e28,
+v_red = 1000 km/s, 250 Myr. Thermal-only mode runs without CR transport (as in the paper).
+`--setup-only` (checked on CPU, all three modes): midplane n_H = 2.0 cm^-3 at T = 2.2e3 K;
+cost ~6.9 h (both/cr) / ~3.4 h (thermal) at RTX 2080 Ti throughput (M5 attempt 3), dt ~12 kyr
+set equally by CFL (v_red) and the F_cr relaxation bound. 15.6 pc would be ~16x that.
+
+**Three new opt-in SN-driving options (defaults unchanged):**
+- `SNDrivingConfig.max_sn_per_step` (K): K independent trials per step with probability
+  `sn_rate * dt / K`, each at its own site (`jax.lax.fori_loop`); for K > 1, `_cfl_time_step`
+  caps `dt <= K / sn_rate`. Needed because at 240 SNe/Myr and dt ~ 12 kyr ~3 SNe go off per
+  step and the single trial would silently cap the rate at 1/dt. K = 1 keeps the original key
+  split (bit-identical; scratch-checked).
+- `SNDrivingConfig.gaussian_z_placement` + `sn_gaussian_*` params: two-component Gaussian
+  heights about a center, x/y uniform.
+- `SNDrivingConfig.momentum_injection_hybrid` + `sn_shell_formation_radius_coefficient`: per
+  SN, full thermal deposit if the injection radius is within the Kim & Ostriker (2015)
+  shell-formation radius at the local density, momentum + thermal floor otherwise. At 31 pc a
+  disc SN heats its footprint only to ~1e5 K (overcools); halo SNe would get huge kicks.
+  Delayed cooling was not used: a ~1 Myr shield would keep ~half the midplane layer from
+  cooling at this SN rate.
+- Scratch checks (CPU, direct `_inject_supernovae` calls): K = 8 at p = 1 deposits 8.000 E_SN;
+  mean count at rate*dt = 3 is 2.98 +- 0.02; Gaussian height std 0.994 vs 1.0 expected
+  (fraction within 1.5: 0.908 vs 0.907); hybrid gives full thermal / no kick in tenuous gas
+  and 1% thermal + kick in dense gas.
+
+**Provisional runs (2026-10-03, `--res=0.5` = 62.5 pc, 32 x 32 x 80, full 250 Myr, RTX 2080 Ti,
+for visual inspection only; plots `pics/m7_pilot_*_{both,thermal}_80.svg`):** both NaN-free.
+`both`: 1177 s; the disc puffs up (z90 rises to ~1.4 kpc at ~180 Myr, then falls back to
+~0.7 kpc), a thick diffuse CR-supported layer to |z| ~ 0.5-1 kpc, midplane E_CR ~ 1-3e-11
+erg/cm^3 (paper: ~1e-11); H_cr becomes undefined after ~140 Myr (CR pressure falls by < 1/e
+within the box, isotropic kappa = 1e28); max T ~3e8 K after ~120 Myr. `thermal`: 785 s; mass
+collapses to the midplane (z70 = one cell, z90 ~150-200 pc late), but as a few dense clumps,
+not a sheet (1 cell per scale height, no self-gravity); eta(1 kpc) ~1.5, v_out ~35 km/s. The
+hottest gas (~3e8 K, c ~2600 km/s) exceeds v_red and sets the CFL dt.
+
+**Cost and memory, measured on the RTX 2080 Ti (2026-10-03, `both`, first 2 Myr, compilation
+excluded):** 2.47 / 287 / 566 s per simulated Myr at `--res` = 0.5 / 1.5 / 1.75, i.e. ~res^4.33
+(steeper than cells x steps: the 2-cell SN footprint holds less gas at finer grids, so remnants
+are hotter and dt smaller); the full 250 Myr at 0.5 averaged 1.8x its early rate. Memory:
+`--res` = 2 and 2.5 run out of memory on 11 GB; 1.75 peaks at 8.3 GB (2 snapshots, +0.25 GB
+each), 1.5 at 5.3 GB. `--res` needs 64 x res integer (1.2 is invalid; 1.1875 = 26.3 pc).
+Script default now `--res=1.625` (19.2 pc): ~3.5-13 h on an H200 at an assumed 8-4x speed-up;
+`_cost_estimate` uses this measured scaling. No checkpointing: probe with `--t-end-myr=10`.
+**Running (started 2026-10-03 ~21:45):** `both --res=1.1875` (26.3 pc, 76 x 76 x 190) on
+a 2080 Ti, expected ~7-13 h; plots will be `pics/m7_pilot_*_both_190.svg`.
+
+**Open risks:** 250 Myr is ~30x longer than any stratified run so far; v_red = 1000 km/s is
+exceeded by the hottest remnants (accepted, see the script's decision 2); the H200 speed-up
+over a 2080 Ti is not measured (the pilot's wall time should calibrate the 15.6 pc decision).
+
+## Fixed (2026-10-03): item 9 Test A compared against a wrong jump condition
+
+**`modified_rankine_hugoniot_with_cr_injection` had the energy-sink sign wrong for `u0 < 0`,
+and Test A's shock violates its `P_cr`-continuous assumption anyway; the two errors partly
+cancelled, so Test A's old ~1% agreement was not a real validation.** The simulation itself
+was fine: only the reference formula and the test comparison changed.
+
+- **Sign:** the shock-frame energy fluxes carry the sign of `u`. The formula used
+  `E_gas2 = E_gas0 - inj` (and `F_cr2 = ... + inj`) unconditionally, which for the item-9
+  piston shock (`u0 = -2`) *adds* energy to the gas. Fixed to `- sign(u0) * inj` (and
+  `+ sign(u0) * inj`). Confirmed in the simulation (N=2000, plus a zero-injection control):
+  the gas energy flux magnitude drops across the shock (-6.956 -> -6.876).
+- **Wrong regime for Test A:** the formula assumes `P_cr` continuous through the jump (a
+  resolved precursor, Test B's situation). Without `diffusive_relaxation` the CRs are created
+  behind the shock, so `P_cr` jumps from ~0 to 0.041-0.043 and carries ~0.9% of the momentum
+  flux (total momentum incl. `P_cr` is conserved to 0.02%, gas alone is off by 0.9%). With only
+  the sign fixed, the predictions get *worse* (rho/u/P +1.7 / -1.9 / +2.8% at N=2000).
+- **F_cr:** without relaxation `F_cr` is an undamped wave variable driven by the `P_cr`
+  gradient. It comes out *positive* (+0.049), against the correctly-signed prediction -0.057;
+  the old "15-17% low" result (and the report's "no pinning mechanism" explanation) was an
+  artefact of the sign error. Most of the injected energy is advected (`u2 e_cr2`), not in `F_cr`.
+- **New reference functions** (same module): `rankine_hugoniot_with_downstream_crs` (mass +
+  total momentum + total energy, with the downstream `P_cr`/`F_cr` taken from the simulation)
+  and `cr_energy_flux_jump_bounds` (the jump of `u e_cr + F_cr` equals `sign(u0) * inj` plus
+  the `<P_cr> (u0 - u2)` work, `<P_cr>` between upstream and downstream value). Test A now
+  checks rho/u/P against the first (tol 2%) and the CR flux jump against the second (slack 10%
+  of `inj`); the `F_cr` check is gone. New `test_modified_rh_reference_formula` checks the fixed
+  formula without a simulation (plain-RH limit, mirror symmetry, sink raises compression).
+- **Rerun (default N=1000), both pass:** rho/u/P errors 0.24 / 0.51 / 0.46% (N=2000: 0.3 /
+  0.6 / 0.5%); CR flux jump -0.0632 inside [-0.105, -0.057] (inj = 0.0571), i.e. most CRs
+  appear after compression, as expected with injection spread over the post-shock cells.
+  `pics/cr_modified_shock_structure_jump_test.svg` regenerated (prediction drawn on the
+  downstream side only); `pics/cr_modified_shock_structure_sign_check_N2000.svg` shows the
+  three predictions (old / sign-only / new) against the N=2000 run and the zero-injection control.
+- **Unaffected:** Test B (`cr_precursor_ode_rhs` has no hard-coded flow direction and keeps
+  `P_cr` in the momentum balance), and nothing else imports the changed function.
+- **Resolution series redone (Test A only, N = 1000 / 2000 / 4000; Test B unaffected, its
+  earlier data reused):** rho/u/P errors 0.24-0.31 / 0.51-0.55 / 0.46-0.48% at 1000-2000, 0.13 /
+  0.25 / 0.22% at 4000; CR flux jump 1.11 / 1.03 / 1.12 x inj, all inside the bracket; Mach
+  1.97, P_cr2 = 0.041-0.044 throughout. `pics/cr_modified_shock_structure_resolution.svg` and the
+  `cr_modified_shock_resolution.pdf` copies in both reports regenerated; item-9 text in both
+  reports (and the supervisor status-table row) rewritten. Supervisor digest still 5 pages, long
+  report 23. Not audited: whether other formulas in `test_setups/reference_solutions/` assume
+  flow in +x.
+
 ## Known limitation (2026-10-02): shock Mach numbers, and hence DSA injection, are resolution-limited
 
 **The shock finder underestimates the Mach number by the same factor at every shock strength, and

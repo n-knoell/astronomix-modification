@@ -37,7 +37,14 @@ step-by-step derivations:
    the subshock).
 2. :func:`modified_rankine_hugoniot_with_cr_injection` -- the (mass, momentum,
    energy) jump conditions across the subshock itself, given the CR energy
-   flux DSA injects there.
+   flux DSA injects there. Assumes ``P_cr`` continuous through the subshock
+   (a resolved precursor).
+3. :func:`rankine_hugoniot_with_downstream_crs` and
+   :func:`cr_energy_flux_jump_bounds` -- the jump when the CRs are instead
+   created behind the shock with no precursor, so ``P_cr`` itself jumps
+   (the pytest's Test A): total momentum/energy conservation for the gas
+   state, plus a bracket on the CR energy-flux jump that checks the
+   injected amount.
 
 Plain numpy/scipy (root-finding only) -- a one-shot reference-formula module
 like ``pfrommer_riemann_solver.py``, not part of the simulation hot path.
@@ -163,7 +170,14 @@ def modified_rankine_hugoniot_with_cr_injection(
     known energy sink:
 
         (1/2) rho2 u2^3 + gamma_gas/(gamma_gas-1) P_gas2 u2
-      = (1/2) rho0 u0^3 + gamma_gas/(gamma_gas-1) P_gas0 u0 - injected_energy_flux
+      = (1/2) rho0 u0^3 + gamma_gas/(gamma_gas-1) P_gas0 u0 - s * injected_energy_flux
+
+    with ``s = sign(u0)`` the flow direction in the shock frame: the energy
+    fluxes carry the sign of ``u``, so removing energy from the gas shrinks
+    the flux's *magnitude*. (Before 2026-10-03 this read ``- injected_energy_flux``
+    unconditionally, which is only right for ``u0 > 0``; for the ``u0 < 0``
+    piston shock of the item-9 pytest it *added* energy to the gas instead --
+    see PROGRESS.md's 2026-10-03 entry.)
 
     Solved via a 1D root-find over the compression ratio ``r = rho2/rho0``
     (mass and gas-momentum conservation give ``u2``/``P_gas2`` as functions of
@@ -174,7 +188,13 @@ def modified_rankine_hugoniot_with_cr_injection(
     finite jump in ``u``, not a delta -- ``P_cr`` is finite and continuous, so
     only the ordinary product survives):
 
-        F_cr2 = F_cr0 - P_cr0 * (u2 - u0) * gamma_cr/(gamma_cr-1) + injected_energy_flux
+        F_cr2 = F_cr0 - P_cr0 * (u2 - u0) * gamma_cr/(gamma_cr-1) + s * injected_energy_flux
+
+    This assumes ``P_cr`` continuous through the jump, i.e. CRs that already
+    fill the shock region (a resolved precursor). It does **not** apply when
+    the CRs are created behind the shock with no precursor (``P_cr`` itself
+    jumps); use :func:`rankine_hugoniot_with_downstream_crs` and
+    :func:`cr_energy_flux_jump_bounds` for that case.
 
     Validation (see this module's pytest / a standalone check run during
     development): with ``p_cr0 = f_cr0 = injected_energy_flux = 0`` this must
@@ -201,10 +221,11 @@ def modified_rankine_hugoniot_with_cr_injection(
     mass_flux = rho0 * u0
     momentum_flux_gas_only = rho0 * u0**2 + p_gas0
 
+    flow_sign = float(np.sign(u0))
     energy_flux0 = (
         0.5 * rho0 * u0**3
         + gamma_gas / (gamma_gas - 1.0) * p_gas0 * u0
-        - injected_energy_flux
+        - flow_sign * injected_energy_flux
     )
 
     def residual(r):
@@ -222,7 +243,7 @@ def modified_rankine_hugoniot_with_cr_injection(
     # Bracket-finding note (found while validating this function against a
     # genuinely CR-precursor-modified upstream state, not the pristine
     # ambient state the original degenerate-limit validation used): with
-    # ``injected_energy_flux > 0``, ``residual(r=1) = +injected_energy_flux``
+    # ``injected_energy_flux > 0``, ``residual(r=1) = sign(u0) * injected_energy_flux``
     # (not exactly 0, as in the plain-gas case where ``r=1`` is the exact
     # trivial "no jump" root) -- this shifts a vestige of that trivial root to
     # a spurious crossing very close to ``r=1``, so ``residual`` can go
@@ -255,7 +276,115 @@ def modified_rankine_hugoniot_with_cr_injection(
     f_cr2 = (
         f_cr0
         - p_cr0 * (u2 - u0) * gamma_cr / (gamma_cr - 1.0)
-        + injected_energy_flux
+        + flow_sign * injected_energy_flux
     )
 
     return rho2, u2, p_gas2, f_cr2
+
+
+def rankine_hugoniot_with_downstream_crs(
+    rho0: float,
+    u0: float,
+    p_gas0: float,
+    p_cr0: float,
+    f_cr0: float,
+    p_cr2: float,
+    f_cr2: float,
+    gamma_gas: float,
+    gamma_cr: float,
+) -> tuple:
+    """Gas jump across a shock whose CR pressure itself jumps (no precursor).
+
+    The case of the item-9 pytest's Test A: without ``diffusive_relaxation``
+    the injected CRs are created behind the shock and advected away, so
+    ``P_cr`` rises from ``p_cr0`` to ``p_cr2`` across the jump and does not
+    cancel from the momentum balance (unlike
+    :func:`modified_rankine_hugoniot_with_cr_injection`'s precursor case).
+
+    Only the *total* (gas + CR) momentum and energy fluxes are conserved
+    exactly across such a jump: the gas<->CR exchange terms
+    (``-u dP_cr/dx`` in the gas energy, ``-P_cr du/dx`` in the CR energy)
+    become products of two quantities that jump at the same place, whose
+    split depends on where inside the shock the CRs appear -- but their sum,
+    ``-d(u P_cr)/dx``, is a total derivative. With the downstream CR state
+    taken as given, mass, total momentum and total energy
+
+        rho u = const
+        rho u^2 + P_gas + P_cr = const
+        (1/2) rho u^3 + gamma_gas/(gamma_gas-1) P_gas u
+          + gamma_cr/(gamma_cr-1) P_cr u + F_cr = const
+
+    (``F_cr`` is the CR flux relative to the gas, so it is Galilean
+    invariant, while ``u`` is the shock-frame velocity) fix the downstream
+    gas state. The amount of injection enters only through ``p_cr2``/
+    ``f_cr2``; check it separately with :func:`cr_energy_flux_jump_bounds`.
+
+    Args:
+        rho0, u0, p_gas0: Upstream gas state (``u0`` in the shock frame).
+        p_cr0, f_cr0: Upstream CR pressure and flux.
+        p_cr2, f_cr2: Downstream CR pressure and flux.
+        gamma_gas, gamma_cr: Adiabatic indices.
+
+    Returns:
+        ``(rho2, u2, p_gas2)``.
+    """
+    A = gamma_gas / (gamma_gas - 1.0)
+    B = gamma_cr / (gamma_cr - 1.0)
+    momentum_flux = rho0 * u0**2 + p_gas0 + p_cr0
+    energy_flux = 0.5 * rho0 * u0**3 + A * p_gas0 * u0 + B * p_cr0 * u0 + f_cr0
+
+    def gas_state(r):
+        u2 = u0 / r
+        rho2 = rho0 * r
+        return rho2, u2, momentum_flux - rho2 * u2**2 - p_cr2
+
+    def residual(r):
+        rho2, u2, p_gas2 = gas_state(r)
+        return 0.5 * rho2 * u2**3 + A * p_gas2 * u2 + B * p_cr2 * u2 + f_cr2 - energy_flux
+
+    # Same sign-change scan as modified_rankine_hugoniot_with_cr_injection:
+    # take the crossing closest to r_max (the physical compression root).
+    r_max = (gamma_gas + 1.0) / (gamma_gas - 1.0) * 4.0
+    r_probe = np.sort(np.concatenate([np.array([1.0 + 1e-9]), np.geomspace(1e-3, 1.0, 400) * (r_max - 1.0) + 1.0]))
+    residual_probe = np.array([residual(rp) for rp in r_probe])
+    sign_changes = np.where(np.diff(np.sign(residual_probe)) != 0)[0]
+    if len(sign_changes) == 0:
+        raise RuntimeError(
+            "rankine_hugoniot_with_downstream_crs: no sign change found for the "
+            "compression-ratio root over (1, r_max) -- check inputs."
+        )
+    lo_idx = sign_changes[-1]
+    r = brentq(residual, r_probe[lo_idx], r_probe[lo_idx + 1])
+    return gas_state(r)
+
+
+def cr_energy_flux_jump_bounds(
+    u0: float,
+    u2: float,
+    p_cr0: float,
+    p_cr2: float,
+    injected_energy_flux: float,
+) -> tuple:
+    """Allowed range of the jump in the CR energy flux ``u e_cr + F_cr``.
+
+    Integrating the steady CR energy equation
+    ``d(u e_cr + F_cr)/dx = -P_cr du/dx + q`` (``q`` the DSA injection rate
+    per volume, integrating to ``injected_energy_flux`` across the shock)
+    from upstream to downstream gives
+
+        Phi2 - Phi0 = s * injected_energy_flux + <P_cr> * (u0 - u2)
+
+    with ``s = sign(u0)`` and ``<P_cr>`` the CR pressure averaged over the
+    velocity jump. If ``P_cr`` changes monotonically through the shock,
+    ``<P_cr>`` lies between ``p_cr0`` and ``p_cr2``: ``p_cr0`` if the CRs
+    appear only after the gas is compressed, ``p_cr2`` if they are already
+    there before. This brackets the jump without having to resolve the
+    shock's inner structure.
+
+    Returns:
+        ``(lower, upper)`` bounds on ``Phi2 - Phi0``.
+    """
+    flow_sign = float(np.sign(u0))
+    a = flow_sign * injected_energy_flux + p_cr0 * (u0 - u2)
+    b = flow_sign * injected_energy_flux + p_cr2 * (u0 - u2)
+    return min(a, b), max(a, b)

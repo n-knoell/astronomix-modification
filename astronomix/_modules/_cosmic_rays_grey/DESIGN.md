@@ -467,9 +467,12 @@ without first fixing Finding 1.
 "independent layers" pattern ladder item 8 already used), each run at the
 `reduced_streaming_speed` its own reference formula actually needs:
 - `test_cr_dsa_shock_jump` (Test A): `diffusive_shock_acceleration` only, `reduced_streaming_speed`
-  close to the local gas sound speed (Finding-1-safe). Validates
-  `modified_rankine_hugoniot_with_cr_injection` against the simulation's own converged
-  post-shock state, and doubles as the Finding-2 regression guard.
+  close to the local gas sound speed (Finding-1-safe). Originally validated against
+  `modified_rankine_hugoniot_with_cr_injection`; **since 2026-10-03 validates against
+  `rankine_hugoniot_with_downstream_crs` + `cr_energy_flux_jump_bounds` instead** (the old
+  formula had the energy-sink sign wrong for `u0 < 0` and assumes `P_cr` continuous, which
+  Test A's precursor-free shock violates -- see PROGRESS.md 2026-10-03). Doubles as the
+  Finding-2 regression guard.
 - `test_cr_precursor_ode` (Test B): `diffusive_relaxation` on, `reduced_streaming_speed` well
   above the shock velocity (deep quasi-steady, accepting a Finding-1-degraded but still
   super-critical shock as the cost). Validates `cr_precursor_ode_rhs` against the simulation's

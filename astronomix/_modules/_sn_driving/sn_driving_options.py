@@ -65,6 +65,40 @@ class SNDrivingConfig(NamedTuple):
     #: same way for both modes.
     density_weighted_placement: bool = False
 
+    #: with ``momentum_injection`` on, decide per SN: if the injection
+    #: radius is within the Kim & Ostriker (2015) shell-formation radius
+    #: ``r_sf = SNDrivingParams.sn_shell_formation_radius_coefficient *
+    #: n_0**(-0.42)`` at the local ambient density (the remnant's
+    #: energy-conserving phase is resolved), deposit the full thermal energy
+    #: and no kick; otherwise momentum + thermal floor as usual. The
+    #: resolved/unresolved switch ``sn_driving.py``'s docstring flags as
+    #: missing for setups spanning both regimes (e.g. a kpc-scale box with
+    #: SNe in both the disc and the tenuous halo). Off by default; requires
+    #: ``momentum_injection``.
+    momentum_injection_hybrid: bool = False
+
+    #: draw each trigger's z from a two-component Gaussian centered on
+    #: ``SNDrivingParams.sn_gaussian_z_center`` instead of uniformly over
+    #: ``[sn_z_min, sn_z_max]`` (x/y stay uniform): a fraction
+    #: ``sn_gaussian_first_fraction`` with standard deviation
+    #: ``sn_gaussian_scale_height_1``, the rest with
+    #: ``sn_gaussian_scale_height_2`` -- Girichidis et al. (2016)'s 80% type II
+    #: (50 pc) + 20% type Ia (325 pc) split. Draws are clipped to
+    #: ``[sn_z_min, sn_z_max]`` (and the domain). Off by default; mutually
+    #: exclusive with ``density_weighted_placement``.
+    gaussian_z_placement: bool = False
+
+    #: number of independent SN trials per step (static). Each trial fires
+    #: with probability ``sn_rate * dt / max_sn_per_step`` at its own site,
+    #: so up to this many SNe can go off in one step -- needed whenever
+    #: ``sn_rate * dt`` is not << 1 (a large box at a literature areal rate),
+    #: where the default single trial would silently cap the rate at one SN
+    #: per step. With ``> 1``, ``_cfl_time_step`` also bounds
+    #: ``dt <= max_sn_per_step / sn_rate`` so the per-trial probability
+    #: never clips. Default 1 is bit-identical to the original single-trial
+    #: behavior (same PRNG sequence, no extra dt constraint).
+    max_sn_per_step: int = 1
+
 
 class SNDrivingParams(NamedTuple):
 
@@ -181,3 +215,19 @@ class SNDrivingParams(NamedTuple):
     #: Sec. 2. Only read when ``SNDrivingConfig.density_weighted_placement``
     #: is on.
     sn_density_weighting_power: float = 1.5
+
+    #: Gaussian vertical SN distribution (only read when
+    #: ``SNDrivingConfig.gaussian_z_placement`` is on): center (absolute z,
+    #: same units as ``config.box_size``, e.g. the midplane), the two
+    #: components' standard deviations, and the fraction of SNe drawn from
+    #: the first component. Defaults are placeholders, set them explicitly.
+    sn_gaussian_z_center: float = 0.0
+    sn_gaussian_scale_height_1: float = 1.0
+    sn_gaussian_scale_height_2: float = 1.0
+    sn_gaussian_first_fraction: float = 1.0
+
+    #: Kim & Ostriker (2015) shell-formation radius at ``n_0 = 1`` (same
+    #: length units as ``config.box_size``), ``22.6 pc * (E_SN/1e51 erg)**0.29``
+    #: -- convert at setup time. Only read when
+    #: ``SNDrivingConfig.momentum_injection_hybrid`` is on.
+    sn_shell_formation_radius_coefficient: float = 0.0

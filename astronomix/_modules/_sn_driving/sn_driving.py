@@ -26,6 +26,12 @@ and Simpson et al. 2016's "RAND" mode -- see DESIGN.md's SILCC-ISM section).
 distribution over eligible cells rather than uniformly (SILCC-ISM project
 milestone M6, ladder item 12's optional stretch cross-check) -- see
 ``_draw_density_weighted_site``'s docstring for the derivation and mechanics.
+``SNDrivingConfig.gaussian_z_placement`` keeps x/y uniform but draws z from a
+two-component Gaussian about a given center (Girichidis et al. 2016's type II/Ia
+split). ``SNDrivingConfig.max_sn_per_step > 1`` runs that many independent
+trials per step (each with probability ``sn_rate * dt / max_sn_per_step``, at
+its own site), for setups where ``sn_rate * dt`` is not small; the default of
+one trial is the original behavior, bit for bit.
 Either way, the injection footprint wraps periodically along any axis whose
 boundary is periodic (the box-scale minimum-image convention), so a site
 drawn near a periodic edge still gets its full, undistorted energy deposit.
@@ -65,9 +71,11 @@ subject to K&I cooling, so overcooling doesn't apply to that channel. This
 is a simplified, always-on momentum injection (no adaptive resolved/
 unresolved switch based on comparing the cooling radius to the grid spacing,
 unlike the full Kim & Ostriker 2015 hybrid scheme) -- defensible here since
-M4's setup is deeply in the unresolved regime throughout, but a future
-milestone needing the resolved regime too (a finer box, or a lower-density
-target) would need that comparison added.
+M4's setup is deeply in the unresolved regime throughout. For setups that
+span both regimes, ``SNDrivingConfig.momentum_injection_hybrid`` adds that
+comparison: per SN, full thermal deposit (no kick) when the injection radius
+is within the Kim & Ostriker (2015) shell-formation radius at the local
+ambient density, momentum + thermal floor otherwise.
 
 **Delayed cooling (``SNDrivingConfig.delayed_cooling``, added for M4):** an
 alternative to ``momentum_injection`` for the same overcooling finding,
@@ -197,73 +205,25 @@ def _draw_density_weighted_site(
     return helper_data.geometric_centers[idx[0], idx[1], idx[2], :]
 
 
-@partial(jax.jit, static_argnames=["config", "registered_variables"])
-def _inject_supernovae(
-    key,
+def _deposit_one_supernova(
+    trigger_key,
+    pos_key,
+    trigger_probability,
     primitive_state: STATE_TYPE,
-    dt: Union[float, Float[Array, ""]],
+    cooling_shield,
+    interior_mask,
     config: SimulationConfig,
     params: SimulationParams,
     registered_variables: RegisteredVariables,
     helper_data: HelperData,
-    cooling_shield=None,
 ) -> tuple:
-    """Stochastically trigger and deposit at most one supernova this step.
-
-    Args:
-        key: The PRNG key (advanced and returned; carried in ``LoopState``).
-        primitive_state: The primitive state array.
-        dt: The time step.
-        config: The simulation configuration (provides ``box_size``,
-            ``grid_spacing``, ``boundary_settings``).
-        params: The simulation parameters (``params.sn_driving_params`` and
-            ``params.gamma``).
-        registered_variables: The registered variables.
-        helper_data: The helper data (provides ``geometric_centers``, the
-            absolute cell-center coordinates -- 3D Cartesian only, matching
-            every other point-injection module in this codebase).
-        cooling_shield: The persistent per-cell "time remaining shielded"
-            field (see ``LoopState.cooling_shield``), or ``None`` when
-            ``config.sn_driving_config.delayed_cooling`` is off. Extended at
-            a trigger's footprint when that flag is on; passed through
-            unchanged otherwise.
-
-    Returns:
-        ``(key, primitive_state, cooling_shield)`` with the advanced PRNG
-        key, the supernova (if triggered) deposited, and the (possibly
-        extended) cooling shield field.
-    """
+    """One Bernoulli trial and, if it fires, one SN deposit (the body of
+    ``_inject_supernovae``, run once per trial). Returns
+    ``(primitive_state, cooling_shield)``."""
     sn_params = params.sn_driving_params
-
-    key, trigger_key, pos_key = jax.random.split(key, 3)
-
-    trigger_probability = jnp.clip(sn_params.sn_rate * dt, 0.0, 1.0)
     triggered = jax.random.bernoulli(trigger_key, trigger_probability)
-
     box_size = config.box_size
 
-    # helper_data/primitive_state here are ghost-padded (this function is
-    # called from _iteration_level_injections with helper_data_pad) --
-    # needed up front now, both to keep the density-weighted site draw below
-    # from ever landing on a ghost cell and, further down, to restrict the
-    # deposit weight itself to the interior (see that comment for why: a
-    # ghost cell's contribution would otherwise double-count real domain
-    # volume across a periodic wrap).
-    ngc = config.num_ghost_cells
-    num_cells = config.num_cells
-    density_shape = primitive_state[registered_variables.density_index].shape
-    interior_x = (jnp.arange(density_shape[0]) >= ngc) & (
-        jnp.arange(density_shape[0]) < num_cells.x + ngc
-    )
-    interior_y = (jnp.arange(density_shape[1]) >= ngc) & (
-        jnp.arange(density_shape[1]) < num_cells.y + ngc
-    )
-    interior_z = (jnp.arange(density_shape[2]) >= ngc) & (
-        jnp.arange(density_shape[2]) < num_cells.z + ngc
-    )
-    interior_mask = (
-        interior_x[:, None, None] & interior_y[None, :, None] & interior_z[None, None, :]
-    )
 
     # z is restricted to [sn_z_min, sn_z_max] (clipped to the domain). At the
     # default +/-inf bounds this reduces to the unrestricted formula
@@ -276,6 +236,21 @@ def _inject_supernovae(
             pos_key, primitive_state, helper_data, interior_mask, z_lo, z_hi,
             sn_params.sn_density_weighting_power, registered_variables,
         )
+    elif config.sn_driving_config.gaussian_z_placement:
+        # x/y uniform; z from the two-component Gaussian (see
+        # SNDrivingConfig.gaussian_z_placement), clipped to [z_lo, z_hi].
+        xy_key, component_key, z_key = jax.random.split(pos_key, 3)
+        unit_xy = jax.random.uniform(xy_key, shape=(2,))
+        use_first = jax.random.bernoulli(component_key, sn_params.sn_gaussian_first_fraction)
+        scale_height = jnp.where(
+            use_first, sn_params.sn_gaussian_scale_height_1, sn_params.sn_gaussian_scale_height_2
+        )
+        z_site = sn_params.sn_gaussian_z_center + scale_height * jax.random.normal(z_key)
+        site = jnp.array([
+            unit_xy[0] * box_size.x,
+            unit_xy[1] * box_size.y,
+            jnp.clip(z_site, z_lo, z_hi),
+        ])
     else:
         # x/y stay uniform over the whole box.
         unit_site = jax.random.uniform(pos_key, shape=(3,))
@@ -346,10 +321,32 @@ def _inject_supernovae(
     # fraction can be tuned/differentiated), so this can't be a Python `if`
     # guard -- it's applied unconditionally; a fraction of exactly 0.0
     # naturally makes delta_pressure zero everywhere, a harmless no-op add.
-    thermal_fraction = (
-        sn_params.sn_momentum_thermal_floor_fraction
-        if config.sn_driving_config.momentum_injection else 1.0
-    )
+    # Hybrid mode (SNDrivingConfig.momentum_injection_hybrid): per SN, keep
+    # the full thermal deposit (no kick) when the remnant is resolved, i.e.
+    # the injection radius is within the Kim & Ostriker (2015) shell-
+    # formation radius r_sf = coefficient * n_0**(-0.42) at the local
+    # (weight-averaged, pre-injection) ambient density; momentum + thermal
+    # floor otherwise. ``resolved`` stays None outside hybrid mode, so the
+    # plain momentum/thermal paths are unchanged.
+    resolved = None
+    if config.sn_driving_config.momentum_injection_hybrid:
+        if not config.sn_driving_config.momentum_injection:
+            raise ValueError("momentum_injection_hybrid requires momentum_injection.")
+        rho_pre = primitive_state[registered_variables.density_index]
+        n_0_pre = (
+            jnp.sum(rho_pre * weight) / jnp.maximum(jnp.sum(weight), 1e-300)
+        ) / sn_params.sn_momentum_density_reference
+        shell_formation_radius = sn_params.sn_shell_formation_radius_coefficient * jnp.maximum(
+            n_0_pre, 1e-300
+        ) ** (-0.42)
+        resolved = sn_params.sn_injection_radius <= shell_formation_radius
+
+    if not config.sn_driving_config.momentum_injection:
+        thermal_fraction = 1.0
+    elif resolved is None:
+        thermal_fraction = sn_params.sn_momentum_thermal_floor_fraction
+    else:
+        thermal_fraction = jnp.where(resolved, 1.0, sn_params.sn_momentum_thermal_floor_fraction)
     thermal_energy = thermal_fraction * (1.0 - cr_fraction) * sn_params.sn_energy
     gamma = params.gamma
     delta_pressure = jnp.where(
@@ -380,8 +377,9 @@ def _inject_supernovae(
         weight_sum_safe = jnp.maximum(jnp.sum(weight), 1e-300)
         rho_ambient_local = jnp.sum(rho * weight) / weight_sum_safe
         n_0 = rho_ambient_local / sn_params.sn_momentum_density_reference
+        kicked = triggered if resolved is None else triggered & ~resolved
         p_terminal = jnp.where(
-            triggered, sn_params.sn_momentum_coefficient * n_0 ** (-0.17), 0.0,
+            kicked, sn_params.sn_momentum_coefficient * n_0 ** (-0.17), 0.0,
         )
 
         # Radial unit vector from the site to each cell, reusing dx/dy/dz's
@@ -431,6 +429,100 @@ def _inject_supernovae(
         footprint_mask = weight > 1e-3
         cooling_shield = jnp.maximum(
             cooling_shield, jnp.where(footprint_mask, triggered_delay, 0.0)
+        )
+
+    return primitive_state, cooling_shield
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables"])
+def _inject_supernovae(
+    key,
+    primitive_state: STATE_TYPE,
+    dt: Union[float, Float[Array, ""]],
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+    helper_data: HelperData,
+    cooling_shield=None,
+) -> tuple:
+    """Stochastically trigger and deposit at most one supernova this step.
+
+    Args:
+        key: The PRNG key (advanced and returned; carried in ``LoopState``).
+        primitive_state: The primitive state array.
+        dt: The time step.
+        config: The simulation configuration (provides ``box_size``,
+            ``grid_spacing``, ``boundary_settings``).
+        params: The simulation parameters (``params.sn_driving_params`` and
+            ``params.gamma``).
+        registered_variables: The registered variables.
+        helper_data: The helper data (provides ``geometric_centers``, the
+            absolute cell-center coordinates -- 3D Cartesian only, matching
+            every other point-injection module in this codebase).
+        cooling_shield: The persistent per-cell "time remaining shielded"
+            field (see ``LoopState.cooling_shield``), or ``None`` when
+            ``config.sn_driving_config.delayed_cooling`` is off. Extended at
+            a trigger's footprint when that flag is on; passed through
+            unchanged otherwise.
+
+    Returns:
+        ``(key, primitive_state, cooling_shield)`` with the advanced PRNG
+        key, the supernova (if triggered) deposited, and the (possibly
+        extended) cooling shield field.
+    """
+    sn_params = params.sn_driving_params
+    max_sn = config.sn_driving_config.max_sn_per_step
+    if config.sn_driving_config.density_weighted_placement and config.sn_driving_config.gaussian_z_placement:
+        raise ValueError("density_weighted_placement and gaussian_z_placement are mutually exclusive.")
+
+    # Each of the max_sn trials fires with probability sn_rate * dt / max_sn
+    # (for max_sn > 1, _cfl_time_step bounds dt so this never clips); the
+    # default max_sn = 1 is the original single trial, with the original
+    # key split, so it is bit-identical to before.
+    trigger_probability = jnp.clip(sn_params.sn_rate * dt / max_sn, 0.0, 1.0)
+
+    # helper_data/primitive_state here are ghost-padded (this function is
+    # called from _iteration_level_injections with helper_data_pad) --
+    # needed up front now, both to keep the density-weighted site draw below
+    # from ever landing on a ghost cell and, further down, to restrict the
+    # deposit weight itself to the interior (see that comment for why: a
+    # ghost cell's contribution would otherwise double-count real domain
+    # volume across a periodic wrap).
+    ngc = config.num_ghost_cells
+    num_cells = config.num_cells
+    density_shape = primitive_state[registered_variables.density_index].shape
+    interior_x = (jnp.arange(density_shape[0]) >= ngc) & (
+        jnp.arange(density_shape[0]) < num_cells.x + ngc
+    )
+    interior_y = (jnp.arange(density_shape[1]) >= ngc) & (
+        jnp.arange(density_shape[1]) < num_cells.y + ngc
+    )
+    interior_z = (jnp.arange(density_shape[2]) >= ngc) & (
+        jnp.arange(density_shape[2]) < num_cells.z + ngc
+    )
+    interior_mask = (
+        interior_x[:, None, None] & interior_y[None, :, None] & interior_z[None, None, :]
+    )
+
+    if max_sn == 1:
+        key, trigger_key, pos_key = jax.random.split(key, 3)
+        primitive_state, cooling_shield = _deposit_one_supernova(
+            trigger_key, pos_key, trigger_probability, primitive_state, cooling_shield,
+            interior_mask, config, params, registered_variables, helper_data,
+        )
+    else:
+        key, trials_key = jax.random.split(key)
+        trial_keys = jax.random.split(trials_key, 2 * max_sn)
+
+        def trial(i, carry):
+            state_i, shield_i = carry
+            return _deposit_one_supernova(
+                trial_keys[2 * i], trial_keys[2 * i + 1], trigger_probability, state_i, shield_i,
+                interior_mask, config, params, registered_variables, helper_data,
+            )
+
+        primitive_state, cooling_shield = jax.lax.fori_loop(
+            0, max_sn, trial, (primitive_state, cooling_shield)
         )
 
     return key, primitive_state, cooling_shield

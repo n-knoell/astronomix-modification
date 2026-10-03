@@ -288,6 +288,18 @@ def _cfl_time_step(
         dt_relax = C_CFL / relaxation_rate
         dt = jnp.minimum(dt, dt_relax)
 
+    # SN-driving trigger constraint: _inject_supernovae runs
+    # max_sn_per_step independent trials per step, each with probability
+    # sn_rate * dt / max_sn_per_step clipped to 1 -- bound dt so that clip
+    # never binds and the expected SN count per step stays exactly
+    # sn_rate * dt. Only for max_sn_per_step > 1 (the opt-in multi-SN mode);
+    # the default single-trial mode keeps its unconstrained dt unchanged.
+    if config.sn_driving_config.sn_driving and config.sn_driving_config.max_sn_per_step > 1:
+        dt_sn = config.sn_driving_config.max_sn_per_step / jnp.maximum(
+            params.sn_driving_params.sn_rate, 1e-300
+        )
+        dt = jnp.minimum(dt, dt_sn)
+
     # Cooling-time constraint: update_pressure_by_cooling is applied at
     # whatever dt this function returns, but nothing above is aware of
     # cooling at all. Near a strongly heating/cooling state, the local
