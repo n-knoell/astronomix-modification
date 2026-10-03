@@ -10,10 +10,11 @@ for the full "and/or" framing).
 uniformly-random placement -- everything else held identical to M5 attempt 3**
 (same box, K&I cooling, delayed-cooling mitigation, subcycled cooling, and CR
 -grey diffusion parameters: kappa_perp=1e26 cm^2/s, reduced_streaming_speed=
-300 km/s), at M5 attempt 3's own resolution (``N_XY, N_Z = 32, 256`` --
-**deliberately not M5's now-doubled attempt-4 resolution**, so this is a fair,
-apples-to-apples comparison against the attempt-3 numbers already on record,
-not entangled with the separate, not-yet-run resolution-doubling change).
+300 km/s). Originally run (2026-09-22) at M5 attempt 3's resolution
+(``N_XY, N_Z = 32, 256``); since 2026-10-03 the default is 128 x 128 x 1024
+(``_RESOLUTION_FACTOR = 4``) to match the M5 run at that resolution, with the
+end-of-run comparison against M5's numbers at the same resolution
+(``_M5_REFERENCE``).
 
 Simpson et al. (2016) compare two SN-placement modes on an otherwise-identical
 stratified box (their Sec. 2/3):
@@ -166,7 +167,7 @@ N_XY, N_Z = 32 * _RESOLUTION_FACTOR, 256 * _RESOLUTION_FACTOR
 OUT_SUFFIX = f"_{N_Z}"
 # Number of stored snapshots (override with M6_NUM_SNAPSHOTS); see the
 # memory note at num_snapshots in _base_config.
-NUM_SNAPSHOTS = int(os.environ.get("M6_NUM_SNAPSHOTS", 10))
+NUM_SNAPSHOTS = int(os.environ.get("M6_NUM_SNAPSHOTS", 20))
 GRID_SPACING_CODE = L_XY / N_XY
 
 T_WARM_REFERENCE_KELVIN = 7500.0
@@ -246,9 +247,12 @@ _M5_REFERENCE = {
     4: dict(label="M5-1024", eta=8.624, v_out=10.01, h_gas=18.69, h_cr=96.05, clump=0.586),
 }
 if _RESOLUTION_FACTOR not in _M5_REFERENCE:
-    raise ValueError(f"No M5 reference numbers recorded for _RESOLUTION_FACTOR={_RESOLUTION_FACTOR}; "
-                     f"run m5_cr_driven_outflow.py at that resolution first and add them to _M5_REFERENCE.")
-M5_REF = _M5_REFERENCE[_RESOLUTION_FACTOR]
+    print(f"[warning] no M5 reference numbers recorded for _RESOLUTION_FACTOR={_RESOLUTION_FACTOR}; "
+          f"the end-of-run comparison prints nan for M5 (run m5_cr_driven_outflow.py at this "
+          f"resolution and add its numbers to _M5_REFERENCE for a like-for-like comparison)")
+nan = float("nan")
+M5_REF = _M5_REFERENCE.get(_RESOLUTION_FACTOR, dict(
+    label=f"M5-factor{_RESOLUTION_FACTOR}(missing)", eta=nan, v_out=nan, h_gas=nan, h_cr=nan, clump=nan))
 
 
 def _base_config() -> SimulationConfig:
@@ -285,18 +289,15 @@ def _base_config() -> SimulationConfig:
         ),
         progress_bar=True,
         return_snapshots=True,
-        # 10, not 40 like m5_cr_driven_outflow.py: with return_states=True,
-        # the full snapshot buffer stays live in GPU memory for the whole
-        # run, and this config's extra density-weighted-placement memory
-        # need (on top of a similar baseline to M5) pushes an 11GB 2080 Ti
-        # over the edge at higher snapshot counts -- confirmed directly
-        # (2026-09-22): 40 needed an extra 7.46GiB in one allocation, 20
-        # needed 4.67GiB, both OOM'd; 10 fits (~8.3GB total, matching M5's
-        # healthy baseline) and was confirmed to complete successfully
-        # (twice, independently). Coarser time sampling than M5's 40 as a
-        # result -- fine for this milestone's per-snapshot diagnostics and
-        # the clumpiness-evolution filmstrip (only needs ~4 of them), but
-        # worth knowing if a future use of this script wants finer sampling.
+        # Memory (measured 2026-10-03 with memory_analysis, NUM_SNAPSHOTS=10):
+        # compiled temp 0.59 GB at 32^2x256 and 3.34 GB at 64^2x512 (peak
+        # 5.2 GiB); each stored snapshot adds one state copy (9 vars x 8 B per
+        # cell, 1.2 GB at 128^2x1024) -- the same as in M5, *not* the ~7x
+        # previously inferred from the 2026-09-22 2080 Ti OOMs (those were
+        # JAX's 75% preallocation, not real usage). Extrapolated peak at
+        # 128^2x1024: ~41 GB (10 snapshots), ~53 GB (20), ~77 GB (40), so the
+        # default 20 fits an 80 GB GPU; 40 (as in M5) needs a larger one.
+        # The snapshots also have to fit in host RAM when copied back.
         num_snapshots=NUM_SNAPSHOTS,
         # print the compiled program's memory footprint before the run starts
         memory_analysis=True,
