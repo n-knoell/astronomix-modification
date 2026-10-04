@@ -195,6 +195,11 @@ instead, which would have had a much wider blast radius on existing MHD index va
 
 ## Resolved: F_cr relaxation term and the diffusion limit (ladder item 4)
 
+> **Review 2026-10-04:** the derivation below is right, but the SILCC/Girichidis runs (M5-M7) use
+> `diffusion_coefficient` with the wrong convention (effective `D = kappa/3`), and the anisotropic
+> diffusion M7 uses is unvalidated and dominated by numerical diffusion across B. See "Open: CR
+> diffusion correctness" right after this section.
+
 As implemented for ladder items 1-3, `grey_cr_flux_terms` is a **purely
 hyperbolic, undamped** two-moment system -- confirmed by ladder item 3's own
 observation that a localized `e_cr` bump at rest propagates rigidly as a
@@ -256,7 +261,123 @@ see `time_integration.py`'s dispatch) since plain reverse-mode AD does not
 work through `jax.lax.while_loop`'s adaptive-dt trip count at all, forward
 or CR-related.
 
+## Open: CR diffusion correctness (review 2026-10-04)
+
+Not fixed yet. Found while checking whether the diffusion-only SILCC/Girichidis runs (item 12:
+M5, M6, M7) are correct. All numbers were measured on CPU (`jax 0.6.2`, `jax_enable_x64`) with
+`time_integration` runs.
+
+### What is correct
+
+- The equations: `e_cr` flux `u e_cr + F_cr`, `-P_cr div(u)`, `-grad(P_cr)` on gas momentum, and
+  energy bookkeeping match the standard advection-diffusion CR equations. With diffusion only
+  there is correctly no streaming heating.
+- The explicit relaxation has the right fixed point (`F_cr = -kappa grad P_cr`), and its
+  `dt <= C_cfl / nu` limit is enforced in `_cfl_time_step`.
+- The diffusion limit holds at the scales of interest. `kappa / v_red` is ~1 pc for M5 and ~32 pc
+  for M7 (~1-2 cells), so transport is diffusive on kpc scales; near the cell scale in M7 it is
+  closer to the telegrapher/wave regime.
+
+### Problem 1: diffusivity convention (effective `D = kappa/3`)
+
+`cr_flux_relaxation_source` relaxes `F_cr -> -kappa grad(P_cr)`, so `e_cr` diffuses with
+`D = kappa (gamma_cr - 1) = kappa/3`. This is documented above and verified by item 4, and a 2D
+resolution study converges to it (`D/kappa` = 1.277 / 0.616 / 0.425 at N = 48 / 96 / 192 towards
+0.333).
+
+The literature convention (Girichidis et al. 2016, SILCC/FLASH) is
+`d(e_cr)/dt = div(kappa grad e_cr)`, i.e. `D = kappa`. But M5/M6/M7 pass the physical kappa
+straight into `diffusion_coefficient` (`m5_cr_driven_outflow.py:716`,
+`m6_sn_placement_comparison.py:645`, `m7_girichidis_pilot.py:703`). Consequences:
+- Every SILCC run diffuses **3x too slowly**.
+- The diffusion lengths the scripts print and reason with (`sqrt(kappa T)`, e.g. M5's "49.5 pc,
+  about one scale height") are `sqrt(3)` too large.
+- Phase D's inferred "kappa" (`cr_phase_d_kappa_inference.py`) is the code parameter; the
+  physical diffusivity is 1/3 of it.
+
+The `CosmicRayGreyParams.diffusion_coefficient` docstring ("physical CR diffusion coefficient
+kappa") contradicts this, because "physical kappa" means the `e_cr` diffusivity in the literature.
+
+### Problem 2: anisotropic diffusion is dominated by numerical diffusion across B
+
+M7 (MHD) gets anisotropy by projecting `F_cr` onto `b` once per step (`anisotropic_flux_projection`)
+and claims `kappa_par = 1e28, kappa_perp = 0`. Measured in a 2D periodic box with uniform `B || x`,
+a Gaussian `e_cr` bump (`sigma0 = 0.05`, tiny amplitude so the gas stays static), `kappa = 0.02`,
+`v_red = 8`, relaxation-limited steps (`nu dt = 0.4`, M7's regime):
+
+| N   | isotropic `D/kappa` (target 0.333) | aniso `D_par/kappa` | aniso `D_perp/kappa` (claimed 0) | `D_perp/D_par` |
+|-----|-------|-------|-------|------|
+| 48  | 1.277 | 1.277 | 1.028 | 0.80 |
+| 96  | 0.616 | 0.616 | 0.345 | 0.56 |
+| 192 | 0.425 | 0.425 | 0.135 | 0.32 |
+
+(At N = 96 and `kappa = 0.2`, i.e. hydro-CFL-limited `nu dt ~ 0.14`: `D_par/kappa = 0.340`,
+`D_perp/D_par = 0.12`.)
+
+Interpretation:
+- **Most of `D_perp` is numerical diffusion of the Riemann solver on the `e_cr` row.** Its
+  wave-speed bound is ~`v_red`, so the dissipation is isotropic and untouched by the B-projection.
+  The excess over 0.333 shrinks ~3x per resolution doubling, so it converges.
+- **The remainder (~0.04-0.08 kappa) is the per-step leak:** the perpendicular `F_cr` built up
+  between two projections. This is the residual that `anisotropic_flux_projection`'s docstring
+  describes.
+- **Same root cause as the open "shared gas/CR Riemann-solver wave-speed bound" finding** below,
+  now acting on the CR rows themselves.
+- **Rough scaling.** Numerical diffusion is
+  `D_num ~ alpha v_red dx`, with `alpha ~ 0.04-0.1` for structures resolved by ~5-10 cells.
+  - **M7** (`v_red = 1000 km/s`, `dx = 15.6-31 pc`): `D_num ~ 2e26-1e27 cm^2/s`. That is 2-10x the
+    paper's `kappa_perp = 1e26`, and ~6-30% of M7's actual `D_par = kappa/3 ~ 3.3e27`. So M7's
+    cross-field transport is set by `dx` and `v_red`, not by physics.
+  - **M7's regime vs. the test.** M7 sits at `kappa/(v_red dx) ~ 1-2`, compared with 0.1-0.5 in
+    the test above. The effect is therefore smaller in M7 but not negligible. This is an
+    extrapolation, not a measured M7 number.
+  - **M5** (`kappa = 1e26`, `v_red = 300 km/s`, `dx = 0.29 pc`, `kappa/(v_red dx) ~ 3.7`):
+    `D_num ~ 1e24`, against `D ~ 3e25`. Numerically fine apart from Problem 1. Its isotropic
+    `kappa_perp` is a documented stand-in for the paper's anisotropic transport.
+- **No test covers this.** Item 3's oblique test runs without `diffusive_relaxation` (pure wave
+  transport), and item 4 is 1D isotropic. The anisotropic *diffusion* M7 uses has never been
+  validated.
+- **Physical `kappa_perp` is missing.** Even with perfect numerics, the projection gives
+  `kappa_perp = 0`, not the paper's `1e26`.
+
+### Fix plan
+
+Do this before the streaming fix, because it changes the same relaxation source:
+1. **Convention.** Define `diffusion_coefficient` as the `e_cr` diffusivity, i.e.
+   `nu = (gamma_cr - 1) v_red^2 / kappa`. This also makes the relaxation 3x less stiff, which
+   relaxes the `dt_relax` bound 3x for M7. Update item 4's reference to `D = kappa`, fix the
+   option docstring, and re-run Phase D.
+2. **Tensor relaxation instead of projection.** Relax towards
+   `F_eq = -[kappa_par b b + kappa_perp (I - b b)] . grad(e_cr)` (`e_cr`-diffusivity convention
+   from item 1). This needs a
+   new `kappa_perp` param, default 0. It gives the paper's `kappa_perp` and removes the per-step
+   leak, because nothing is overwritten. Use the same locally implicit update as the streaming fix
+   plan's (b), which then carries both diffusion and streaming in one relaxation source.
+3. **CR-specific wave-speed bound.** Use a separate bound for the CR rows in the Riemann solver
+   (`|u_n| + v_red / sqrt(3)`, i.e. the true two-moment eigenvalue, instead of the shared maximum
+   with the gas). This removes the inflated gas dissipation and is the fix for the open shared-bound
+   finding below. Then measure how much CR numerical diffusion remains.
+4. **New test, written before the fix.** 2D anisotropic diffusion with relaxation: oblique uniform B
+   (e.g. 30 deg), Gaussian `e_cr`. Measure `D_par` and `D_perp` against `kappa_par`/`kappa_perp`,
+   at M7's `kappa/(v_red dx) ~ 1-2` and at the item-4 regime. Gate on
+   `|D_par/kappa_par - 1|` and `D_perp/D_par` at the M7 resolution.
+5. **Re-run** M5, M6 and M7, and redo the diffusion-length reasoning in their docstrings.
+
+**Still to check against the paper:** whether Girichidis et al. 2016 includes CR losses
+(hadronic/Coulomb). This module has no dynamical CR losses, so the code comparison would be
+incomplete if the paper has them.
+
+Reproduction script: `aniso_diff.py` (review scratch, not committed). It builds the box above
+with `CosmicRayGreyConfig(grey_cosmic_rays=True, diffusive_relaxation=True,
+anisotropic_transport=...)`, `mhd=True`, periodic BCs, `B_x = 1`, and measures `D` from the
+growth of the second moments of `e_cr - background` along x and y.
+
 ## Resolved: streaming transport and streaming heating (ladder item 5)
+
+> **Superseded in physics (review 2026-10-04):** the implementation below passes its test but is
+> not physically correct streaming -- wrong speed (`reduced_streaming_speed` instead of `v_A`),
+> missing enthalpy factor, per-axis instead of along B, B-independent heating, dimensional `tanh`
+> scale. See "Open: physically correct CR streaming (fix plan)" right after this section.
 
 `streaming_flux_target` (`cr_grey_transport.py`) and `cr_streaming_heating_source`
 (`cr_grey_sources.py`) are implemented (both were `NotImplementedError` stubs).
@@ -311,6 +432,174 @@ Any future streaming IC with a sign-changing CR pressure gradient should
 keep the zero-crossing's spatial width (set by
 `|d(dP_cr/dx)/dx| / streaming_sign_regularization`) resolved by several grid
 cells, or widen `streaming_sign_regularization` to match the grid.
+
+## Open: physically correct CR streaming (fix plan, 2026-10-04)
+
+Not implemented yet -- this is the design for replacing the ladder-item-5 implementation above.
+
+### Target equations
+
+Self-confined CRs stream down their pressure gradient **along B at the Alfven speed** (Wiener et
+al. 2017; Jiang & Oh 2018; Thomas & Pfrommer 2019):
+
+    d(e_cr)/dt + div[(e_cr + P_cr)(u + v_st) - kappa_par b (b . grad e_cr)] = (u + v_st) . grad(P_cr)
+    v_st    = -v_A * b * sgn(b . grad P_cr),   b = B / |B|,   v_A = |B| / sqrt(rho)
+    H_st    = -v_st . grad(P_cr) = v_A |b . grad P_cr|        (gas heating, >= 0)
+
+`v_A = |B| / sqrt(rho)` holds because astronomix MHD carries Heaviside-Lorentz B (`E_mag = B^2/2`;
+see the item-18 MHD budget, `B_x = 0.2` -> `E_mag = 0.02` in a unit box). Useful identity for
+tests: for a uniform `v_st`, the `P_cr` part of the enthalpy flux cancels the heating sink, and
+`e_cr` is simply advected at `v_st`, i.e. `d(e_cr)/dt = -v_st . grad(e_cr)`.
+
+### What is wrong with the current implementation
+
+Each point was checked numerically on CPU (`jax 0.6.2`, `jax_enable_x64`), using direct runs of
+`time_integration` and direct calls of `streaming_flux_target`/`cr_streaming_heating_source`:
+
+1. **Speed.** It streams at `reduced_streaming_speed`, which is the reduced *speed of light* of
+   the two-moment closure (a numerical knob that should be >> every physical speed), not at `v_A`.
+   Measured heating `dP/dt = 0.222 / 0.444 / 0.889` for `v_red = 1 / 2 / 4`, i.e. linear in the
+   numerical knob. The plan's Sec. 6 convergence study in `v_red` therefore cannot converge while
+   streaming is on.
+2. **Enthalpy.** The streaming flux is `v_st * e_cr` instead of `v_st * (e_cr + P_cr)`; the term
+   `div(P_cr v_st)` is missing. On the item-5 linear ramp, measured `d(e_cr)/dt = 0.667 v` vs. the
+   correct `1.0 v` (33% low). Total energy is still conserved, so item 18 cannot see this.
+3. **Geometry.** The flux is set separately per axis, `F_i = -sgn(dP/dx_i) v e`: its magnitude is
+   `sqrt(d)` too large and it points along a grid diagonal for an oblique gradient. Heating is
+   `v * sum_i |dP/dx_i|` (L1 norm) and **ignores B**: with `B` perpendicular to `grad P_cr`, the
+   physical heating is 0, but the implementation gives the full value (2D probe: 0.167 and 0.236
+   where 0 is correct). Projecting onto B afterwards (`anisotropic_transport`) fixes the flux
+   direction but not its magnitude (1.307 instead of 1.0 at 22.5 deg).
+4. **Regularization scale has units.** `tanh(dP/dx / streaming_sign_regularization)` with an
+   absolute `1e-2` (units of P_cr/length, not "units of the streaming speed" as the option's
+   docstring says). Scaling the item-5 problem by 1e-3 makes streaming and heating ~30x too weak
+   relative to the linear expectation, so results depend on the unit system.
+5. **Overwrite instead of relaxation.** `F_cr` is reset to the target every step, so with
+   `diffusive_relaxation` also on, the diffusive flux is erased each step -- streaming + diffusion
+   is not actually combinable, contrary to PROGRESS.md's "additively-gated" note.
+6. **Item-5 test is self-referential.** It compares `F_cr` to the function that overwrote it
+   (the residual is just the intra-step drift) and the heating to the implementation's own
+   formula; `e_cr` itself is never measured. Minor: the test calls `streaming_flux_target` on the
+   unpadded final state, so `_stencil_add`'s periodic roll flips the sign in the two edge cells
+   (visible as the `+0.5`/`+1.5` spikes in `pics/cr_streaming_1d_test.svg`).
+
+### Design
+
+**a) Separate the two speeds.**
+- Rename `CosmicRayGreyParams.reduced_streaming_speed` -> `reduced_speed_of_light` (`v_m` in
+  Jiang & Oh 2018). It is used by items 1-4, 6, 9, 12, Phase D and CWB setups purely as the
+  closure speed; keep a deprecated alias for one release so scripts don't break silently.
+- Streaming speed comes from the state: `v_A = |B| / sqrt(rho)`, optionally the ion Alfven speed
+  `v_A / sqrt(ion_fraction)` (new param `streaming_ion_fraction`, default 1.0).
+- New `CosmicRayGreyConfig.streaming_speed_model`: `STREAMING_ALFVEN` (default; requires
+  `config.mhd`, `finalize_config` raises otherwise) or `STREAMING_CONSTANT` (prescribed
+  `CosmicRayGreyParams.streaming_speed` along a prescribed unit vector, default `x`) -- the latter
+  only for analytic 1D tests, because MHD is registered for 2D/3D only.
+- Cap `v_A` smoothly at `streaming_speed_cap * reduced_speed_of_light` (e.g.
+  `v / sqrt(1 + (v / v_cap)^2)`), so `v_A -> inf` in low-density regions cannot break the
+  `v_m >> v_st` ordering the closure needs.
+
+**b) Unified relaxation (Jiang & Oh 2018 form) instead of the overwrite.** Treat `F_cr` (the flux
+relative to the gas; the `u * e_cr` part is already in `grey_cr_flux_terms`) as relaxing toward
+streaming + diffusion:
+
+    d(F_cr)/dt |_relax = -nu * (F_cr - F_eq)
+    F_eq = F_st - kappa . grad(e_cr)            (kappa = tensor, see diffusion fix 2)
+    F_st = -v_A (e_cr + P_cr) b s,   s = smooth sgn(b . grad P_cr)
+
+In equilibrium this gives the enthalpy streaming flux plus diffusion, additively and along B.
+- `nu = (gamma_cr - 1) v_m^2 / kappa` when diffusion is on (item 4's rate, after the convention
+  fix in "Open: CR diffusion correctness"; with the tensor `kappa` from that section's fix 2).
+- Streaming only (no diffusion): use Jiang & Oh's streaming opacity,
+  `nu_st = v_m^2 |b . grad P_cr| / (v_A (e_cr + P_cr))`, and combine as
+  `1/nu = 1/nu_diff + 1/nu_st`. As `b . grad P_cr -> 0`, `nu -> 0` and `F_cr` evolves freely at
+  `v_m` instead of flipping sign. This is JO18's reason this form avoids the streaming-sign
+  singularity, and the `tanh` then only smooths the remaining sign.
+- Large `nu` is stiff, so apply the relaxation **locally implicitly**,
+  `F^{n+1} = (F* + nu dt F_eq) / (1 + nu dt)` (F* = state after the explicit update). This is
+  differentiable and removes the `dt < 2/nu` limit, which today is handled in `_cfl_time_step`'s
+  `diffusive_relaxation` branch and can then be dropped.
+- Delete the overwrite in `_iteration_level_updates.py`. `streaming_flux_target` becomes the
+  `F_st` helper used by the relaxation source; `anisotropic_flux_projection` stays for the
+  diffusive part.
+
+**c) Heating consistent with the flux.** `cr_streaming_heating_source` computes
+`H = v_A * (b . grad P_cr) * s` with the *same* `v_A`, `b`, `s` as `F_st`, so the identity "uniform
+`v_st` => pure advection of `e_cr`" holds discretely. `e_cr` loses `H`; gas thermal gains
+`streaming_heating_efficiency * H` (unchanged bookkeeping, still exactly conservative at 1.0).
+Use the same centered `grad P_cr` stencil as `cr_pressure_gradient_source`; `b` comes from the
+cell-centered B in the full state (heating already runs on the full state in
+`_time_integrator_sources`, so B is available, unlike in `grey_cr_flux_terms`).
+
+**d) Dimensionless sign regularization** (Sharma, Colella & Martin 2010):
+
+    s = tanh( L_reg * (b . grad P_cr) / (P_cr + P_cr,floor) ),   L_reg = streaming_regularization_cells * dx
+
+New param `streaming_regularization_cells` (default ~2-4) replaces `streaming_sign_regularization`.
+This is unit-invariant, its transition width scales with the grid (so the "rejected cosine IC"
+problem above is resolved by construction), and `P_cr,floor` (tie it to `minimum_e_cr`) keeps it
+finite at `e_cr -> 0`.
+
+**e) CFL.** `v_st <= v_m` after the cap, so `grey_cr_fast_speed` needs no new term. With the
+implicit relaxation the `diffusive_relaxation` dt-constraint can go; keep a regression check that
+item 4's convergence order is unchanged.
+
+### Tests (replace / extend ladder item 5)
+
+Write before the code, per the plan's TDD rule:
+1. **Constant-`v_st` advection** (1D, `STREAMING_CONSTANT`, linear and Gaussian `e_cr`): measure
+   `d(e_cr)/dt = -v_st . grad(e_cr)` and the heating `v_st |grad P_cr|`. This catches the
+   enthalpy error (the current code gives 0.667 of the correct rate).
+2. **Streaming of a CR blob with a sign change** (1D, the streaming-only test of Jiang & Oh
+   2018; verify the exact setup against the paper): flat-topping of the profile and the plateau value vs. the analytic solution;
+   convergence in `dx` and **independence of `v_m`** once `v_m >> v_A`.
+3. **2D oblique B** (uniform B at 22.5 deg, `grad P_cr` at several angles): flux along `b` with
+   magnitude `v_A (e + P)`, heating `v_A |b . grad P_cr|`, zero for B perpendicular to the gradient.
+   Rotation test: same answers for grid-aligned vs. 45 deg rotated setups.
+4. **Unit invariance:** rescale `e_cr` by 1e-3 -> flux and heating rescale exactly.
+5. **Streaming + diffusion:** equilibrium `F_cr = F_st - kappa grad e_cr` on a static ramp.
+6. **Item 16/17:** add a streaming configuration to `cr_gradient_check.py` (FD vs. AD, rollout
+   stability) -- the `tanh` exists for the adjoint but was never gradient-tested; also fix that
+   file's stale "still-unimplemented `cr_streaming_heating_source`" docstring.
+7. **Item 18:** keep `cr_energy_budget.py`/`cr_mhd_energy_budget.py` closing to round-off. Note
+   that this only checks bookkeeping: the hydro-only Sedov budget must switch to
+   `STREAMING_CONSTANT` or move streaming into the MHD budget only.
+
+### Downstream impact
+
+Three different senses of "affected" -- only the first is limited to items 5 and 18:
+
+1. **Committed outputs produced by the current streaming code.** `streaming` defaults to `False`
+   and only items 5 and 18 (`cr_streaming_1d.py`, `cr_energy_budget.py`,
+   `cr_mhd_energy_budget.py`) switch it on, so only their numbers and plots
+   (`cr_streaming_1d_test.svg`, `cr_energy_budget_test.svg`, `cr_mhd_energy_budget_test.svg`)
+   change when the streaming formulas are fixed.
+2. **Shared machinery that this fix plan changes.**
+   - Every CR script sees the rename in (a).
+   - The locally implicit relaxation in (b) and dropping the relaxation dt-limit in (e) change
+     the numerics of **every `diffusive_relaxation` run**, with or without streaming: item 4
+     (`cr_isotropic_diffusion_convergence.py`), item 9 (`cr_modified_shock_structure.py`),
+     item 12 (M5/M6/M7 SILCC/Girichidis runs) and Phase D (`cr_phase_d_kappa_inference.py`).
+   - M7's whole cost trade-off (`kappa = 1e28` isotropic, `v_red = 1000 km/s`) is derived from
+     the explicit bound `dt <= C kappa / v_red^2`. With an implicit update it would become
+     affordable to use M5's `kappa_perp = 1e26`.
+   - These items must be re-run and re-validated. To keep the two changes separable, land the
+     implicit relaxation as its own step, with item 4 as the gate, before touching streaming.
+3. **Physics the results do not contain.**
+   - **SILCC/Girichidis (item 12):** deliberately diffusion-only, matching Girichidis et al.
+     2016, which has no streaming -- correct for that code comparison. But M5-M7 therefore carry
+     no streaming heating and no `v_A`-limited transport. Any outflow/heating conclusion beyond
+     the 2016 comparison, or a comparison to later streaming-including work, needs correct
+     streaming and a re-run.
+   - **Items 7-11, 15, Phase D injection and the CWB setups:** have **neither** streaming nor
+     `diffusive_relaxation` (checked directly in their configs). Their only CR transport relative to
+     the gas is the undamped two-moment wave at `~v_red / sqrt(3)` -- `v_red` at the default 1.0 code units, or
+     1000 km/s in `_cwb_setup.py`. That is a numerical speed, not a physical one, so CR
+     morphology and every emission map built on it (wind bubble, SNR shells, item 15's CR
+     penetration into the cloud, i.e. the pion-bump signal) is set by a numerical parameter.
+     These items are scientifically the most affected: correct streaming (or diffusion) would be
+     the first physical transport they get, and the committed maps and SEDs should be treated as
+     transport-unconverged until re-run.
 
 ## Resolved: two-fluid CR-modified shock tube (ladder item 6)
 
@@ -1720,6 +2009,13 @@ open BCs).
 
 ## Open questions (plan Sec. 6, restated for this module)
 
+- **CR diffusion correctness** (2026-10-04): `diffusion_coefficient` convention gives `D = kappa/3`
+  in all SILCC runs, and M7's anisotropic diffusion has large numerical cross-field diffusion --
+  see "Open: CR diffusion correctness". Fix before the streaming plan (both change the relaxation
+  source).
+- **Physically correct streaming** (2026-10-04): the item-5 streaming uses the wrong speed,
+  geometry and flux -- see "Open: physically correct CR streaming (fix plan)". Until fixed, the
+  `v_red` convergence study below is only meaningful with `streaming=False`.
 - **Reduced free-streaming speed**: `CosmicRayGreyParams.reduced_streaming_speed` currently
   defaults to a placeholder (`1.0`); pick the largest value that leaves wind/emission properties
   unchanged via a convergence study before Phase B/C.
