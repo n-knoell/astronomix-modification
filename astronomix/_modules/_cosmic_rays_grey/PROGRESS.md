@@ -58,8 +58,28 @@ are hotter and dt smaller); the full 250 Myr at 0.5 averaged 1.8x its early rate
 each), 1.5 at 5.3 GB. `--res` needs 64 x res integer (1.2 is invalid; 1.1875 = 26.3 pc).
 Script default now `--res=1.625` (19.2 pc): ~3.5-13 h on an H200 at an assumed 8-4x speed-up;
 `_cost_estimate` uses this measured scaling. No checkpointing: probe with `--t-end-myr=10`.
-**Running (started 2026-10-03 ~21:45):** `both --res=1.1875` (26.3 pc, 76 x 76 x 190) on
-a 2080 Ti, expected ~7-13 h; plots will be `pics/m7_pilot_*_both_190.svg`.
+**`both --res=1.1875` (26.3 pc, 76 x 76 x 190, 26 snapshots) done 2026-10-04 on a 2080 Ti:
+11.3 h** (163 s per simulated Myr on average, 1.55x the early rate), NaN-free. Plots
+`pics/m7_pilot_{structure_girichidis_fig1,timeseries}_both_190.svg` and the new edge-on
+density animation `pics/m7_pilot_edge_on_density_both_190.gif`. Late-time (last quarter): z70 /
+z90 = 299 / 916 pc (paper's CR runs ~200 / ~1500 pc), eta(1 kpc) ~1.0, v_out ~9 km/s, H_gas
+~390 pc; H_cr undefined after ~125 Myr (CR pressure falls by < 1/e within +-2.5 kpc,
+isotropic kappa = 1e28), midplane E_CR ~2e-11 erg/cm^3. A ~+-0.3 kpc warm disc
+(1e-24 to 1e-23 g/cm^3) with a large SN-blown cavity and a few dense clumps, inside a diffuse
+CR-supported atmosphere; max T reaches ~1e9 K.
+
+**Fixed SN radius + SN mode log (2026-10-04).** The `--res=2` (15.6 pc, user's H200 run)
+result: smooth warm single-phase disc, no dense layer, outflow stalls (v_out ~1 km/s, eta ~0.1
+after ~100 Myr), midplane n_H 0.44-0.47 from ~100 Myr on -- right at that run's hybrid-switch
+threshold 0.46 cm^-3 (2-cell radius), while the 26.3 pc run (threshold 0.13) stayed clumpy
+with outflow. Suspected cause: the switch threshold moving with resolution. Now: SN radius
+fixed at 40 pc (`--sn-radius-pc`, threshold 0.26 cm^-3 at every `--res`), and the new
+`SNDrivingConfig.log_sn_events` records each SN (time, z, local n_H, thermal/momentum) via a
+host callback that fires only on a trigger; the script saves `pics/m7_pilot_sn_log_*.npz` and
+`pics/m7_pilot_sn_modes_*.svg` (thermal fraction and rate vs. time, local-n_H histogram vs.
+threshold). `_inject_supernovae` takes an optional `current_time` for this. Checked: 125 pc,
+3 Myr test logs 710 SNe (720 expected), thermal below / momentum above threshold;
+`sn_driving_energy_conservation` still passes. Not yet run at production resolution.
 
 **Open risks:** 250 Myr is ~30x longer than any stratified run so far; v_red = 1000 km/s is
 exceeded by the hottest remnants (accepted, see the script's decision 2); the H200 speed-up

@@ -27,7 +27,7 @@ the code allows it, at half the paper's resolution:
 
 Usage::
 
-    python m7_girichidis_pilot.py [both|thermal|cr] [--setup-only] [--res=F] [--t-end-myr=T] [--snapshots=N]
+    python m7_girichidis_pilot.py [both|thermal|cr] [--setup-only] [--res=F] [--t-end-myr=T] [--snapshots=N] [--sn-radius-pc=R]
 
 ``both`` (default) is their "thermal + CR" run (1e51 erg thermal + 1e50 erg CR
 per SN), ``thermal`` their thermal-only run (no CR transport at all, as in the
@@ -35,7 +35,10 @@ paper), ``cr`` their CR-only run (1e50 erg CR, no thermal energy).
 ``--setup-only`` builds the initial condition, prints the derived numbers and
 the cost estimate, and exits without running. ``--res`` scales the grid
 (1.625 = 19.2 pc, the default; 2 = 15.6 pc; 1 = 31.25 pc; 0.5 = 62.5 pc), ``--t-end-myr`` and
-``--snapshots`` override the end time and snapshot count (for quick looks).
+``--snapshots`` override the end time and snapshot count (for quick looks);
+``--sn-radius-pc`` the SN injection radius (default 40 pc, fixed in pc). Every
+SN is logged (time, height, local n_H, thermal or momentum mode) to
+``pics/m7_pilot_sn_log_*.npz`` and summarized in ``pics/m7_pilot_sn_modes_*.svg``.
 
 Design decisions (2026-10-03, discussed with the user; see the comparison in
 PROGRESS.md):
@@ -78,6 +81,12 @@ PROGRESS.md):
    was not used: shielding long enough for a remnant to expand over a
    62 pc footprint (~1 Myr) would keep ~half the midplane layer from cooling
    at this SN rate, suppressing the very layer we want to see.
+   **The injection radius is fixed at 40 pc** (``--sn-radius-pc``; it was 2
+   cells until 2026-10-04): the switch threshold n_H ~ (22.6 pc / radius)^2.38
+   = 0.26 cm^-3 then no longer moves with ``--res``. With 2 cells it was
+   0.46 cm^-3 at 15.6 pc, and the 15.6 pc run's midplane density sat at
+   0.44-0.47 from ~100 Myr on, i.e. right at the switch. Every SN's mode is
+   logged (``SNDrivingConfig.log_sn_events``) to check this.
 5. **No self-gravity**: not supported with open z boundaries here (same as
    M5). Cold gas settles under the external potential only.
 
@@ -148,6 +157,7 @@ from astronomix._modules._cooling.cooling_options import (
     CoolingParams,
 )
 from astronomix._modules._sn_driving.sn_driving_options import SNDrivingConfig, SNDrivingParams
+from astronomix._modules._sn_driving.sn_driving import SN_EVENT_LOG
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     CosmicRayGreyConfig,
     CosmicRayGreyParams,
@@ -221,7 +231,13 @@ E_THERMAL_ERG = {"both": 1e51, "thermal": 1e51, "cr": 0.0}[MODE]
 E_CR_ERG = {"both": 1e50, "thermal": 0.0, "cr": 1e50}[MODE]
 SN_ENERGY_CODE = _code((E_THERMAL_ERG + E_CR_ERG) * u.erg, CODE_UNITS.code_energy)
 SN_CR_FRACTION = E_CR_ERG / (E_THERMAL_ERG + E_CR_ERG)
-SN_INJECTION_RADIUS = 2.0 * DX  # >= 2 cells, otherwise the deposit is a single cell
+# Fixed in pc (2026-10-04; was 2 cells). With the hybrid switch, an SN is
+# deposited thermally only below n_H ~ (r_sf(n=1) / radius)^(1/0.42), so a
+# radius tied to the grid moved that threshold with resolution (0.46 cm^-3 at
+# 15.6 pc, 0.13 at 26.3 pc) and the --res=2 run's midplane density sat right
+# at it. 40 pc puts the threshold at 0.26 cm^-3 for every --res; it is 2.6 / 2.1
+# / 1.5 cells at --res = 2 / 1.625 / 1.1875 (warning below 1.5 cells).
+SN_INJECTION_RADIUS = float(_OPTS.get("sn-radius-pc", 40.0))
 SN_SMOOTH_CELLS = 1.0
 SN_TYPE_II_FRACTION, SN_TYPE_II_HEIGHT, SN_TYPE_IA_HEIGHT = 0.8, 50.0, 325.0  # pc
 # Kim & Ostriker (2015): terminal momentum 2.8e5 Msun km/s (code momentum
@@ -286,6 +302,7 @@ def _base_config() -> SimulationConfig:
             max_sn_per_step=MAX_SN_PER_STEP,
             momentum_injection=E51 > 0,
             momentum_injection_hybrid=E51 > 0,
+            log_sn_events=True,
         ),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
             grey_cosmic_rays=CR_ACTIVE, diffusive_relaxation=CR_ACTIVE,
@@ -460,6 +477,57 @@ def _edge_on_animation(states, registered_variables, mid, t_myr, frames, out_pat
     plt.close(fig)
 
 
+def _sn_mode_report(t_myr, pics):
+    """Save the SN event log and summarize the thermal/momentum split: count vs.
+    the expected sn_rate * t_end, thermal fraction per 10 Myr, and the local
+    n_H of each SN against the hybrid threshold."""
+    if not SN_EVENT_LOG:
+        print("[sn log] no SN events recorded")
+        return
+    log = np.array(SN_EVENT_LOG, dtype=float)
+    t_ev, z_ev, n_ev, thermal = log[:, 0] / MYR_CODE, log[:, 1] - Z0, log[:, 2], log[:, 3].astype(bool)
+    np.savez(pics / f"m7_pilot_sn_log{OUT_SUFFIX}.npz", t_myr=t_ev, z_pc=z_ev, n_h=n_ev, thermal=thermal)
+    expected = SN_RATE_CODE * T_END
+    n_threshold = (SN_SHELL_FORMATION_RADIUS_COEFFICIENT / SN_INJECTION_RADIUS) ** (1 / 0.42) if E51 > 0 else np.nan
+    late = t_ev >= 0.75 * t_ev.max()
+    print(f"[sn log] {len(t_ev)} SNe (expected {expected:.0f}); thermal (resolved) fraction "
+          f"{thermal.mean():.3f} overall, {thermal[late].mean():.3f} in the last quarter; "
+          f"threshold n_H = {n_threshold:.3g} cm^-3; median local n_H {np.median(n_ev):.3g} "
+          f"(abs(z) < 100 pc: {np.median(n_ev[np.abs(z_ev) < 100]) if np.any(np.abs(z_ev) < 100) else np.nan:.3g})")
+
+    # 10 Myr bins (shorter for short runs), the last one cut at t_end; rates
+    # use each bin's actual width
+    t_end_myr = T_END / MYR_CODE
+    bin_width = 10.0 if t_end_myr >= 50.0 else t_end_myr / 10.0
+    edges = np.append(np.arange(0.0, t_end_myr, bin_width), t_end_myr)
+    idx = np.clip(np.digitize(t_ev, edges) - 1, 0, len(edges) - 2)
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    counts = np.bincount(idx, minlength=len(centres))
+    n_thermal = np.bincount(idx, weights=thermal, minlength=len(centres))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        fraction = n_thermal / counts
+    fig, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=(16, 4.6))
+    ax0.plot(centres, fraction, "-o", ms=3)
+    ax0.set(xlabel="t (Myr)", ylabel=f"thermal (resolved) fraction per {bin_width:g} Myr", ylim=(-0.02, 1.02),
+            title="SN deposit mode vs. time")
+    ax1.plot(centres, counts / np.diff(edges), "-o", ms=3)
+    ax1.axhline(SN_RATE_CODE * MYR_CODE, color="0.5", ls="--", lw=1, label="nominal rate")
+    ax1.set(xlabel="t (Myr)", ylabel="SNe per Myr", title="SN rate")
+    ax1.legend()
+    bins = np.logspace(np.log10(max(n_ev.min(), 1e-6)), np.log10(n_ev.max() * 1.01), 60)
+    ax2.hist(n_ev[thermal], bins=bins, alpha=0.7, label="thermal")
+    ax2.hist(n_ev[~thermal], bins=bins, alpha=0.7, label="momentum")
+    if np.isfinite(n_threshold):
+        ax2.axvline(n_threshold, color="k", ls="--", lw=1, label="hybrid threshold")
+    ax2.set(xscale="log", xlabel=r"local ambient $n_H$ at the SN (cm$^{-3}$)", ylabel="SNe",
+            title="local density of each SN")
+    ax2.legend()
+    fig.suptitle(f"M7 pilot ({MODE}), dx = {DX:.1f} pc, SN radius {SN_INJECTION_RADIUS:.0f} pc")
+    fig.tight_layout()
+    fig.savefig(pics / f"m7_pilot_sn_modes{OUT_SUFFIX}.svg")
+    plt.close(fig)
+
+
 def run_m7():
     config = _base_config()
     registered_variables = get_registered_variables(config)
@@ -477,7 +545,11 @@ def run_m7():
     print(f"grid {N_XY} x {N_XY} x {N_Z}, dx = {DX:.2f} pc; midplane n_H = {RHO_MIDPLANE * N_H_PER_CODE_DENSITY:.3f} cm^-3, "
           f"T_IC(midplane) = {t_ic[mid]:.3g} K, T_IC(z=+300 pc) = {t_ic[int(np.argmin(np.abs(z_rel - 300)))]:.3g} K, "
           f"T_IC(top) = {t_ic[-1]:.3g} K")
-    print(f"SN rate = {SN_RATE_CODE * MYR_CODE:.1f} /Myr, injection radius {SN_INJECTION_RADIUS:.1f} pc")
+    print(f"SN rate = {SN_RATE_CODE * MYR_CODE:.1f} /Myr, injection radius {SN_INJECTION_RADIUS:.1f} pc "
+          f"= {SN_INJECTION_RADIUS / DX:.2f} cells")
+    if SN_INJECTION_RADIUS < 1.5 * DX:
+        print(f"[warning] SN injection radius is only {SN_INJECTION_RADIUS / DX:.2f} cells at this --res; "
+              f"deposits are barely resolved")
     if E51 > 0:
         n_resolved = (SN_SHELL_FORMATION_RADIUS_COEFFICIENT / SN_INJECTION_RADIUS) ** (1 / 0.42)
         print(f"shell-formation radius at n_H=1: {SN_SHELL_FORMATION_RADIUS_COEFFICIENT:.1f} pc -> thermal "
@@ -523,6 +595,7 @@ def run_m7():
     )
     params = params._replace(gravitational_potential=phi)
 
+    SN_EVENT_LOG.clear()
     print("Starting M7 pilot run...")
     wall_start = time.time()
     snapshot_data = time_integration(initial_state, config, params, registered_variables)
@@ -586,6 +659,8 @@ def run_m7():
     fig.savefig(pics / f"m7_pilot_timeseries{OUT_SUFFIX}.svg")
     plt.close(fig)
 
+    _sn_mode_report(t_myr, pics)
+
     valid = np.where(~np.isnan(rows[:, 0]))[0]
     if valid.size:
         last = int(valid[-1])
@@ -598,7 +673,11 @@ def run_m7():
         print(f"  z70 / z90 = {np.nanmean(rows[tail, 2]):.0f} / {np.nanmean(rows[tail, 3]):.0f} pc "
               f"(Girichidis 2016, CR runs: ~200 / ~1500 pc)")
         print(f"  eta(1 kpc) = {np.nanmean(rows[tail, 6]):.3g}, v_out = {np.nanmean(rows[tail, 5]):.1f} km/s")
-        print(f"  H_gas = {np.nanmean(rows[tail, 7]):.0f} pc, H_cr = {np.nanmean(rows[tail, 8]):.0f} pc")
+        def tail_mean(j):
+            values = rows[tail, j]
+            return f"{np.nanmean(values):.0f} pc" if np.any(~np.isnan(values)) else "undefined"
+        # H_cr is NaN once the CR pressure falls by < 1/e within the box
+        print(f"  H_gas = {tail_mean(7)}, H_cr = {tail_mean(8)}")
         print(f"plots written to {pics}/m7_pilot_*{OUT_SUFFIX}.svg/.gif")
     return snapshot_data
 

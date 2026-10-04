@@ -99,6 +99,14 @@ class SNDrivingConfig(NamedTuple):
     #: behavior (same PRNG sequence, no extra dt constraint).
     max_sn_per_step: int = 1
 
+    #: record every SN that fires -- time, site z, local ambient n_H (in units
+    #: of ``SNDrivingParams.sn_momentum_density_reference``) and whether it
+    #: was deposited thermally (resolved / pure-thermal mode) or as momentum
+    #: -- into ``sn_driving.SN_EVENT_LOG`` on the host, via a
+    #: ``jax.debug.callback`` that runs only when an SN fires. Diagnostic
+    #: only; off by default.
+    log_sn_events: bool = False
+
 
 class SNDrivingParams(NamedTuple):
 

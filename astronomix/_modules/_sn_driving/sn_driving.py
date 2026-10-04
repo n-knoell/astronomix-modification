@@ -205,6 +205,16 @@ def _draw_density_weighted_site(
     return helper_data.geometric_centers[idx[0], idx[1], idx[2], :]
 
 
+#: host-side SN event log, filled when SNDrivingConfig.log_sn_events is on:
+#: one ``(time, z_site, n_0, thermal)`` tuple per SN that fired. Clear it
+#: (``SN_EVENT_LOG.clear()``) before a run if several runs share a process.
+SN_EVENT_LOG = []
+
+
+def _record_sn_event(time, z_site, n_0, thermal):
+    SN_EVENT_LOG.append((float(time), float(z_site), float(n_0), bool(thermal)))
+
+
 def _deposit_one_supernova(
     trigger_key,
     pos_key,
@@ -216,6 +226,7 @@ def _deposit_one_supernova(
     params: SimulationParams,
     registered_variables: RegisteredVariables,
     helper_data: HelperData,
+    current_time=None,
 ) -> tuple:
     """One Bernoulli trial and, if it fires, one SN deposit (the body of
     ``_inject_supernovae``, run once per trial). Returns
@@ -347,6 +358,22 @@ def _deposit_one_supernova(
         thermal_fraction = sn_params.sn_momentum_thermal_floor_fraction
     else:
         thermal_fraction = jnp.where(resolved, 1.0, sn_params.sn_momentum_thermal_floor_fraction)
+    if config.sn_driving_config.log_sn_events:
+        rho_log = primitive_state[registered_variables.density_index]
+        n_0_log = (
+            jnp.sum(rho_log * weight) / jnp.maximum(jnp.sum(weight), 1e-300)
+        ) / sn_params.sn_momentum_density_reference
+        if resolved is not None:
+            thermal_mode = resolved
+        else:
+            thermal_mode = jnp.asarray(not config.sn_driving_config.momentum_injection)
+        time_log = 0.0 if current_time is None else current_time
+
+        def log_event(_):
+            jax.debug.callback(_record_sn_event, time_log, site[2], n_0_log, thermal_mode)
+
+        jax.lax.cond(triggered, log_event, lambda _: None, None)
+
     thermal_energy = thermal_fraction * (1.0 - cr_fraction) * sn_params.sn_energy
     gamma = params.gamma
     delta_pressure = jnp.where(
@@ -444,6 +471,7 @@ def _inject_supernovae(
     registered_variables: RegisteredVariables,
     helper_data: HelperData,
     cooling_shield=None,
+    current_time=None,
 ) -> tuple:
     """Stochastically trigger and deposit at most one supernova this step.
 
@@ -464,6 +492,8 @@ def _inject_supernovae(
             ``config.sn_driving_config.delayed_cooling`` is off. Extended at
             a trigger's footprint when that flag is on; passed through
             unchanged otherwise.
+        current_time: The simulation time, only recorded in ``SN_EVENT_LOG``
+            when ``config.sn_driving_config.log_sn_events`` is on.
 
     Returns:
         ``(key, primitive_state, cooling_shield)`` with the advanced PRNG
@@ -508,7 +538,7 @@ def _inject_supernovae(
         key, trigger_key, pos_key = jax.random.split(key, 3)
         primitive_state, cooling_shield = _deposit_one_supernova(
             trigger_key, pos_key, trigger_probability, primitive_state, cooling_shield,
-            interior_mask, config, params, registered_variables, helper_data,
+            interior_mask, config, params, registered_variables, helper_data, current_time,
         )
     else:
         key, trials_key = jax.random.split(key)
@@ -518,7 +548,7 @@ def _inject_supernovae(
             state_i, shield_i = carry
             return _deposit_one_supernova(
                 trial_keys[2 * i], trial_keys[2 * i + 1], trigger_probability, state_i, shield_i,
-                interior_mask, config, params, registered_variables, helper_data,
+                interior_mask, config, params, registered_variables, helper_data, current_time,
             )
 
         primitive_state, cooling_shield = jax.lax.fori_loop(

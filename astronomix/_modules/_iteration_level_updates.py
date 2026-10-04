@@ -141,6 +141,7 @@ def _iteration_level_injections(
             registered_variables,
             helper_data,
             cooling_shield,
+            current_time,
         )
 
     # Grey two-moment CR diffusive shock acceleration: detect shocks with the
