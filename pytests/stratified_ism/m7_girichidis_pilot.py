@@ -4,6 +4,13 @@ to reproduce the structure of their Fig. 1 (``pics/girichidis_SN.jpeg``) --
 a dense, thin midplane layer after 250 Myr, with a CR-supported extended
 atmosphere when CRs are injected.
 
+**Diffusion convention changed 2026-10-04 (DESIGN.md "Open: CR diffusion correctness",
+fix-plan step 1).** ``diffusion_coefficient`` is now the ``e_cr`` diffusivity, so the kappa
+below now diffuses with ``D = kappa``. Every run made before then had ``D = kappa/3`` and a
+3x faster relaxation rate ``nu``. The dt_relax reasoning below (``dt <= C_cfl * kappa / v_red^2``)
+is now ``C_cfl * kappa / ((gamma_cr - 1) v_red^2)``, 3x larger, and the run has not been redone yet
+(fix-plan step 5).
+
 **NOT a committed pytest -- an exploratory script, not yet run.** M5's box
 (37.5 x 37.5 x 300 pc) is narrower than one scale height and 26x over-driven,
 so it cannot form that layer (SN bubbles cannot vent sideways and lift the
@@ -30,6 +37,7 @@ Usage::
 
     python m7_girichidis_pilot.py [both|thermal|cr] [--setup-only] [--res=F] [--t-end-myr=T] [--snapshots=N] [--sn-radius-pc=R] [--out-dir=DIR]
         [--no-mhd] [--no-self-gravity] [--no-jeans-floor] [--mhd-tolerance=double|single]
+        [--half-height-kpc=H]
 
 ``both`` (default) is their "thermal + CR" run (1e51 erg thermal + 1e50 erg CR
 per SN), ``thermal`` their thermal-only run (no CR transport at all, as in the
@@ -102,8 +110,10 @@ PROGRESS.md):
      becomes anisotropic: F_cr is projected onto B once per step, i.e.
      kappa_par = 1e28 and kappa_perp = 0 (paper: 1e26). Unlike an isotropic
      kappa_perp = 1e26 this costs no extra steps (dt_relax uses kappa_par).
-     The CFL estimate has no Alfven-speed term; the per-snapshot summary
-     prints max v_A to check it stays below the sound/v_red speeds. The
+     The CFL estimate includes the Alfven speed (new opt-in
+     ``SimulationConfig.fv_mhd_alfven_cfl``; v_A reached ~400 km/s in the
+     31 pc pilot, and in ``thermal`` mode no v_red bounds dt); the
+     per-snapshot summary prints max v_A. The
      B/v fixed-point tolerance is 1e-10 (``--mhd-tolerance=double``,
      needed for energy closure, cr_mhd_energy_budget.py) or 1e-5.
    - Self-gravity: FFT Poisson solve, periodic in x/y and isolated in z
@@ -231,15 +241,20 @@ MYR_CODE = _code(1 * u.Myr, CODE_TIME)
 # 1: 64 x 64 x 160, 31.25 pc; 0.5: 32 x 32 x 80, 62.5 pc (~20 min on a 2080 Ti).
 _RESOLUTION_FACTOR = float(_OPTS.get("res", 2.0))
 L_XY = 2000.0  # pc
-L_Z = 5000.0  # pc, +-2.5 kpc around the midplane
+# +-2.5 kpc around the midplane by default (the paper's uniform-resolution part);
+# --half-height-kpc enlarges it (open top, CR diffusion length over 250 Myr 2.9 kpc)
+HALF_HEIGHT_KPC = float(_OPTS.get("half-height-kpc", 2.5))
+L_Z = 2000.0 * HALF_HEIGHT_KPC  # pc
 Z0 = 0.5 * L_Z
-N_XY, N_Z = int(round(64 * _RESOLUTION_FACTOR)), int(round(160 * _RESOLUTION_FACTOR))
+N_XY = int(round(64 * _RESOLUTION_FACTOR))
+N_Z = int(round(N_XY * L_Z / L_XY))
 DX = L_XY / N_XY
 assert abs(L_Z / N_Z - DX) < 1e-12
 NUM_SNAPSHOTS = int(_OPTS.get("snapshots", 26))  # default: every 10 Myr
 T_END = float(_OPTS.get("t-end-myr", 250.0)) * MYR_CODE
 OUT_SUFFIX = (f"_{MODE}{'_mhd' if MHD else ''}{'_sg' if SELF_GRAVITY else ''}"
-              f"{'_nojeans' if SELF_GRAVITY and not JEANS_FLOOR else ''}_{N_Z}")
+              f"{'_nojeans' if SELF_GRAVITY and not JEANS_FLOOR else ''}"
+              f"{f'_z{HALF_HEIGHT_KPC:g}kpc' if HALF_HEIGHT_KPC != 2.5 else ''}_{N_Z}")
 OUT_DIR = Path(_OPTS.get("out-dir", "/export/scratch/nknoell"))
 
 # ---- disc: Sigma = 10 Msun/pc^2, Gaussian with scale height 60 pc ----
@@ -339,6 +354,7 @@ def _base_config() -> SimulationConfig:
             z=BoundarySettings1D(OPEN_BOUNDARY, OPEN_BOUNDARY),
         ),
         mhd=MHD,
+        fv_mhd_alfven_cfl=MHD,
         numerical_precision={"double": DOUBLE_PRECISION, "single": SINGLE_PRECISION}[MHD_TOLERANCE],
         gravity_config=GravityConfig(external_potential=True, self_gravity=SELF_GRAVITY),
         cooling_config=CoolingConfig(

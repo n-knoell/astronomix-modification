@@ -16,12 +16,14 @@ propagates rigidly as a wave (verified explicitly in ladder item 3's
 PROGRESS.md note), it never spreads/diffuses, no matter the resolution.
 There is no diffusion limit to converge to without a relaxation/scattering
 term. Added ``cr_grey_sources.cr_flux_relaxation_source`` (Jiang & Oh 2018):
-``d(F_cr)/dt |_relax = -nu * F_cr``, ``nu = reduced_streaming_speed^2 /
-diffusion_coefficient`` (``diffusion_coefficient`` a new
-``CosmicRayGreyParams`` field, ``kappa``). At a quasi-steady balance against
-the pressure-driving flux term, this relaxes ``F_cr ~= -kappa * grad(P_cr)``,
-i.e. Fick's law with diffusion coefficient ``D = kappa * (gamma_cr - 1)`` for
-``e_cr``. Gated behind a new ``CosmicRayGreyConfig.diffusive_relaxation``
+``d(F_cr)/dt |_relax = -nu * F_cr``, ``nu = (gamma_cr - 1) *
+reduced_streaming_speed^2 / diffusion_coefficient`` (``diffusion_coefficient``
+a new ``CosmicRayGreyParams`` field, ``kappa``). At a quasi-steady balance
+against the pressure-driving flux term, this relaxes ``F_cr ~= -kappa *
+grad(e_cr)``, i.e. Fick's law with diffusion coefficient ``D = kappa`` for
+``e_cr`` (since 2026-10-04; before, ``nu`` had no ``(gamma_cr - 1)`` and
+``D = kappa (gamma_cr - 1)``, see DESIGN.md "Open: CR diffusion
+correctness"). Gated behind a new ``CosmicRayGreyConfig.diffusive_relaxation``
 flag (default ``False``) so ladder items 1-3's already-verified undamped-wave
 behavior is unchanged unless a config explicitly opts in. See that
 function's docstring and ``DESIGN.md``/``PROGRESS.md`` for the full
@@ -36,17 +38,19 @@ initial), periodic BCs, run to a fixed ``t_end`` at increasing resolution;
 compare each run's final profile to the analytic 1D diffusion Green's
 function ``e_cr(x, t) = amp * sigma0 / sigma(t) * exp(-(x - x0)^2 /
 (2 sigma(t)^2))``, ``sigma(t)^2 = sigma0^2 + 2 D t``. Parameters
-(``reduced_streaming_speed = 8``, ``diffusion_coefficient = 0.06``) were
-chosen, via an ad hoc calibration script (not committed), to put the
+(``reduced_streaming_speed = 8``, ``diffusion_coefficient = 0.02``; 0.06 in
+the pre-2026-10-04 convention, same run) were chosen, via an ad hoc calibration script (not committed), to put the
 relaxation rate ``nu ~= 1067`` comfortably above the diffusion rate of the
 smallest resolved scale (``1 / (D / sigma0^2) ~= 50``) -- deep enough in the
 quasi-steady/diffusive regime that the telegrapher-equation-vs-diffusion
 model bias is negligible next to the resolutions tested here. Calibration
 run (N = 128/256/512/1024): L2 relative error 0.0089 -> 0.0042 -> 0.0020 ->
 0.0010, monotonically decreasing, total ``e_cr`` conserved to 6 significant
-figures at every resolution, pairwise convergence order ~1.0-1.1 (capped
-near first order by the source terms' explicit-Euler operator splitting,
-not by spatial truncation -- consistent, not a red flag).
+figures at every resolution, pairwise convergence order ~1.0-1.1. That first
+order is the operator-split relaxation's ``+nu dt / 2`` bias in D (``nu dt``
+scales with ``dx`` in these hydro-CFL-limited runs), not spatial truncation
+-- DESIGN.md "Open: CR diffusion correctness", Problem 3; fix-plan step 2
+should raise it to ~2.
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
 """
@@ -144,8 +148,8 @@ def _run_diffusion(
         f"CR isotropic diffusion produced NaNs at N={num_cells}."
     )
 
-    diffusion_coeff_e_cr = diffusion_coefficient * (gamma_cr - 1.0)
-    sigma_final = jnp.sqrt(sigma0**2 + 2.0 * diffusion_coeff_e_cr * t_end)
+    # diffusion_coefficient is the e_cr diffusivity itself.
+    sigma_final = jnp.sqrt(sigma0**2 + 2.0 * diffusion_coefficient * t_end)
     norm = amp * sigma0 / sigma_final
     analytic = norm * jnp.exp(-0.5 * ((x - x0) / sigma_final) ** 2)
 
@@ -165,7 +169,7 @@ def test_cr_isotropic_diffusion_convergence(min_order: float = 0.7):
     """
     gamma_cr = 4.0 / 3.0
     reduced_streaming_speed = 8.0
-    diffusion_coefficient = 0.06
+    diffusion_coefficient = 0.02
     amp = 1e-3
     sigma0 = 0.02
     box_size = 1.0

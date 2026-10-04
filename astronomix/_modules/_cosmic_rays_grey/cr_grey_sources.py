@@ -151,6 +151,28 @@ def cr_adiabatic_work_source(
     return source_term
 
 
+def cr_flux_relaxation_rate(params: SimulationParams) -> Union[float, Float[Array, ""]]:
+    """``F_cr`` relaxation rate ``nu = (gamma_cr - 1) v_red^2 / kappa``.
+
+    Chosen so that the quasi-steady flux is ``F_cr = -kappa grad(e_cr)``,
+    i.e. ``diffusion_coefficient`` is the ``e_cr`` diffusivity. Shared by
+    :func:`cr_flux_relaxation_source` and the matching ``_cfl_time_step``
+    constraint so the two cannot drift apart.
+
+    Args:
+        params: The simulation parameters.
+
+    Returns:
+        The relaxation rate.
+    """
+    cr_params = params.cosmic_ray_grey_params
+    return (
+        (cr_params.gamma_cr - 1.0)
+        * cr_params.reduced_streaming_speed**2
+        / cr_params.diffusion_coefficient
+    )
+
+
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
 def cr_flux_relaxation_source(
     primitive_state: STATE_TYPE,
@@ -159,8 +181,9 @@ def cr_flux_relaxation_source(
     params: SimulationParams,
 ) -> STATE_TYPE:
     """``F_cr`` scattering/relaxation term (Jiang & Oh 2018), ``-nu * F_cr``
-    with ``nu = reduced_streaming_speed^2 / diffusion_coefficient``. Only
-    active when ``config.cosmic_ray_grey_config.diffusive_relaxation``.
+    with ``nu = (gamma_cr - 1) * reduced_streaming_speed^2 /
+    diffusion_coefficient``. Only active when
+    ``config.cosmic_ray_grey_config.diffusive_relaxation``.
 
     Args:
         primitive_state: The primitive state of the fluid on all cells.
@@ -179,24 +202,26 @@ def cr_flux_relaxation_source(
     (``-v_red^2 * grad(P_cr)``, from ``grey_cr_flux_terms``'s pressure-driving
     term); at a quasi-steady balance (``d(F_cr)/dt ~ 0`` on timescales long
     compared to ``1/nu``, ignoring bulk advection) this gives
-    ``F_cr ~= -diffusion_coefficient * grad(P_cr)``, i.e. Fick's law with
-    diffusion coefficient ``diffusion_coefficient * (gamma_cr - 1)`` for
-    ``e_cr`` itself (``P_cr = (gamma_cr - 1) * e_cr``) -- see
-    ``cr_isotropic_diffusion_convergence.py`` (ladder item 4).
+    ``F_cr ~= -(v_red^2 / nu) grad(P_cr) = -diffusion_coefficient *
+    grad(e_cr)``, i.e. Fick's law with diffusion coefficient
+    ``diffusion_coefficient`` for ``e_cr`` itself -- the literature
+    convention ``d(e_cr)/dt = div(kappa grad e_cr)`` (Girichidis et al. 2016)
+    -- see ``cr_isotropic_diffusion_convergence.py`` (ladder item 4). Until
+    2026-10-04 the rate had no ``(gamma_cr - 1)`` factor, so the ``e_cr``
+    diffusivity was ``diffusion_coefficient / 3`` (DESIGN.md "Open: CR
+    diffusion correctness", Problem 1).
 
     Applied as a plain additive rate via the same explicit
     ``source_term * dt`` composition as every other CR-grey source in
     ``_time_integrator_sources`` (no special implicit/exact-exponential
     treatment) -- this reintroduces a genuine parabolic-like CFL constraint
-    (``dt <~ diffusion_coefficient / reduced_streaming_speed^2``), handled the
+    (``dt <~ 1 / nu``), handled the
     same way the existing viscosity module's ``dt_visc`` constrains
     ``_cfl_time_step`` (see that function's ``diffusive_relaxation`` branch).
     Deliberately opt-in (``diffusive_relaxation`` defaults to False) so
     ladder items 1-3's already-verified undamped-wave behavior is unchanged.
     """
-    diffusion_coefficient = params.cosmic_ray_grey_params.diffusion_coefficient
-    reduced_streaming_speed = params.cosmic_ray_grey_params.reduced_streaming_speed
-    relaxation_rate = reduced_streaming_speed**2 / diffusion_coefficient
+    relaxation_rate = cr_flux_relaxation_rate(params)
 
     f_cr_index = registered_variables.cosmic_ray_flux_index
     source_term = jnp.zeros_like(primitive_state)

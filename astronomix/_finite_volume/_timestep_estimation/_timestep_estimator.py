@@ -37,6 +37,7 @@ from astronomix._modules._stellar_wind.stellar_wind import _wind_injection
 from astronomix._fluid_equations._fluxes import _euler_flux
 from astronomix._fluid_equations._equations import speed_of_sound
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
+from astronomix._modules._cosmic_rays_grey.cr_grey_sources import cr_flux_relaxation_rate
 from astronomix._modules._cooling._cooling import dtemperature_dt, get_temperature_from_pressure
 
 
@@ -147,6 +148,13 @@ def _cfl_time_step(
         # silently violates the CR subsystem's CFL condition and blows up
         # (NaN) rather than erroring -- see
         # astronomix._modules._cosmic_rays_grey.PROGRESS.md.
+        # FV MHD (opt-in, see SimulationConfig.fv_mhd_alfven_cfl): fast-
+        # magnetosonic upper bound sqrt(c^2 + v_A^2), v_A^2 = |B|^2 / rho in
+        # code units (magnetic pressure B^2 / 2).
+        if config.mhd and config.fv_mhd_alfven_cfl:
+            b = primitive_state[registered_variables.magnetic_index.x:registered_variables.magnetic_index.z + 1]
+            c = jnp.sqrt(c**2 + jnp.sum(b**2, axis=0) / rho)
+
         if registered_variables.cosmic_ray_e_active:
             c = jnp.maximum(c, grey_cr_fast_speed(primitive_state, params, registered_variables))
 
@@ -272,8 +280,9 @@ def _cfl_time_step(
         dt = jnp.minimum(dt, dt_visc)
 
     # CR-grey F_cr relaxation constraint: cr_flux_relaxation_source damps
-    # F_cr explicitly at rate reduced_streaming_speed^2 / diffusion_coefficient
-    # (see that function's docstring) -- a genuine parabolic-like stiffness,
+    # F_cr explicitly at rate cr_flux_relaxation_rate(params) =
+    # (gamma_cr - 1) v_red^2 / diffusion_coefficient (see that function's
+    # docstring) -- a genuine parabolic-like stiffness,
     # same category as the viscous dt_visc constraint above. Forward-Euler
     # stability of dF/dt = -nu*F requires dt < 2/nu; mirror dt_visc's
     # conservative C_CFL-scaled convention.
@@ -281,11 +290,7 @@ def _cfl_time_step(
         registered_variables.cosmic_ray_e_active
         and config.cosmic_ray_grey_config.diffusive_relaxation
     ):
-        relaxation_rate = (
-            params.cosmic_ray_grey_params.reduced_streaming_speed**2
-            / params.cosmic_ray_grey_params.diffusion_coefficient
-        )
-        dt_relax = C_CFL / relaxation_rate
+        dt_relax = C_CFL / cr_flux_relaxation_rate(params)
         dt = jnp.minimum(dt, dt_relax)
 
     # SN-driving trigger constraint: _inject_supernovae runs

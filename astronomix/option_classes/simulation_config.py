@@ -523,6 +523,16 @@ class SimulationConfig(NamedTuple):
     #: Integrator used for the magnetic part in the FV MHD scheme.
     fv_magnetic_integrator: int = IMPLICIT_MIDPOINT
 
+    #: Opt-in (default off, existing FV MHD runs unchanged): include the
+    #: Alfven speed in the FV CFL estimate (UNSPLIT branch of
+    #: ``_cfl_time_step``), i.e. use the fast-magnetosonic bound
+    #: ``sqrt(c_s^2 + |B|^2 / rho)`` instead of the sound speed. The FV MHD
+    #: update otherwise sizes dt from gas and CR speeds only, so in tenuous,
+    #: magnetized gas the implicit B/v fixed point can be asked to take steps
+    #: with v_A dt / dx > 1 (M7 pilots: v_A up to ~400 km/s; in CR-free runs
+    #: nothing else bounds dt there).
+    fv_mhd_alfven_cfl: bool = False
+
     #: Density/pressure positivity-enforcement configuration (see PositivityConfig).
     positivity_config: PositivityConfig = PositivityConfig()
 

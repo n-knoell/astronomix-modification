@@ -6,6 +6,12 @@ optional M6 stretch (user picked this over MHD + anisotropic CR diffusion,
 2026-09-16 -- see the saved plan `~/.claude/plans/memoized-discovering-scone.md`
 for the full "and/or" framing).
 
+**Diffusion convention changed 2026-10-04 (DESIGN.md "Open: CR diffusion correctness",
+fix-plan step 1).** ``diffusion_coefficient`` is now the ``e_cr`` diffusivity, so the kappa
+below now diffuses with ``D = kappa``. Every run made before then had ``D = kappa/3`` and a
+3x faster relaxation rate ``nu``. The numbers quoted below are from those runs and have not been
+redone yet (fix-plan step 5).
+
 **Density-weighted ("density peak") SN site selection, instead of M5's
 uniformly-random placement -- everything else held identical to M5 attempt 3**
 (same box, K&I cooling, delayed-cooling mitigation, subcycled cooling, and CR

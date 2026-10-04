@@ -47,7 +47,7 @@ class CosmicRayGreyConfig(NamedTuple):
     streaming: bool = False
 
     #: turn on the F_cr scattering/relaxation term (Jiang & Oh 2018) that
-    #: damps F_cr toward -diffusion_coefficient * grad(P_cr), recovering
+    #: damps F_cr toward -diffusion_coefficient * grad(e_cr), recovering
     #: Fick's-law diffusion in the appropriate limit (ladder item 4). Off by
     #: default: without it, the two-moment system is a pure undamped wave
     #: equation (verified in ladder items 1-3) -- this flag exists so that
@@ -123,13 +123,17 @@ class CosmicRayGreyParams(NamedTuple):
     #: AD through time_integration otherwise (see cr_gradient_check.py).
     cr_pressure_speed_floor: float = 1e-10
 
-    #: physical CR diffusion coefficient kappa (length^2 / time), only used
-    #: when CosmicRayGreyConfig.diffusive_relaxation is set. Sets the F_cr
-    #: relaxation rate nu = reduced_streaming_speed^2 / diffusion_coefficient
-    #: in cr_grey_sources.cr_flux_relaxation_source; at steady state this
-    #: relaxes F_cr toward -diffusion_coefficient * grad(P_cr), so the
-    #: resulting diffusion coefficient for e_cr itself is
-    #: diffusion_coefficient * (gamma_cr - 1).
+    #: physical CR diffusion coefficient kappa (length^2 / time): the
+    #: diffusivity of e_cr itself, d(e_cr)/dt = div(kappa grad e_cr) -- the
+    #: literature convention (e.g. Girichidis et al. 2016's K), so physical
+    #: values can be passed in directly. Only used when
+    #: CosmicRayGreyConfig.diffusive_relaxation is set. Sets the F_cr
+    #: relaxation rate nu = (gamma_cr - 1) reduced_streaming_speed^2 /
+    #: diffusion_coefficient (cr_grey_sources.cr_flux_relaxation_rate); at
+    #: steady state this relaxes F_cr toward -diffusion_coefficient *
+    #: grad(e_cr). Until 2026-10-04 nu had no (gamma_cr - 1) factor and the
+    #: e_cr diffusivity was diffusion_coefficient / 3: runs from before then
+    #: correspond to diffusion_coefficient / 3 now.
     diffusion_coefficient: float = 1.0
 
     #: fraction of each shock's dissipated kinetic-energy flux

@@ -197,8 +197,10 @@ instead, which would have had a much wider blast radius on existing MHD index va
 
 > **Review 2026-10-04:** the derivation below is right, but the SILCC/Girichidis runs (M5-M7) use
 > `diffusion_coefficient` with the wrong convention (effective `D = kappa/3`), and the anisotropic
-> diffusion M7 uses is unvalidated and dominated by numerical diffusion across B. See "Open: CR
-> diffusion correctness" right after this section.
+> diffusion M7 uses is unvalidated and dominated by numerical diffusion across B. The
+> operator-split application below also biases D by `+nu dt_gas / 2`. That bias, not spatial
+> error, is item 4's first-order convergence. See "Open: CR diffusion correctness" right after
+> this section.
 
 As implemented for ladder items 1-3, `grey_cr_flux_terms` is a **purely
 hyperbolic, undamped** two-moment system -- confirmed by ladder item 3's own
@@ -261,11 +263,16 @@ see `time_integration.py`'s dispatch) since plain reverse-mode AD does not
 work through `jax.lax.while_loop`'s adaptive-dt trip count at all, forward
 or CR-related.
 
-## Open: CR diffusion correctness (review 2026-10-04)
+## Open: CR diffusion correctness (review 2026-10-04, plan checked and revised 2026-10-04)
 
 Not fixed yet. Found while checking whether the diffusion-only SILCC/Girichidis runs (item 12:
-M5, M6, M7) are correct. All numbers were measured on CPU (`jax 0.6.2`, `jax_enable_x64`) with
-`time_integration` runs.
+M5, M6, M7) are correct. The first review's numbers were measured on CPU (`jax 0.6.2`,
+`jax_enable_x64`). The plan check reproduced them on GPU in float64 (N = 96 row: 0.618 / 0.349 vs.
+0.616 / 0.345) and added the time-step scans below. The scratch script is
+`/export/scratch/nknoell/cr_diffusion_plan_check/measure_d.py` (with its logs `out*.log`): it
+monkeypatches the integrator to try the relaxation placements, and is not committed -- turn it
+into the fix-plan step-0 tests. All of these runs use the default UNSPLIT
+FV path, like every CR script.
 
 ### What is correct
 
@@ -273,23 +280,26 @@ M5, M6, M7) are correct. All numbers were measured on CPU (`jax 0.6.2`, `jax_ena
   energy bookkeeping match the standard advection-diffusion CR equations. With diffusion only
   there is correctly no streaming heating.
 - The explicit relaxation has the right fixed point (`F_cr = -kappa grad P_cr`), and its
-  `dt <= C_cfl / nu` limit is enforced in `_cfl_time_step`.
+  `dt <= C_cfl / nu` limit is enforced in `_cfl_time_step`. But the fixed point is not the
+  diffusion rate the scheme actually produces -- see Problem 3.
 - The diffusion limit holds at the scales of interest. `kappa / v_red` is ~1 pc for M5 and ~32 pc
   for M7 (~1-2 cells), so transport is diffusive on kpc scales; near the cell scale in M7 it is
   closer to the telegrapher/wave regime.
+- No CR losses is consistent with the comparison paper: Girichidis et al. 2016 solve
+  `d(e_cr)/dt + div(e_cr v) = -P_cr div(v) + div(K grad e_cr) + Q_CR` with
+  `K_par = 1e28`, `K_perp = 1e26 cm^2/s`; the text does not mention hadronic/Coulomb losses or
+  streaming (checked 2026-10-04, arXiv:1509.07247).
 
 ### Problem 1: diffusivity convention (effective `D = kappa/3`)
 
 `cr_flux_relaxation_source` relaxes `F_cr -> -kappa grad(P_cr)`, so `e_cr` diffuses with
-`D = kappa (gamma_cr - 1) = kappa/3`. This is documented above and verified by item 4, and a 2D
-resolution study converges to it (`D/kappa` = 1.277 / 0.616 / 0.425 at N = 48 / 96 / 192 towards
-0.333).
+`D = kappa (gamma_cr - 1) = kappa/3`. This is documented above and verified by item 4.
 
-The literature convention (Girichidis et al. 2016, SILCC/FLASH) is
-`d(e_cr)/dt = div(kappa grad e_cr)`, i.e. `D = kappa`. But M5/M6/M7 pass the physical kappa
-straight into `diffusion_coefficient` (`m5_cr_driven_outflow.py:716`,
+The literature convention is `d(e_cr)/dt = div(kappa grad e_cr)`, i.e. `D = kappa`. This is the
+convention of Girichidis et al. 2016 (see the equation above) and of SILCC/FLASH. But M5/M6/M7
+pass the physical kappa straight into `diffusion_coefficient` (`m5_cr_driven_outflow.py:716`,
 `m6_sn_placement_comparison.py:645`, `m7_girichidis_pilot.py:703`). Consequences:
-- Every SILCC run diffuses **3x too slowly**.
+- Every SILCC run diffuses **3x too slowly** (before Problem 3's +5-20%).
 - The diffusion lengths the scripts print and reason with (`sqrt(kappa T)`, e.g. M5's "49.5 pc,
   about one scale height") are `sqrt(3)` too large.
 - Phase D's inferred "kappa" (`cr_phase_d_kappa_inference.py`) is the code parameter; the
@@ -301,9 +311,11 @@ kappa") contradicts this, because "physical kappa" means the `e_cr` diffusivity 
 ### Problem 2: anisotropic diffusion is dominated by numerical diffusion across B
 
 M7 (MHD) gets anisotropy by projecting `F_cr` onto `b` once per step (`anisotropic_flux_projection`)
-and claims `kappa_par = 1e28, kappa_perp = 0`. Measured in a 2D periodic box with uniform `B || x`,
-a Gaussian `e_cr` bump (`sigma0 = 0.05`, tiny amplitude so the gas stays static), `kappa = 0.02`,
-`v_red = 8`, relaxation-limited steps (`nu dt = 0.4`, M7's regime):
+and claims `kappa_par = 1e28, kappa_perp = 0`.
+
+**Setup.** 2D periodic MHD box with uniform `B || x`, a Gaussian `e_cr` bump (`sigma0 = 0.05`, tiny
+amplitude so the gas stays static), `kappa = 0.02`, `v_red = 8`, relaxation-limited steps
+(`nu dt = 0.4`, which is also M7's regime: `m7_girichidis_pilot.py`'s dt_relax ~ hydro CFL):
 
 | N   | isotropic `D/kappa` (target 0.333) | aniso `D_par/kappa` | aniso `D_perp/kappa` (claimed 0) | `D_perp/D_par` |
 |-----|-------|-------|-------|------|
@@ -314,63 +326,199 @@ a Gaussian `e_cr` bump (`sigma0 = 0.05`, tiny amplitude so the gas stays static)
 (At N = 96 and `kappa = 0.2`, i.e. hydro-CFL-limited `nu dt ~ 0.14`: `D_par/kappa = 0.340`,
 `D_perp/D_par = 0.12`.)
 
-Interpretation:
-- **Most of `D_perp` is numerical diffusion of the Riemann solver on the `e_cr` row.** Its
-  wave-speed bound is ~`v_red`, so the dissipation is isotropic and untouched by the B-projection.
-  The excess over 0.333 shrinks ~3x per resolution doubling, so it converges.
-- **The remainder (~0.04-0.08 kappa) is the per-step leak:** the perpendicular `F_cr` built up
-  between two projections. This is the residual that `anisotropic_flux_projection`'s docstring
-  describes.
-- **Same root cause as the open "shared gas/CR Riemann-solver wave-speed bound" finding** below,
-  now acting on the CR rows themselves.
-- **Rough scaling.** Numerical diffusion is
-  `D_num ~ alpha v_red dx`, with `alpha ~ 0.04-0.1` for structures resolved by ~5-10 cells.
-  - **M7** (`v_red = 1000 km/s`, `dx = 15.6-31 pc`): `D_num ~ 2e26-1e27 cm^2/s`. That is 2-10x the
-    paper's `kappa_perp = 1e26`, and ~6-30% of M7's actual `D_par = kappa/3 ~ 3.3e27`. So M7's
-    cross-field transport is set by `dx` and `v_red`, not by physics.
-  - **M7's regime vs. the test.** M7 sits at `kappa/(v_red dx) ~ 1-2`, compared with 0.1-0.5 in
-    the test above. The effect is therefore smaller in M7 but not negligible. This is an
-    extrapolation, not a measured M7 number.
-  - **M5** (`kappa = 1e26`, `v_red = 300 km/s`, `dx = 0.29 pc`, `kappa/(v_red dx) ~ 3.7`):
-    `D_num ~ 1e24`, against `D ~ 3e25`. Numerically fine apart from Problem 1. Its isotropic
-    `kappa_perp` is a documented stand-in for the paper's anisotropic transport.
+**Decomposition** (plan check; the `nu dt` scan uses `C_cfl`, because `dt_max` is ignored in the
+UNSPLIT branch of `_cfl_time_step`). At N = 96, in units of the current `D = kappa/3`:
+
+    D_perp = 0.875 + 0.43 nu dt        D_par = 1 + 0.763 + 0.23 nu dt
+
+The perpendicular `nu dt` scan was 0.4 / 0.2 / 0.1 / 0.05, giving 1.048 / 0.961 / 0.918 / 0.897,
+linear to 3 digits.
+
+- **Riemann part (0.875 at N = 96):**
+  - It is HLL dissipation on the `e_cr` row, isotropic and untouched by the B-projection.
+  - It is proportional to the wave speed: scaling the CR wave speed by `1/sqrt(3)` scales it by
+    0.575.
+  - It is second-order convergent: 0.222 at N = 192, i.e. ÷3.9 per doubling.
+  - It is independent of the field angle: `D_perp` is 1.009 at 30 deg vs. 1.048 at 0 deg.
+  - The DESIGN's original attribution was right.
+- **Per-step leak (`0.43 nu dt`, = 0.057 kappa at `nu dt = 0.4`):**
+  - Mechanism: the projection runs once per full step, then the first gas half-step builds
+    `F_perp ~ -v_red^2 grad_perp(P_cr) dt` undamped.
+  - It does **not** converge with resolution at fixed `nu dt`. M7 runs at `nu dt ~ 0.4`, where the
+    leak is `~0.057 * kappa = 5.7e26 cm^2/s`. That is **5.7x the paper's `kappa_perp`** and of the
+    same order as M7's Riemann part. The first review underrated it.
+- **Correction to the first review:** "D/kappa = 1.277 / 0.616 / 0.425 towards 0.333" is wrong.
+  At fixed `nu dt = 0.4` the limit is `0.333 * (1 + 0.23 * 0.4) = 0.364` (MHD, Problem 3);
+  0.333 is reached only as `nu dt -> 0`.
+
+**Rough scaling to the real runs.** Numerical diffusion is `D_num ~ alpha v_red dx`: `alpha` is
+0.07 at N = 96 and 0.036 at N = 192 in the test, and roughly 0.04-0.1 for structures resolved by
+~5-10 cells.
+- **M7** (`v_red = 1000 km/s`, `dx = 15.6-31 pc`): Riemann part `~2e26-1e27 cm^2/s`, plus the
+  ~6e26 leak. Both exceed the paper's `kappa_perp = 1e26`, and together they are ~25-50% of M7's
+  actual `D_par = kappa/3 ~ 3.3e27`. So M7's cross-field transport is set by `dx`, `v_red` and
+  `nu dt`, not by physics. M7 sits at `kappa/(v_red dx) ~ 1-2`, compared with 0.1-0.5 in the
+  test; this is an extrapolation, not a measured M7 number.
+- **M5** (`kappa = 1e26`, `v_red = 300 km/s`, `dx = 0.29 pc`, `kappa/(v_red dx) ~ 3.7`):
+  `D_num ~ 1e24`, against `D ~ 3e25`. Numerically fine apart from Problems 1 and 3. Its isotropic
+  `kappa_perp` is a documented stand-in for the paper's anisotropic transport.
 - **No test covers this.** Item 3's oblique test runs without `diffusive_relaxation` (pure wave
-  transport), and item 4 is 1D isotropic. The anisotropic *diffusion* M7 uses has never been
-  validated.
+  transport), and item 4 is 1D isotropic.
 - **Physical `kappa_perp` is missing.** Even with perfect numerics, the projection gives
   `kappa_perp = 0`, not the paper's `1e26`.
 
-### Fix plan
+### Problem 3 (found in the plan check): operator-split relaxation biases D by `+nu dt_gas / 2`
 
-Do this before the streaming fix, because it changes the same relaxation source:
-1. **Convention.** Define `diffusion_coefficient` as the `e_cr` diffusivity, i.e.
-   `nu = (gamma_cr - 1) v_red^2 / kappa`. This also makes the relaxation 3x less stiff, which
-   relaxes the `dt_relax` bound 3x for M7. Update item 4's reference to `D = kappa`, fix the
-   option docstring, and re-run Phase D.
-2. **Tensor relaxation instead of projection.** Relax towards
-   `F_eq = -[kappa_par b b + kappa_perp (I - b b)] . grad(e_cr)` (`e_cr`-diffusivity convention
-   from item 1). This needs a
-   new `kappa_perp` param, default 0. It gives the paper's `kappa_perp` and removes the per-step
-   leak, because nothing is overwritten. Use the same locally implicit update as the streaming fix
-   plan's (b), which then carries both diffusion and streaming in one relaxation source.
-3. **CR-specific wave-speed bound.** Use a separate bound for the CR rows in the Riemann solver
-   (`|u_n| + v_red / sqrt(3)`, i.e. the true two-moment eigenvalue, instead of the shared maximum
-   with the gas). This removes the inflated gas dissipation and is the fix for the open shared-bound
-   finding below. Then measure how much CR numerical diffusion remains.
-4. **New test, written before the fix.** 2D anisotropic diffusion with relaxation: oblique uniform B
-   (e.g. 30 deg), Gaussian `e_cr`. Measure `D_par` and `D_perp` against `kappa_par`/`kappa_perp`,
-   at M7's `kappa/(v_red dx) ~ 1-2` and at the item-4 regime. Gate on
-   `|D_par/kappa_par - 1|` and `D_perp/D_par` at the M7 resolution.
-5. **Re-run** M5, M6 and M7, and redo the diffusion-length reasoning in their docstrings.
+The relaxation source is bundled with the operator-split CR sources (`_gravity_source_presolve` /
+`_apply_gravity_source`): it is computed from the pre-step state and added after the whole RK2
+gas step. During that step `F_cr` evolves undamped (`F -> F - v_red^2 grad(P_cr) dt`), so the
+RK-averaged `e_cr` flux is `-kappa grad P_cr (1 + nu dt_gas / 2)`. Here `dt_gas` is `dt`
+(hydro) or `dt/2` (MHD gas half-steps).
 
-**Still to check against the paper:** whether Girichidis et al. 2016 includes CR losses
-(hadronic/Coulomb). This module has no dynamical CR losses, so the code comparison would be
-incomplete if the paper has them.
+**Measured, 1D isotropic** (N = 512, `kappa = 0.02`, `v_red = 8`, `C_cfl` scan), in units of
+`kappa/3`:
 
-Reproduction script: `aniso_diff.py` (review scratch, not committed). It builds the box above
-with `CosmicRayGreyConfig(grey_cosmic_rays=True, diffusive_relaxation=True,
-anisotropic_transport=...)`, `mhd=True`, periodic BCs, `B_x = 1`, and measures `D` from the
-growth of the second moments of `e_cr - background` along x and y.
+| `nu dt` | 0.625 | 0.313 | 0.156 | 0.078 | 0.039 |
+|---------|-------|-------|-------|-------|-------|
+| `D`     | 1.336 | 1.180 | 1.103 | 1.064 | 1.044 |
+
+That is `D = 1.025 + 0.497 nu dt`, exactly the predicted slope. In 2D MHD the slope is 0.23,
+matching `dt_gas = dt/2`.
+
+**Consequences:**
+- M7 (MHD, `nu dt ~ 0.4`): `D_par` +10%.
+- M5 (`nu dt ~ 0.1`, estimate): +5%.
+- **Item 4's "first-order convergence" is this bias, not a spatial error.** In its
+  hydro-CFL-limited runs `nu dt ∝ dx`. The spatial part alone is second order: 0.025 / 0.0065 /
+  0.002 at N = 512 / 1024 / 2048.
+
+**Why this matters for the fix plan.** The bias grows linearly without bound when the relaxation
+is made implicit but stays operator split (once after the step). Stiff test (1D, N = 512,
+`kappa = 0.002`, `nu dt` = 0.78 / 1.56 / 3.13, cell optical depth `tau = nu dx / v_red = 7.8`):
+
+| placement | `D` (units of `kappa/3`) |
+|---|---|
+| implicit, once after the step (as the first plan wrote it) | 1.644 / 2.023 / **2.786** (`= 1.268 + 0.49 nu dt`) |
+| implicit, **inside every RK stage** (Jiang & Oh 2018) | **1.268 / 1.268 / 1.268** |
+| explicit split (current code, `nu dt` = 0.4 / 0.1) | 1.461 / 1.316 |
+| per-stage implicit, N = 2048 | 1.015 |
+
+The leftover 0.268 at N = 512 is the Riemann part again (`tau = 7.8` is optically thick per
+cell). Lowering the CR wave speed, as fix step 4 does, cut it to 0.039. That run used a global
+factor, which the shared bound then floors at `c_gas`, i.e. ×0.16.
+
+### Fix plan (revised 2026-10-04 after the check)
+
+Changes to the first version:
+- The implicit relaxation goes **per RK stage**, not after the step.
+- The tensor relaxes toward **zero**, not toward `-K grad e_cr`.
+- B must be plumbed into the gas-only half-steps.
+- The wave-speed fix gets JO18's optical-depth factor.
+- The steps are reordered, and the item-9 reference solution is added to the re-run list.
+
+Do all of it before the streaming fix, because it changes the same relaxation code. Steps 2-4
+each land separately, each with step 0's tests as the gate.
+
+0. **Tests first -- written 2026-10-04:** `pytests/cosmic_rays_grey/cr_diffusion_rate.py`, 7
+   tests (T1a-c, T2a-d). All 7 fail on the current code, each for the reason its docstring names;
+   the measured before-fix values are in the docstrings, and the plots are
+   `pics/cr_diffusion_rate_{1d,2d}_test.svg`. Targets use the new convention
+   (`D = diffusion_coefficient`). Expected to pass after: T1a step 2; T1b step 1; T1c steps
+   1, 2, 4; T2a step 3; T2b step 1; T2c steps 3-4; T2d step 3. After step 1: T1b and T2b pass
+   (2/7). Original spec: Measure D from the second-moment growth
+   after `t_end/3`, in a periodic box with a tiny-amplitude bump. Scan `C_cfl` (or fix the
+   ignored `dt_max`).
+   - **T1, 1D isotropic:**
+     - D independent of `nu dt`: gate `|dD/d(nu dt)| < 0.02 D`. This fails today with slope 0.5.
+     - `D -> kappa` (new convention) under refinement.
+     - A stiff case with `nu dt > 1`.
+   - **T2, 2D anisotropic.** B at 0, 30 and 45 deg, with `kappa_perp = 0` and
+     `kappa_perp = kappa_par / 100`, at the item-4 regime and at M7's `kappa/(v_red dx) ~ 1-2`.
+     - Gate on: `D_par/kappa_par -> 1` under refinement; `D_perp` independent of `nu dt` (no leak).
+     - Report the Riemann part of `D_perp` against `kappa_perp` per angle, and gate it on
+       decreasing with N. Do not gate it on an absolute value -- see step 4 for why the oblique
+       case may stay above `kappa_perp` at M7 resolution.
+1. **Convention -- done 2026-10-04.** `cr_grey_sources.cr_flux_relaxation_rate` (new, shared
+   by the source and `_cfl_time_step`) gives `nu = (gamma_cr - 1) v_red^2 / kappa`.
+   - Item 4, item 9 Test B and Phase D were converted to the same physical runs
+     (`kappa_new = kappa_old / 3`: 0.06 -> 0.02, 0.2 -> 0.2/3, 0.06 -> 0.02). Each was compared
+     against a HEAD worktree baseline: all pass, and the states agree to float32 rounding
+     (`e_cr` <= 4e-5 relative, all rows <= 1e-4 of the largest value). Phase D's recovered kappa
+     is exactly 1/3 of the baseline's along all 60 Adam steps, with the same 4.04e-3 error.
+   - M5/M6/M7 now diffuse 3x faster; their docstrings carry a dated note, and the re-run is
+     step 5.
+
+   Original spec: define `diffusion_coefficient` as the `e_cr` diffusivity, i.e.
+   `nu = (gamma_cr - 1) v_red^2 / kappa`. This also makes the relaxation 3x less stiff. It hardly
+   buys M7 steps, because dt_relax ≈ the hydro CFL there, and step 2 drops dt_relax anyway.
+   - Update in the same commit: the option docstring; `cr_isotropic_diffusion_convergence.py`
+     (reference `D = kappa`); `cr_phase_d_kappa_inference.py`; and the **item-9 reference
+     solution** `test_setups/reference_solutions/cr_modified_shock_structure.py`, which hard-codes
+     `F_cr = -diffusion_coefficient dP_cr/dx` (becomes `-kappa dE_cr/dx`, missing from the first
+     plan), together with its pytest.
+   - Changing the meaning of an existing parameter is silent for any script not updated in the
+     same commit. All users are listed by `grep -rl diffusion_coefficient` (6 scripts + 3 library
+     files).
+2. **Implicit relaxation inside every RK stage** (scalar `nu` first). In
+   `_evolve_gas_state_unsplit`'s `rhs`, after the forward-Euler hydro stage, set
+   `F_cr <- F_cr / (1 + nu dt_stage)`.
+   - Remove `cr_flux_relaxation_source` from the operator-split bundle, and remove the
+     dt_relax branch of `_cfl_time_step`.
+   - The prototype shows no `nu dt` dependence for `nu dt` from 0.78 to 3.1 (Problem 3 table).
+   - Don't apply it once after the full step: that was measured at `+0.49 nu dt`.
+   - Moving the *explicit* source into the stages would also remove the bias, but it keeps the
+     `nu dt <~ 1` limit and cannot reach `kappa_perp -> 0`.
+   - It is plain division, so it stays differentiable.
+   - The dimensionally SPLIT FV path has no stages: raise in `finalize_config` for
+     `diffusive_relaxation` with `split=SPLIT` (no CR script uses it).
+   - Gate: T1 and item 4. Item 4's convergence order should rise to ~2, so re-calibrate its
+     docstring numbers.
+3. **Tensor relaxation instead of projection.**
+   - Source `-nu . F_cr` with `nu = (gamma_cr - 1) v_red^2 K^-1` and
+     `K = kappa_par b b + kappa_perp (I - b b)`. The relaxation goes toward **zero**: the
+     gradient drive stays in the flux (`v_red^2 P_cr` in `grey_cr_flux_terms`), and the steady
+     state is then `F = -K . grad(e_cr)`.
+   - The first plan's "relax toward `F_eq = -K . grad(e_cr)`" would double-count the drive. Its
+     steady state is `F = -K . grad e - (v_red^2 / nu) grad P` -- twice the diffusion.
+   - Implicit per stage, written in kappa form so that `kappa_perp = 0` is finite and smooth:
+
+         F <- [ b b  kappa_par / (kappa_par + (gamma_cr-1) v_red^2 dt)
+              + (I - b b) kappa_perp / (kappa_perp + (gamma_cr-1) v_red^2 dt) ] . F
+
+   - At `kappa_perp = 0` this is the projection plus the parallel relaxation. Applied every stage,
+     it removes the per-step leak (the 0.43 `nu dt` term, ~6e26 in M7).
+   - Delete `anisotropic_flux_projection`'s call in `_iteration_level_updates.py`.
+   - New param `CosmicRayGreyParams.perpendicular_diffusion_coefficient` (default 0; the name T2d
+     uses).
+   - **B plumbing.** The FV MHD gas half-step is gas-only (`registered_variables_gas` has
+     `magnetic_index = -1`), so neither the stage `rhs` nor `_time_integrator_sources` can see B.
+     The first plan (and the streaming plan's (c)) assumed it could. Pass `b_hat` built from the
+     split-off magnetic array into `_evolve_gas_state_unsplit`. B is constant during a gas
+     half-step (the magnetic update sits between the two half-steps), so this is exact.
+4. **CR-specific wave speed.** Use a separate HLL bound for the CR rows:
+   `|u_n| + R(tau_n) v_red / sqrt(3)`.
+   - `R = sqrt((1 - exp(-tau^2)) / tau^2)` and the max speed `min(v_red, R v_red/sqrt(3))` are
+     JO18 Sec. 3.2.1.
+   - JO18 define `tau` with a scalar `sigma_c`. The face-normal choice
+     `tau_n = (gamma_cr - 1) v_red dx / (n . K . n)` is ours and must be validated by T2. It
+     includes stability with `R << 1`, where the CR rows become nearly central.
+   - Gas rows keep `|u_n| + sqrt(c_gas^2 + c_cr-coupling^2)`. This also resolves the open
+     shared-bound finding.
+   - CFL uses the max of the two, so dt can grow by up to `sqrt(3)`.
+   - Measured: the Riemann part scales exactly with the wave speed (×0.575 for `1/sqrt(3)`), and
+     the stiff-test excess drops 0.268 -> 0.039.
+   - **Expected effect in M7:**
+     - Along B, `tau ~ 0.16-0.32`, so `R ~ 0.95-0.99`: only the `sqrt(3)`.
+     - Across B where B is grid-aligned, `n . K . n = kappa_perp`, so `tau >> 1` and the
+       cross-field Riemann diffusion largely goes.
+     - **For oblique B**, `n . K . n ~ kappa_par / 2` on both axes, so `R ~ 1` and only the
+       `sqrt(3)` remains: `D_perp,num ~ 1e26-6e26`, still at or above `kappa_perp = 1e26` at
+       15.6-31 pc. The remaining levers are resolution (second order, ~4x per doubling) or a
+       smaller `v_red`. If T2 confirms this, document `D_perp,num` as M7's effective
+       cross-field diffusivity rather than claiming `kappa_perp`.
+5. **Re-run** item 4, item 9, Phase D, M5, M6 and M7, and redo the diffusion-length reasoning in
+   their docstrings. Redo M7's cost argument: there is no dt_relax after step 2, and the CFL is
+   set by `v_red/sqrt(3)` after step 4.
 
 ## Resolved: streaming transport and streaming heating (ladder item 5)
 
@@ -499,6 +647,15 @@ Each point was checked numerically on CPU (`jax 0.6.2`, `jax_enable_x64`), using
   `v / sqrt(1 + (v / v_cap)^2)`), so `v_A -> inf` in low-density regions cannot break the
   `v_m >> v_st` ordering the closure needs.
 
+> **Corrected 2026-10-04 (diffusion-plan check, see "Open: CR diffusion correctness", Problem 3
+> and fix steps 2-3):**
+> - Drop the `- kappa . grad(e_cr)` term from `F_eq` below. The `v_m^2 grad(P_cr)` drive in the
+>   flux already produces the diffusive flux, so relaxing toward it as well doubles the diffusion.
+>   Relax toward `F_st` only (JO18: `-sigma_c . [F_c - 4/3 E_c (v + v_s)]`). Diffusion enters
+>   through the tensor rate.
+> - The "locally implicit" update must run **inside every RK stage**. Once after the explicit
+>   update, it biases D by `+0.49 nu dt` (measured).
+
 **b) Unified relaxation (Jiang & Oh 2018 form) instead of the overwrite.** Treat `F_cr` (the flux
 relative to the gas; the `u * e_cr` part is already in `grey_cr_flux_terms`) as relaxing toward
 streaming + diffusion:
@@ -527,9 +684,11 @@ In equilibrium this gives the enthalpy streaming flux plus diffusion, additively
 `H = v_A * (b . grad P_cr) * s` with the *same* `v_A`, `b`, `s` as `F_st`, so the identity "uniform
 `v_st` => pure advection of `e_cr`" holds discretely. `e_cr` loses `H`; gas thermal gains
 `streaming_heating_efficiency * H` (unchanged bookkeeping, still exactly conservative at 1.0).
-Use the same centered `grad P_cr` stencil as `cr_pressure_gradient_source`; `b` comes from the
-cell-centered B in the full state (heating already runs on the full state in
-`_time_integrator_sources`, so B is available, unlike in `grey_cr_flux_terms`).
+Use the same centered `grad P_cr` stencil as `cr_pressure_gradient_source`. `b` cannot come
+from the state there. **Corrected 2026-10-04:** in FV MHD, `_time_integrator_sources` runs
+inside the gas-only half-step (`registered_variables_gas.magnetic_index = -1`), so B is *not*
+available there, the same as in `grey_cr_flux_terms`. Use the `b_hat` plumbing from the
+diffusion fix step 3 instead.
 
 **d) Dimensionless sign regularization** (Sharma, Colella & Martin 2010):
 
@@ -2009,10 +2168,14 @@ open BCs).
 
 ## Open questions (plan Sec. 6, restated for this module)
 
-- **CR diffusion correctness** (2026-10-04): `diffusion_coefficient` convention gives `D = kappa/3`
-  in all SILCC runs, and M7's anisotropic diffusion has large numerical cross-field diffusion --
-  see "Open: CR diffusion correctness". Fix before the streaming plan (both change the relaxation
-  source).
+- **CR diffusion correctness** (2026-10-04): three problems.
+  - The `diffusion_coefficient` convention gives `D = kappa/3` in all SILCC runs.
+  - The operator-split relaxation biases D by `+nu dt_gas/2`.
+  - M7's anisotropic diffusion has large numerical cross-field diffusion: the Riemann part plus a
+    ~6e26 cm^2/s per-step leak.
+
+  See "Open: CR diffusion correctness" (plan checked and revised the same day). Fix before the
+  streaming plan, because both change the relaxation source.
 - **Physically correct streaming** (2026-10-04): the item-5 streaming uses the wrong speed,
   geometry and flux -- see "Open: physically correct CR streaming (fix plan)". Until fixed, the
   `v_red` convergence study below is only meaningful with `streaming=False`.

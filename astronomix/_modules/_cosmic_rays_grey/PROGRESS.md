@@ -4,6 +4,33 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Done (2026-10-04): CR diffusion fix-plan steps 0-1 (tests + convention)
+
+DESIGN.md "Open: CR diffusion correctness" is the plan; steps 2-5 are still open.
+
+**Step 0.** New `pytests/cosmic_rays_grey/cr_diffusion_rate.py`, 7 tests (T1a-c 1D isotropic,
+T2a-d 2D MHD anisotropic). They measure D from the second-moment growth of a tiny Gaussian
+`e_cr` bump. On the old code all 7 failed, each for its intended reason.
+
+**Step 1.** `diffusion_coefficient` is now the `e_cr` diffusivity, `d(e_cr)/dt =
+div(kappa grad e_cr)` (Girichidis et al. 2016's convention).
+- The new `cr_grey_sources.cr_flux_relaxation_rate` gives `nu = (gamma_cr - 1) v_red^2 / kappa`;
+  the source and `_cfl_time_step` both use it. Before, `nu` had no `(gamma_cr - 1)`, so
+  `D = kappa/3`.
+- The item-4, item-9 Test B and Phase D pytests and the item-9 reference ODE
+  (`dP_cr/dx = -(gamma_cr - 1) F_cr / kappa`) were converted to the *same* physical runs
+  (kappa / 3).
+- Verified against a HEAD worktree baseline: all pass, and the states agree to float32 rounding
+  (`e_cr` <= 4e-5 relative). Phase D's recovered kappa is exactly 1/3 of the baseline's at every
+  Adam step (same 4.04e-3 error).
+- `cr_diffusion_rate.py` after step 1: T1b and T2b pass (1D `D/kappa` = 1.015 at N = 1024; 2D
+  `D_par/kappa` = 1.042-1.046 at N = 256).
+  - Still failing, as planned: T1a (D spread 3.8% over `C_cfl` 0.4-0.1, step 2), T1c (38096
+    steps vs. 5120 hydro, step 2), T2a (leak 0.09 kappa, step 3), T2c (aligned `D_perp` 0.064
+    kappa, steps 3-4), T2d (no `perpendicular_diffusion_coefficient`, step 3).
+- **M5/M6/M7 pass physical kappa and now diffuse 3x faster than their committed runs.** Their
+  docstrings carry a dated note; re-running them is step 5.
+
 ## Open (2026-10-04): item 15 SED shape and level vs. IC 443 / W44 (proposed fixes, not done)
 
 **Shape.** Item 15's pion SED (`cr_snr_molecular_cloud_pion_bump.py`, assumed `CR_ALPHA = 2.0`,

@@ -5,6 +5,12 @@ cosmic-ray transport now turned ON -- the code-comparison anchor against
 Girichidis et al. (2016), ApJL 816, L19, "Launching Cosmic-Ray-driven
 Outflows from the Magnetized Interstellar Medium" (arXiv:1509.07247).
 
+**Diffusion convention changed 2026-10-04 (DESIGN.md "Open: CR diffusion correctness",
+fix-plan step 1).** ``diffusion_coefficient`` is now the ``e_cr`` diffusivity, so the kappa
+below now diffuses with ``D = kappa``. Every run made before then had ``D = kappa/3`` and a
+3x faster relaxation rate ``nu``. The numbers and diffusion lengths quoted below (e.g.
+``sqrt(kappa*T_end)``) are from those runs and have not been redone yet (fix-plan step 5).
+
 **NOT a committed pytest -- an exploratory script**, same status as M4's own
 script (``m4_stratified_column_sn_driving_delayed_cooling.py``): meant to be
 run and inspected directly, not asserted against fixed tolerances. The

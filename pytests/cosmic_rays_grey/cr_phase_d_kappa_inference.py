@@ -104,7 +104,9 @@ AMP = 1e-3
 SIGMA0 = 0.02
 X0 = 0.5 * BOX_SIZE
 T_END = 0.24
-KAPPA_TRUE = 0.06
+# e_cr diffusivity (0.06 in the pre-2026-10-04 P_cr-diffusivity convention:
+# same run, and the log-kappa Adam trajectory is identical up to the 1/3 scale).
+KAPPA_TRUE = 0.02
 
 # ---- fixed "target gas" emissivity weighting (see module docstring) ----
 X_CLOUD = X0 + 0.15

@@ -42,7 +42,7 @@ resolution):
    interaction with Finding 1 (2026-09-09): the reference precursor ODE
    (:func:`astronomix.test_setups.reference_solutions.
    cr_modified_shock_structure.cr_precursor_ode_rhs`) only holds once
-   ``F_cr``'s relaxation rate ``nu = reduced_streaming_speed^2 /
+   ``F_cr``'s relaxation rate ``nu = (gamma_cr - 1) reduced_streaming_speed^2 /
    diffusion_coefficient`` is fast compared to the precursor's own advective
    formation rate ``~ v_shock / precursor_width`` -- and working through the
    two rate expressions shows this requires ``reduced_streaming_speed``
@@ -452,7 +452,7 @@ def test_cr_precursor_ode(
     p_cr_ode_tol: float = 0.4,
     f_cr_ode_tol: float = 0.4,
     reduced_streaming_speed: float = 8.0,
-    diffusion_coefficient: float = 0.2,
+    diffusion_coefficient: float = 0.2 / 3.0,
     precursor_window_cells: int = 150,
     dsa_efficiency: float = 0.01,
 ):
@@ -465,6 +465,9 @@ def test_cr_precursor_ode(
 
     Args:
         velocity_fit_tol: Same purpose as in Test A.
+        diffusion_coefficient: The ``e_cr`` diffusivity. ``0.2 / 3`` is the
+            calibrated run's 0.2 in the pre-2026-10-04 ``P_cr``-diffusivity
+            convention -- same relaxation rate, same run.
         mass_flux_tol/momentum_flux_tol: Maximum relative spread (std over
             mean) of the two conserved first integrals
             (``mass_flux = rho * u_shockframe``, ``momentum_flux = rho *

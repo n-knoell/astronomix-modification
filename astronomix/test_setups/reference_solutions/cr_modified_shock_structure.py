@@ -8,7 +8,7 @@ the full derivation this module implements).
 Physical picture. Run a stationary (or slowly-relaxing) 1D shock with both
 ``diffusive_shock_acceleration`` (ladder items 7-8) and ``diffusive_relaxation``
 (ladder item 4's quasi-steady Fick's-law limit, ``F_cr ~= -diffusion_coefficient
-* dP_cr/dx``) turned on together for the first time. CR pressure accelerated at
+* de_cr/dx``) turned on together for the first time. CR pressure accelerated at
 the shock diffuses upstream, building a smooth *precursor* that pre-decelerates
 and pre-heats the incoming gas before it reaches the (numerically thin, i.e.
 diffusion-unresolved) viscous subshock -- the textbook signature of a
@@ -87,16 +87,17 @@ def cr_precursor_ode_rhs(
       *not* an enthalpy-like ``u * P_cr`` term, unlike the gas equation, see
       that function's flux formula -- plus ``cr_adiabatic_work_source``'s
       ``-P_cr * du/dx`` work term, plus ``F_cr = -diffusion_coefficient *
-      dP_cr/dx`` from ``cr_flux_relaxation_source``'s quasi-steady limit,
+      de_cr/dx`` from ``cr_flux_relaxation_source``'s quasi-steady limit,
       ladder item 4): ``d/dx[u * P_cr/(gamma_cr-1) + F_cr] = -P_cr * du/dx``.
       Solving for ``dF_cr/dx`` gives the third return value, using the
-      already-solved ``du/dx`` and ``dP_cr/dx = -F_cr / diffusion_coefficient``.
+      already-solved ``du/dx`` and ``dP_cr/dx = -(gamma_cr - 1) F_cr /
+      diffusion_coefficient``.
 
     Verified (ad hoc script, during development, not committed): the point
     ``(u, P_cr, F_cr) = (u1, 0, 0)`` (far-upstream ambient conditions) is an
     exact fixed point of this ODE; linearizing around it gives a 2x2 system
-    in ``(P_cr, F_cr)`` with eigenvalues ``0`` and ``u1 / (diffusion_coefficient
-    * (gamma_cr - 1))`` (the growing precursor mode) and growing-eigenvector
+    in ``(P_cr, F_cr)`` with eigenvalues ``0`` and ``u1 / diffusion_coefficient``
+    (the growing precursor mode) and growing-eigenvector
     direction ``F_cr = -[u1 / (gamma_cr - 1)] * P_cr``. Integrating this ODE
     numerically from a small perturbation along that exact eigenvector
     direction (``scipy.integrate.solve_ivp``, tight tolerances) gives a
@@ -120,15 +121,16 @@ def cr_precursor_ode_rhs(
         gamma_gas: Gas adiabatic index.
         gamma_cr: CR adiabatic index.
         diffusion_coefficient: ``CosmicRayGreyParams.diffusion_coefficient``
-            (the quasi-steady-limit CR diffusivity for ``P_cr``, ladder item
-            4).
+            (the quasi-steady-limit ``e_cr`` diffusivity, ladder item 4; until
+            2026-10-04 this module used the old ``P_cr``-diffusivity
+            convention, ``dP_cr/dx = -F_cr / diffusion_coefficient``).
 
     Returns:
         ``(du_dx, dp_cr_dx, df_cr_dx)``.
     """
     A = gamma_gas / (gamma_gas - 1.0)
 
-    dp_cr_dx = -f_cr / diffusion_coefficient
+    dp_cr_dx = -(gamma_cr - 1.0) * f_cr / diffusion_coefficient
 
     denom = (1.0 - 2.0 * A) * mass_flux * u + A * (momentum_flux - p_cr)
     du_dx = u * (A - 1.0) * dp_cr_dx / denom
