@@ -230,9 +230,43 @@ def _deposit_one_supernova(
 ) -> tuple:
     """One Bernoulli trial and, if it fires, one SN deposit (the body of
     ``_inject_supernovae``, run once per trial). Returns
-    ``(primitive_state, cooling_shield)``."""
-    sn_params = params.sn_driving_params
+    ``(primitive_state, cooling_shield)``.
+
+    The deposit sits behind a ``lax.cond``, so a trial that does not fire
+    skips its full-grid passes (site distances, weights, sums). With
+    ``max_sn_per_step`` = 16 most trials are empty, and evaluating them anyway
+    cost ~1/3 of the M7 pilot's wall time (2026-10-04, 68 vs 45 s per
+    simulated Myr against K = 2 at ``--res=1``). The result is unchanged:
+    every ``triggered`` mask below is then simply True."""
     triggered = jax.random.bernoulli(trigger_key, trigger_probability)
+
+    def deposit(operands):
+        state, shield = operands
+        return _deposit_triggered_supernova(
+            pos_key, triggered, state, shield, interior_mask, config, params,
+            registered_variables, helper_data, current_time,
+        )
+
+    return jax.lax.cond(
+        triggered, deposit, lambda operands: operands, (primitive_state, cooling_shield)
+    )
+
+
+def _deposit_triggered_supernova(
+    pos_key,
+    triggered,
+    primitive_state: STATE_TYPE,
+    cooling_shield,
+    interior_mask,
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+    helper_data: HelperData,
+    current_time=None,
+) -> tuple:
+    """The SN deposit of ``_deposit_one_supernova``, run only when its trial
+    fired. Returns ``(primitive_state, cooling_shield)``."""
+    sn_params = params.sn_driving_params
     box_size = config.box_size
 
 
@@ -368,11 +402,8 @@ def _deposit_one_supernova(
         else:
             thermal_mode = jnp.asarray(not config.sn_driving_config.momentum_injection)
         time_log = 0.0 if current_time is None else current_time
-
-        def log_event(_):
-            jax.debug.callback(_record_sn_event, time_log, site[2], n_0_log, thermal_mode)
-
-        jax.lax.cond(triggered, log_event, lambda _: None, None)
+        # only reached when the trial fired (lax.cond in _deposit_one_supernova)
+        jax.debug.callback(_record_sn_event, time_log, site[2], n_0_log, thermal_mode)
 
     thermal_energy = thermal_fraction * (1.0 - cr_fraction) * sn_params.sn_energy
     gamma = params.gamma

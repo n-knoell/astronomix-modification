@@ -138,6 +138,18 @@ class CoolingConfig(NamedTuple):
     # dt by it (see its subcycle_stiff_cooling branch).
     subcycle_stiff_cooling: bool = False
 
+    #: Opt-in (default off): after the cooling update, raise the gas pressure
+    #: to at least the Jeans pressure floor
+    #: ``P_J = N_J^2 dx^2 G rho^2 / (pi gamma)`` (``N_J =
+    #: CoolingParams.jeans_floor_cells``), i.e. keep the local Jeans length
+    #: resolved by >= N_J cells (Truelove et al. 1997 criterion). For
+    #: self-gravitating runs that cannot resolve cold-gas collapse and have
+    #: no sink particles: without it, gas that cools onto the floor
+    #: temperature collapses into single cells. Adds thermal energy where it
+    #: acts (non-conservative), only in dense, cold gas. Uses
+    #: ``SimulationParams.gravitational_constant``; FV path only.
+    jeans_pressure_floor: bool = False
+
 
 class CoolingParams(NamedTuple):
     """Runtime cooling parameters (composition, temperature floor, curve)."""
@@ -149,3 +161,7 @@ class CoolingParams(NamedTuple):
     floor_temperature: float = 1e4
 
     cooling_curve_params: COOLING_CURVE_TYPE = SimplePowerLawParams()
+
+    #: Number of cells per Jeans length kept by ``CoolingConfig.
+    #: jeans_pressure_floor`` (4 = Truelove et al. 1997).
+    jeans_floor_cells: float = 4.0

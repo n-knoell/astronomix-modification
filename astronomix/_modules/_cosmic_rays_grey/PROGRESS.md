@@ -126,6 +126,58 @@ threshold). `_inject_supernovae` takes an optional `current_time` for this. Chec
 3 Myr test logs 710 SNe (720 expected), thermal below / momentum above threshold;
 `sn_driving_energy_conservation` still passes. Not yet run at production resolution.
 
+**Pre-H200 fixes (2026-10-04).** (1) `run_m7` now writes the raw results to `--out-dir`
+(default `/export/scratch/nknoell`, created before the run so a bad path fails early) right after
+`time_integration`, before any plotting: `m7_pilot_data_*.npz` with the final full state,
+density / pressure / v_z / E_CR of every snapshot (float32), snapshot times, SN log, unit
+conversions (~2.6 GB at `--res=2`). (2) `_deposit_one_supernova` puts the deposit behind
+`lax.cond(triggered, ...)` (body moved to `_deposit_triggered_supernova`), so empty trials skip
+their full-grid passes. `--res=1`, 2 Myr, 2080 Ti, compilation included: K = 16 went from 68 to
+57 s per simulated Myr with an identical SN log (515 events, same thermal fractions); K = 2
+(old code) was 45, so the cond still has some per-trial overhead (likely state copies through
+the identity branch). `sn_driving_energy_conservation` passes.
+
+**MHD + self-gravity, as in Girichidis et al. 2016 (2026-10-04; now the M7 default).**
+- **Self-gravity with periodic x/y + open z:** that combination used to fall into the fully
+  isolated Hockney & Eastwood branch (an isolated 2 x 2 kpc tile). New
+  `_poisson_periodic_xy_isolated_z` (`_poisson_solver.py`, chosen automatically for 3D
+  periodic-x/y, open-z): FFT in x/y, per-k free-space convolution in z with the cell-integrated
+  kernel `-2 pi G exp(-k|dz|)/k` (k = 0: `2 pi G |dz|`). Handles ghost-padded input (x/y ghosts
+  dropped and wrapped back, z ghosts massless). `pytests/self_gravity/mixed_boundary_poisson.py`:
+  - a uniform layer matches Gauss's law for the cell masses to 1e-14;
+  - a cos(kx) mode matches independent quadrature (4.8e-3 at 62.5 pc, 1.5e-3 at 31 pc);
+  - the padded and bare calls agree to 1e-15.
+- **Jeans floor:** new opt-in `CoolingConfig.jeans_pressure_floor` (Truelove, `P_J = N_J^2 dx^2
+  G rho^2 / (pi gamma)`, `CoolingParams.jeans_floor_cells` = 4), applied right after cooling.
+- **M7 script:** MHD with SILCC's B_x = 3 muG sqrt(rho/rho_0), anisotropic CR transport
+  (F_cr projected onto B: kappa_par = 1e28, kappa_perp = 0), self-gravity + Jeans floor. Initial
+  condition hydrostatic in KG + gas self-gravity with thermal + magnetic pressure. Switches:
+  `--no-mhd`, `--no-self-gravity`, `--no-jeans-floor`, `--mhd-tolerance`.
+- **Quiescent check** (SNe off, 62.5 pc, 20 Myr): midplane n_H 1.785 -> 1.787, mass-weighted
+  |v_z| 0.33 km/s (hydro setup 0.30).
+- **Pilots, 62.5 pc, 250 Myr, `both`** (2080 Ti; late-time z70 / z90, eta(1 kpc), v_out):
+
+  | variant | wall time | z70 / z90 | eta | v_out | SNe deposited thermally |
+  |---|---|---|---|---|---|
+  | hydro | 0.17 h | 344 / 1213 pc | 0.68 | 3.4 km/s | 21% |
+  | self-gravity only | 0.16 h | 279 / 1024 pc | 0.63 | 4.6 km/s | 18% |
+  | MHD only | 0.29 h | 720 / 1511 pc | 0.85 | 5.2 km/s | 78% |
+  | MHD + self-gravity | 0.30 h | 616 / 1427 pc | 0.94 | 4.8 km/s | 69% |
+
+  - Self-gravity alone forms one midplane clump (~1e-23 g/cm^3).
+  - MHD thickens the disc (Parker-like undulations, lambda ~0.5-0.7 kpc). Midplane E_CR rises
+    to ~2e-11 (CRs held in the disc by the horizontal field), and B_rms(mid) drops from 2.8 to
+    0.4-1.4 muG. With MHD the clump does not form.
+  - The Jeans floor never acts at 62.5 pc (max n_H 1.7, P_J/P <= 0.11): `--no-jeans-floor` is
+    bit-identical.
+  - max v_A <= 170 km/s, below v_red (the CFL has no v_A term; in `thermal` mode nothing else
+    bounds it).
+- **31 pc, MHD + self-gravity, 50 Myr:** 0.83 h (60 s per simulated Myr incl. compilation),
+  NaN-free. At 50 Myr: z70 / z90 = 412 / 703 pc, eta 2.2, v_out 12 km/s, max T up to 9e8 K
+  early, max v_A <= 420 km/s.
+- **Not yet reproduced:** the paper's thin dense layer (z70 ~200 pc). At these resolutions
+  MHD makes the disc thicker, not thinner.
+
 **Open risks:** 250 Myr is ~30x longer than any stratified run so far; v_red = 1000 km/s is
 exceeded by the hottest remnants (accepted, see the script's decision 2); the H200 speed-up
 over a 2080 Ti is not measured (the pilot's wall time should calibrate the 15.6 pc decision).

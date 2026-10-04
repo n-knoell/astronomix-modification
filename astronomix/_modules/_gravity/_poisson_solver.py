@@ -5,7 +5,8 @@ Solves Poisson's equation for the gravitational potential in Fourier space.
 Fully periodic domains use the spectral Green's function directly (with the
 Jeans swindle subtracting the mean density). Non-periodic (open) boundaries use
 the Hockney & Eastwood method, zero-padding the domain to twice its size and
-convolving with the isolated-system Green's function.
+convolving with the isolated-system Green's function. 3D domains periodic in
+x/y and open in z combine the two (FFT in x/y, isolated convolution in z).
 """
 
 # general
@@ -149,6 +150,84 @@ def _periodic_poisson_3d_sharded(
     )(gas_density)
 
 
+def _periodic_xy_open_z(config: SimulationConfig) -> bool:
+    """x and y periodic on both sides, z non-periodic on both sides (a
+    stratified-box / disc-patch domain)."""
+    bs = config.boundary_settings
+    periodic = [
+        b.left_boundary == PERIODIC_BOUNDARY and b.right_boundary == PERIODIC_BOUNDARY
+        for b in (bs.x, bs.y)
+    ]
+    z_open = (
+        bs.z.left_boundary != PERIODIC_BOUNDARY and bs.z.right_boundary != PERIODIC_BOUNDARY
+    )
+    return all(periodic) and z_open
+
+
+def _poisson_periodic_xy_isolated_z(
+    gas_density: FIELD_TYPE,
+    grid_spacing: float,
+    config: SimulationConfig,
+    G: Union[float, Float[Array, ""]] = 1.0,
+) -> FIELD_TYPE:
+    """Potential of a density field periodic in x and y and isolated in z.
+
+    FFT in x and y, then for each transverse wavenumber k a 1D free-space
+    convolution in z (zero-padded to twice the length, Hockney & Eastwood)
+    with the Green's function of ``phi'' - k^2 phi = 4 pi G rho``,
+    ``-2 pi G exp(-k |dz|) / k``, integrated over the source cell (the k = 0
+    mode is the slab potential ``2 pi G |dz|``, up to a constant). So a
+    density uniform in x and y gets ``dphi/dz = 2 pi G (Sigma_below -
+    Sigma_above)`` exactly, with no Jeans swindle and no periodic images in z.
+
+    A ghost-padded field (the shape of a state channel inside the time loop)
+    is handled as such: x/y ghost cells are dropped before the transform and
+    refilled periodically afterwards; z ghost cells carry no mass (they lie
+    outside the domain) but get the potential evaluated there, so the
+    gravity source's centred differences at the outermost interior cells see
+    the correct field.
+    """
+    g = config.num_ghost_cells
+    num_cells = config.num_cells
+    padded = gas_density.shape[0] == num_cells.x + 2 * g and g > 0
+    density = gas_density
+    if padded:
+        density = density[g:-g, g:-g, :]
+        density = density.at[:, :, :g].set(0.0).at[:, :, -g:].set(0.0)
+    nx, ny, nz = density.shape
+
+    kx = jnp.fft.fftfreq(nx, d=grid_spacing) * 2 * jnp.pi
+    ky = jnp.fft.fftfreq(ny, d=grid_spacing) * 2 * jnp.pi
+    k = jnp.sqrt(kx[:, None] ** 2 + ky[None, :] ** 2)[:, :, None]
+
+    # z offset (in cells) of each slot of the doubled grid, minimum image
+    m = jnp.arange(2 * nz)
+    m = jnp.where(m < nz, m, 2 * nz - m)[None, None, :]
+    k_safe = jnp.where(k > 0, k, 1.0)
+    half = 0.5 * k_safe * grid_spacing
+    # cell-integrated exp(-k |z - z'|) / k over a source cell of width dx
+    kernel_k = jnp.where(
+        m == 0,
+        2.0 * (1.0 - jnp.exp(-half)),
+        2.0 * jnp.sinh(half) * jnp.exp(-k_safe * m * grid_spacing),
+    ) / k_safe**2
+    kernel_k = -2.0 * jnp.pi * G * kernel_k
+    # k = 0: cell-integrated |z - z'| (|m| dx^2, dx^2 / 4 for the own cell)
+    kernel_0 = 2.0 * jnp.pi * G * grid_spacing**2 * jnp.where(m == 0, 0.25, m.astype(density.dtype))
+    kernel = jnp.where(k > 0, kernel_k, kernel_0)
+
+    density_hat = jnp.fft.fft2(density, axes=(0, 1))
+    density_hat = jnp.pad(density_hat, ((0, 0), (0, 0), (0, nz)))
+    potential_hat = jnp.fft.ifft(
+        jnp.fft.fft(density_hat, axis=2) * jnp.fft.fft(kernel, axis=2), axis=2
+    )[:, :, :nz]
+    potential = jnp.real(jnp.fft.ifft2(potential_hat, axes=(0, 1)))
+
+    if padded:
+        potential = jnp.pad(potential, ((g, g), (g, g), (0, 0)), mode="wrap")
+    return potential
+
+
 # @jaxtyped(typechecker=typechecker)
 @partial(jax.jit, static_argnames=["grid_spacing", "config"])
 def _compute_gravitational_potential(
@@ -177,10 +256,10 @@ def _compute_gravitational_potential(
 
     dimensionality = config.dimensionality
 
-    # The open-boundary branch is only taken when *no* boundary is periodic; a
-    # mix of periodic and non-periodic boundaries is not yet supported, so the
-    # domain is treated as either fully periodic or fully open.
-    # TODO: support mixed boundary conditions.
+    # The open-boundary branch is taken when any boundary is non-periodic. The
+    # one mixed case supported is 3D periodic-x/y with open z (stratified
+    # boxes, _poisson_periodic_xy_isolated_z); other mixes are treated as
+    # fully open.
     non_periodic_boundaries = False
 
     if dimensionality == 1:
@@ -210,6 +289,8 @@ def _compute_gravitational_potential(
 
     if config.gravity_config.poisson_manual_open_boundaries:
         non_periodic_boundaries = True
+    elif dimensionality == 3 and _periodic_xy_open_z(config):
+        return _poisson_periodic_xy_isolated_z(gas_density, grid_spacing, config, G)
 
     # The Jeans swindle: only a meaningful periodic solution exists once the
     # (unphysical) mean density is removed, so subtract it for periodic domains.

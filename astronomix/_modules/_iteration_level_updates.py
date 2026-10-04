@@ -244,6 +244,20 @@ def _iteration_level_continuous_updates(
         else:
             primitive_state = cooled_state
 
+        if config.cooling_config.jeans_pressure_floor:
+            # see CoolingConfig.jeans_pressure_floor
+            rho = primitive_state[registered_variables.density_index]
+            n_jeans = params.cooling_params.jeans_floor_cells
+            p_jeans = (
+                (n_jeans * config.grid_spacing) ** 2
+                * params.gravitational_constant
+                * rho**2
+                / (jnp.pi * params.gamma)
+            )
+            primitive_state = primitive_state.at[registered_variables.pressure_index].set(
+                jnp.maximum(primitive_state[registered_variables.pressure_index], p_jeans)
+            )
+
     if config.sn_driving_config.delayed_cooling:
         cooling_shield = jnp.maximum(cooling_shield - dt, 0.0)
 
