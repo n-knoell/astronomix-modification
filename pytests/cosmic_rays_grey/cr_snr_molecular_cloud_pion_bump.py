@@ -448,7 +448,7 @@ def test_snr_molecular_cloud_pion_bump(
     ax_sed.loglog(PHOTON_ENERGY_EV, PHOTON_ENERGY_EV**2 * maps["sed_pion"], "-", lw=2.5, color="C0", label="pion decay (hadronic)")
     ax_sed.loglog(PHOTON_ENERGY_EV, PHOTON_ENERGY_EV**2 * maps["sed_sync"], "--", lw=1.5, color="C1", label="synchrotron")
     ax_sed.loglog(PHOTON_ENERGY_EV, PHOTON_ENERGY_EV**2 * maps["sed_ic"], "-.", lw=1.5, color="C2", label="inverse Compton (CMB)")
-    ax_sed.axvline(1.35e8, color="grey", ls=":", lw=1, label=r"$m_{\pi^0}/2$")
+    ax_sed.axvline(6.75e7, color="grey", ls=":", lw=1, label=r"$m_{\pi^0}c^2/2$")
     ax_sed.set_xlabel(r"$E_\gamma$ [eV]")
     ax_sed.set_ylabel(r"$E_\gamma^2\,dN/dE\,dt$ [eV/s]")
     ax_sed.set_title("Domain-total multi-wavelength SED")
@@ -472,6 +472,32 @@ def test_snr_molecular_cloud_pion_bump(
     pics_dir.mkdir(exist_ok=True)
     suffix = "" if NUM_CELLS == 256 else f"_{NUM_CELLS}"
     fig.savefig(pics_dir / f"cr_snr_molecular_cloud_pion_bump{suffix}.svg")
+    plt.close(fig)
+
+    # Zoomed SED: the full plot's y-axis spans the (far fainter) leptonic curves
+    # too, which flattens the pion SED into a line; here the y-range is a decade
+    # band around the pion SED, with the 3-30 GeV power-law extrapolation that
+    # Check 2 measures the suppression against.
+    sed_e2_np = np.asarray(sed_e2)
+    peak = float(sed_e2_np.max())
+    naive = float(sed_hi_1) * (np.asarray(PHOTON_ENERGY_EV) / e_hi_1) ** float(slope)
+    fig, ax = plt.subplots(figsize=(6.5, 4.8))
+    ax.loglog(PHOTON_ENERGY_EV, sed_e2_np, "-", lw=2.5, color="C0", label="pion decay (simulation)")
+    ax.loglog(PHOTON_ENERGY_EV, naive, "--", lw=1.2, color="0.4",
+              label="power law fitted at 3–30 GeV, extrapolated")
+    ax.loglog(PHOTON_ENERGY_EV, PHOTON_ENERGY_EV**2 * maps["sed_ic"], "-.", lw=1.2, color="C2",
+              label="inverse Compton (CMB)")
+    ax.axvline(6.75e7, color="grey", ls=":", lw=1, label=r"$m_{\pi^0}c^2/2$")
+    ax.axvspan(e_hi_1, e_hi_2, color="0.9", zorder=0, label="slope-fit range")
+    ax.annotate(f"{100 * suppression:.0f}% below\nextrapolation", xy=(e_lo, float(sed_lo_actual)),
+                xytext=(e_lo * 3, peak * 1e-2), fontsize=8, arrowprops=dict(arrowstyle="->", lw=0.8))
+    ax.set_ylim(peak * 1e-3, peak * 3)
+    ax.set_xlabel(r"$E_\gamma$ [eV]")
+    ax.set_ylabel(r"$E_\gamma^2\,dN/dE\,dt$ [eV/s]")
+    ax.set_title("Domain-total SED: the pion bump")
+    ax.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(pics_dir / f"cr_snr_molecular_cloud_pion_bump_sed_zoom{suffix}.svg")
     plt.close(fig)
 
 

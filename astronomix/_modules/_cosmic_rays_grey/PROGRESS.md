@@ -4,6 +4,51 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Open (2026-10-04): item 15 SED shape and level vs. IC 443 / W44 (proposed fixes, not done)
+
+**Shape.** Item 15's pion SED (`cr_snr_molecular_cloud_pion_bump.py`, assumed `CR_ALPHA = 2.0`,
+`CR_E_CUTOFF_GEV = 1e5`) is flat in `E^2 dN/dE` above a few GeV (3-30 GeV slope +0.12), so its
+"peak at ~158 GeV" is just the top of a plateau near the end of the 20 MeV-500 GeV grid. IC 443 and
+W44 peak at ~1 GeV (Ackermann et al. 2013, Science 339, 807, arXiv:1302.3307, **Fig. 2**). Their
+proton fit (their Eq. 1, smoothly broken power law in *momentum*): s1 = 2.36, s2 = 3.1, p_br = 239
+GeV/c (IC 443); s1 = 2.36, s2 = 3.5, p_br = 22 GeV/c (W44). Only the low-energy pion cutoff is
+currently comparable; the supervisor digest carries this caveat (summary + Sec. 1.5).
+
+Proposed fixes, cheapest first:
+1. **Set `CR_ALPHA = 2.36`** (their s1). One-line change; `proton_spectrum_normalized_to_energy`
+   already takes any alpha.
+   - The SED then falls above the bump, so it peaks at around 1 GeV, roughly where the data does.
+   - The 50 MeV suppression check should still pass, with more margin.
+   - Downside: the high-energy break isn't reproduced. That matters for W44, whose spectrum turns
+     down at about 22 GeV/c.
+2. **Use their broken power law.** Needs a new spectrum shape next to `GreyProtonSpectrum` in
+   `cr_grey_emission.py`.
+   - Can be checked against naima the way item 13 was. Caveat: naima's `BrokenPowerLaw` /
+     `ExponentialCutoffBrokenPowerLaw` have a *sharp* break in *energy*, not Ackermann's smooth
+     break in momentum, so either validate the sharp-break limit against naima or pass naima a
+     `TableModel` of the smooth shape.
+   - Then the SED can be plotted against the IC 443 or W44 points directly. This compares spectral
+     shape only: the setup isn't scaled to either remnant, so the normalisation won't match (below).
+   - Moderate work: a new spectrum function, its normalisation integral, and a naima test.
+3. **Spectrally resolved CRs (Phase E).** The only way to have the spectrum come out of the
+   simulation rather than being assumed. The observed softening is physics a grey model can't
+   produce: escape of high-energy CRs, energy-dependent diffusion into the cloud, and damping in
+   neutral gas (often given as the reason for W44's break).
+
+Fixes 1 and 2 only change emission post-processing, but the script does not cache the final
+simulation state, so either needs a 128^3 rerun (or add state caching first).
+
+**Level.** The SED's y-axis is a domain-total luminosity (eV/s), not an observed flux. Plateau
+~1e45 eV/s (~1.6e33 erg/s) at ~1 GeV, consistent with a hand estimate (E_cr ~4.6e49 erg, pp loss
+time ~7e7 yr / n, ~1/3 to gamma, spread over ~11 e-folds for alpha = 2, cloud boost of a few). The
+remnants' Fig. 2 peaks (~1.2e-10 / 1.6e-10 erg cm^-2 s^-1 at 1.5 / 2.9 kpc) are ~3e34 / ~1.6e35
+erg/s, i.e. ours is ~20x / ~100x lower -- expected: 1 kyr vs ~10 kyr age, a ~10 Msun cloud vs
+~1e3 / 5e3 Msun shocked mass (their n = 20 / 100 cm^-3), alpha = 2 spreading energy over more
+decades, fixed eta = 0.1 and resolution-biased injection. Options: plot E^2 F = L / (4 pi d^2) at
+d = 1.5 kpc so it sits on Ackermann's axes (ours would plateau at ~6e-12 erg cm^-2 s^-1); a setup
+scaled to IC 443 (~1e4 yr, ~1e3 Msun cloud, n ~ 20) needs a much larger box than fits an 11 GB GPU
+at the current resolution.
+
 ## New (2026-10-03): M7 pilot -- Girichidis et al. (2016)-scale stratified box (built, NOT yet run)
 
 **Why:** M5's Girichidis-Fig.-1-style plot shows no dense midplane layer. Main reasons: the box
