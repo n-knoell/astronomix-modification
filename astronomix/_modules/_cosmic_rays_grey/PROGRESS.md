@@ -4,6 +4,30 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Done (2026-10-05): CR diffusion follow-up step 1 (F_z in 2D MHD, bug F1)
+
+DESIGN.md "Open: CR diffusion follow-up (audit 2026-10-05)" is the plan; steps 2-6 are open.
+
+- **Bug F1.** In 2D, `F_cr` had only x/y rows. With an out-of-plane B (`B_z != 0`) the
+  field-aligned flux has a z part, and dropping it every stage made the in-plane parallel
+  transport too small and dt-dependent. Latent: no committed run set `B_z != 0` in 2D (2D MHD has
+  no `v_z`, so `B_z` only comes from the initial condition); M7 is 3D.
+- **Fix.** 2D MHD allocates `F_cr` = (x, y, z). New `cr_grey_transport.cr_flux_rows` gives the
+  allocated rows; `cr_flux_relaxation_update`, `hll._grey_cr_hll_rows` and `_euler_flux` use it.
+  2D hydro keeps two rows; the streaming paths are untouched.
+- **New tests** in `cr_diffusion_rate.py` (written first, failed as intended):
+  - T2e, B tilted 45 deg out of plane: `D_x / (kappa cos^2 phi)` = 1.0701 at `C_cfl` 0.4 / 0.2 /
+    0.1 (N = 128) and 1.0285 at N = 256. Before: 0.344 / 0.233 / 0.165 and 0.115.
+  - T2f, projection only: in-plane wave speed 1.0002 of exact. Before: 0.007 (no wave).
+  - Plots: `pics/cr_diffusion_rate_out_of_plane{,_wave}_test.svg`.
+- **Regression.** Before/after on CPU in float64: the T2 resolution study, T2a, T2d, both item-3
+  runs and a 1D control are bitwise identical. `cr_diffusion_rate.py` 9/9;
+  `cr_divergence_b_preservation` div B 7.6e-15; `cr_mhd_energy_budget` energy 9.098e-14,
+  control 7.509e-14, cavity 0.039 / 0.086 (unchanged from fix step 4).
+- **Also from the audit:** the ~1e-5 relative `e_cr` loss in the diffusion tests is physical
+  `-P_cr div(u)` work (scales exactly with amplitude), not a leak. The M7 `v_red` = 3000 run was
+  stopped at 10.8%; plan step 5 needs a seed baseline first anyway.
+
 ## Done (2026-10-05): CR diffusion fix-plan step 5 (M5/M6/M7 re-runs, RTX 2080 Ti)
 
 Resolutions were chosen so that each run finishes within 8 h on a 2080 Ti:

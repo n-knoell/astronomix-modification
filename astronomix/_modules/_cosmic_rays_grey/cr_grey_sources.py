@@ -35,6 +35,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import (
     pressure_from_e_cr,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_flux_rows,
     magnetic_unit_vector,
     regularized_streaming_sign,
 )
@@ -254,12 +255,7 @@ def cr_flux_relaxation_update(
     else:
         damping_par = 1.0
 
-    f_cr_index = registered_variables.cosmic_ray_flux_index
-    flux_rows = (
-        (f_cr_index,)
-        if config.dimensionality == 1
-        else (f_cr_index.x, f_cr_index.y, f_cr_index.z)[: config.dimensionality]
-    )
+    flux_rows = cr_flux_rows(registered_variables)
 
     if not cr_config.anisotropic_transport:
         for row in flux_rows:
@@ -269,8 +265,10 @@ def cr_flux_relaxation_update(
     kappa_perp = cr_params.perpendicular_diffusion_coefficient
     damping_perp = kappa_perp / (kappa_perp + kappa_step)
 
-    # In 2D, b_hat keeps its z component (B_z is evolved), but F_cr has
-    # only x/y rows: F_z = 0 by construction.
+    # flux_rows is in x/y/z order. 2D MHD carries F_z as well (B_z is
+    # evolved): with B_z != 0 part of the field-aligned flux is F_z, and
+    # dropping it would shrink the in-plane parallel flux every stage
+    # (DESIGN.md "Open: CR diffusion follow-up", F1).
     b_hat = magnetic_unit_vector(magnetic_field, params)
     f_dot_b = sum(primitive_state[row] * b_hat[i] for i, row in enumerate(flux_rows))
     for i, row in enumerate(flux_rows):

@@ -265,7 +265,11 @@ or CR-related.
 
 ## Open: CR diffusion correctness (review 2026-10-04, plan checked and revised 2026-10-04)
 
-Not fixed yet. Found while checking whether the diffusion-only SILCC/Girichidis runs (item 12:
+**Status 2026-10-05:** fix steps 0-4 done; step 5 done except the CWB setups and the M7 `v_red`
+check. An audit of the result found one new bug (2D with out-of-plane B) and revised the
+remaining work: see "Open: CR diffusion follow-up (audit 2026-10-05)" right after this section.
+
+Found while checking whether the diffusion-only SILCC/Girichidis runs (item 12:
 M5, M6, M7) are correct. The first review's numbers were measured on CPU (`jax 0.6.2`,
 `jax_enable_x64`). The plan check reproduced them on GPU in float64 (N = 96 row: 0.618 / 0.349 vs.
 0.616 / 0.345) and added the time-step scans below. The scratch script is
@@ -620,6 +624,238 @@ each land separately, each with step 0's tests as the gate.
    Original spec: **Re-run** item 4, item 9, Phase D, M5, M6 and M7, and redo the diffusion-length
    reasoning in their docstrings. Redo M7's cost argument: there is no dt_relax after step 2, and
    the CFL is set by `v_red/sqrt(3)` after step 4.
+
+## Open: CR diffusion follow-up (audit 2026-10-05)
+
+An audit of fix steps 0-5 against the code, plus two new CPU runs (float64, `JAX_PLATFORMS=cpu`;
+scripts were session scratch, not committed). This section records what the audit verified, a new
+bug, a check of the first follow-up list, and the revised plan.
+
+### Verified, no action needed
+
+- **Placement of the relaxation.** `cr_flux_relaxation_update` runs after each Heun stage
+  (`_evolve_gas_state_unsplit`'s `rhs`, `rk2_ssp` in `_integrators/_explicit_rk.py`). A steady
+  `F_cr = -K grad e_cr` is a fixed point of both stages and hence of their average. This matches
+  T1a/T1c (D independent of dt, also at `nu dt ~ 3`).
+- **Tensor form.** `a = kappa / (kappa + (gamma_cr - 1) v_red^2 dt)` per direction has the exact
+  fixed point `F = -K grad e_cr` in 3D, and the projection limit at `kappa_perp = 0`.
+- **CFL** is `|u| + max(sqrt(c_gas^2 + c_cr^2), v_red sqrt(gamma_cr - 1))`, so the advection
+  speed is included.
+- **Galilean invariance (new run).** 1D, `kappa = 0.02`, `v_red = 8`, uniform gas velocity
+  u = 0 / 1 / 3 (u = 3 is 65% of the CR signal speed): D/kappa = 1.0042 / 1.0051 / 1.0069 at
+  N = 512 (1.016 / 1.019 / 1.026 at N = 256). The bump's centroid follows `u t` to <= 1e-6.
+  Not covered by any committed test.
+- **Total `e_cr` is not conserved in the diffusion tests, and that is physical.** In the 1D
+  T1-type run it drops by 1.06e-5 (relative) by `t_end`, at every N and u, while the gas mass is
+  conserved to 1e-16. At 100x smaller amplitude the drop is exactly 100x smaller (1.06e-7). So it
+  is the `-P_cr div(u)` work done on the gas that the bump's own pressure sets in motion, not a
+  leak.
+- **The Pallas fused FV path** refuses `grey_cosmic_rays` (`_pallas_evolve.py`,
+  `_fv_pallas_evolve_supported`), so it cannot bypass the CR-row flux on >= sm_80 GPUs (H200).
+
+### New bug F1: 2D anisotropic transport with out-of-plane B under-diffuses (fixed 2026-10-05, step 1)
+
+- **Cause.** In 2D, `F_cr` has only x/y rows (`registered_variables.py`, 2D branch). With
+  `B_z != 0`, part of the field-aligned flux has to live in `F_z`. `cr_flux_relaxation_update`
+  drops it every stage, so the effective in-plane factor per stage is `a_par |b_xy|^2`, not the 3D
+  projection.
+  - Fixed point at `kappa_perp = 0`, with `c = |b_xy|^2`:
+    `kappa_eff = kappa c s dt / (kappa (1 - c) + s dt)`, where `s = (gamma_cr - 1) v_red^2`.
+  - So it is exact only in the stiff limit, and goes to 0 as dt -> 0.
+- **Measured (new run).** 2D MHD, `b = (cos 45, 0, sin 45)`, `kappa = 0.02`, `v_red = 8`, the T2
+  bump. The exact `D_x` is `kappa b_x^2 = 0.5 kappa`.
+
+  | run | `D_x / kappa` |
+  |---|---|
+  | N = 128, `C_cfl` = 0.4 / 0.2 / 0.1 | 0.172 / 0.117 / 0.082 |
+  | N = 256, `C_cfl` = 0.2 | 0.058 |
+
+  This is 3-9x too small, depends on dt again, and gets worse under refinement. The formula above
+  predicts 0.13 at N = 128, `C_cfl` = 0.2.
+- **Projection-only mode** (`anisotropic_transport` without `diffusive_relaxation`, item 3) has
+  the same defect. There `F_xy` shrinks by `|b_xy|^2` per stage instead of propagating at
+  `|b_xy| v_red sqrt(gamma_cr - 1)`.
+- **Exposure.** Latent. 2D MHD here has no `v_z` (`velocity_index = (1, 2, -1)`), so `B_z` is only
+  advected and is nonzero only if an initial condition sets it. Item 3 and T2 set only
+  `B_x`/`B_y`; `cr_mhd_energy_budget.py`, `cr_divergence_b_preservation.py` and M7 are 3D. No
+  committed result is affected.
+
+### Check of the first follow-up list (audit reply, 2026-10-05)
+
+| proposed | verdict | why |
+|---|---|---|
+| 1. Fix *or guard* F1 | fix only | `B_z` is state, not config, so `finalize_config` cannot see it. A config guard would forbid every 2D anisotropic run (T2, item 3). A runtime check inside jit cannot raise. |
+| 2. Ring test (Sharma & Hammett 2007) | right test, wrong gates | (a) "no new extrema" is not a valid gate for a two-moment (telegrapher) scheme, which need not satisfy a maximum principle at sub-mean-free-path scales; positivity is the valid gate. (b) The `minimum_e_cr = 1e-10` clamp in `_iteration_level_updates.py` hides negative values, so the background must sit well above the clamp. (c) A leakage fraction alone does not translate to M7: calibrate it as an equivalent `kappa_perp`, at M7's mean free path in cells. |
+| 3. M7 `v_red` = 3000 km/s run (launched 2026-10-05) | cannot answer the question alone | SN events are per-step Bernoulli trials with a per-step key split (`sn_driving.py`, `_inject_supernovae`). `v_red` changes the CFL, hence the dt sequence, hence the SN realization. A difference to the `v_red` = 1000 run mixes `v_red` with realization noise. M7 has no `--seed` option, so the noise cannot be estimated. |
+| 4. Write M7's effective `kappa_perp` into its docstring from T2c (`D_perp,num ~ 0.008 v_red dx`) | premature | T2c is a straight uniform field, a smooth bump (13-17 cells per sigma) and `kappa / (v_red dx)` = 0.64. Carrying that to M7's tangled field at unknown structure resolution is the weakest link of the audit. Measure in M7's own field instead (step 4 below). |
+| missing | add | No test runs the 3D tensor path that M7 uses (all T2 runs are 2D). |
+
+### Revised plan
+
+Order: steps 1-3 are cheap and independent of M7. Step 4 needs step 3's convergence order. Step
+5a can run any time; 5b needs GPU hours. Step 6 closes the section. Test first, as before: each
+new test is committed failing (or as a measurement), with the before-fix numbers in its
+docstring.
+
+1. **F1: carry `F_z` in 2D MHD -- done 2026-10-05.**
+   - **Test first, T2e** (`cr_diffusion_rate.py`): the F1 setup above.
+     - Gates: `|D_x / (kappa b_x^2) - 1| < 0.05` at N = 256; spread over `C_cfl` 0.4-0.1
+       below 2%; `D_y / kappa < 1e-3` (y is perpendicular to B).
+     - Before-fix values: the table above.
+     - Also a projection-only case without `diffusive_relaxation`: the front speed of a narrow
+       bump along x must be `|b_x| v_red sqrt(gamma_cr - 1)` (within 5%, N = 256).
+   - **Code.**
+     - `registered_variables.py`: in 2D with `config.mhd` and grey CRs, allocate a third `F_cr`
+       row (`StaticIntVector(base, base + 1, base + 2)`). Keep two rows in 2D without MHD, where
+       `F_z` has no drive and no coupling.
+     - Every enumeration of `F_cr` rows that slices `[: config.dimensionality]` must take all
+       allocated rows instead: `cr_grey_sources.cr_flux_relaxation_update` and
+       `hll._grey_cr_hll_rows`. `F_z` then gets the passive advective flux and a zero closure
+       flux, like the transverse components in 3D.
+     - `_fluid_equations/_fluxes.py`'s 2D branch: also copy the z row.
+     - Leave the streaming paths (`cr_grey_transport.streaming_flux_target`,
+       `_iteration_level_updates.py`) alone; the streaming rewrite replaces them.
+     - `_split_gas_and_magnetic_state` shifts rows generically. Verify it, don't assume.
+   - **Gate.**
+     - T2e passes.
+     - With `B_z = 0`, `F_z` stays exactly 0. So T2a-d, item 3 oblique and item 4 must
+       reproduce their pre-fix values to <= 1e-12 relative (float64). This is a strong check
+       that nothing else moved.
+     - Every 2D grey-CR pytest passes.
+   - **Cost:** about an hour of code, plus the 2D test suite.
+   - **Result.**
+     - Code: 2D MHD allocates `F_cr` = (x, y, z) (`registered_variables.py`). New
+       `cr_grey_transport.cr_flux_rows(registered_variables)` returns the allocated rows in
+       x/y/z order; `cr_flux_relaxation_update`, `hll._grey_cr_hll_rows` and `_euler_flux`
+       loop over it instead of slicing by dimensionality. `F_z` gets the advective flux,
+       zero closure flux (no z gradients) and the relaxation/projection. 2D hydro keeps two
+       rows; the streaming paths are untouched. The MHD split's row shift needed no change
+       (checked: 2D MHD rows 8/9/10 -> 5/6/7 in the gas-only state).
+     - T2e (new): `D_x / (kappa cos^2 phi)` = 1.0701 at all three `C_cfl` (N = 128; was
+       0.344 / 0.233 / 0.165) and 1.0285 at N = 256 (was 0.115); `D_y / kappa` = 9.8e-5
+       (the bump's own gas advection, as in T2c).
+     - T2f (new, projection only): in-plane wave speed 1.0002 of `v_red sqrt(gamma_cr - 1)
+       cos phi` (was 0.007, i.e. no wave).
+     - Regression (CPU, float64, before vs. after): the full T2 resolution study (3 angles x
+       N = 64/128/256), T2a, T2d, both item-3 runs and a 1D control are **bitwise
+       identical**. `cr_diffusion_rate.py` 9/9. `cr_divergence_b_preservation`: div B
+       7.6e-15 with anisotropic CRs. `cr_mhd_energy_budget` (3D, GPU) passes: energy 9.098e-14 (anisotropic), 8.989e-14
+       (isotropic), 7.509e-14 (CR-off control), mass 2.4e-15; CR cavity 0.039 / 0.086 along /
+       across B, all as after fix step 4 (3D row layout unchanged).
+
+2. **3D tensor check, T3** (`cr_diffusion_rate.py`, new measurement test). It covers the code
+   path M7 runs.
+   - **Setup.** 3D MHD periodic box, the T2 bump with `sigma0 = 0.1` (0.05 is 1.6 cells at
+     N = 32), `kappa = 0.02`, `v_red = 8`, N = 32 / 64 / 128, `C_cfl` = 0.2.
+     - D along b, and the mean of the two perpendicular directions, from the second-moment
+       tensor (perpendicular = `(trace - b . M . b) / 2`).
+   - **Gates.**
+     - In-plane `b = (cos 30, sin 30, 0)`: `D_par` and in-plane `D_perp` agree with 2D T2 at the
+       same N within 1% of kappa. In-plane they are the same scheme; the limiters make it not
+       bit-identical.
+     - Oblique `b = (1, 1, 1) / sqrt(3)`: `|D_par / kappa - 1|` decreasing and < 0.1 at N = 128;
+       `D_perp` decreasing.
+     - Report `D_perp,num / (v_red dx)` next to T2c's 45 deg value.
+   - **Cost:** minutes on one GPU.
+
+3. **Curved-field ring test** (new `pytests/cosmic_rays_grey/cr_anisotropic_ring.py`). Verify
+   the exact setup against Sharma & Hammett (2007, JCP 227, 123, Sec. 4) and Parrish & Quataert
+   (2005) before coding.
+   - **Setup.**
+     - Box `[-1, 1]^2`, periodic; static uniform gas (`rho = P = 1`); circular B,
+       `B = B0 (-y, x) / r` with `B0 = 1e-4`. The tension `B0^2 / r ~ 1e-8` keeps the gas
+       static; verify `max |u|` stays below `1e-3 v_red`.
+     - `e_cr` = background `e_b` plus `Delta e` in the sharp-edged patch `0.5 < r < 0.7`,
+       `|theta - pi| < pi/12`. Use `Delta e = 1e-4` and `e_b = 1e-6`: the background sits far
+       above the 1e-10 clamp, so any negative excursion deeper than 1% of `Delta e` is visible.
+     - `kappa_par = 0.01`, `v_red = 0.64`. The mean free path
+       `kappa / (v_red sqrt(gamma_cr - 1))` is then 1.7 cells at N = 128, the same as M7
+       (56 pc at 33.3 pc), and `kappa / (v_red dx)` is about 1, like M7.
+     - N = 64 / 128 / 256, `t_end = 20` (arc diffusion length about 0.63, before the patch wraps
+       around the ring).
+   - **Measurements.**
+     - Leakage: the fraction of the excess outside the annulus at `t_end`.
+     - `D_par / kappa_par` from the excess-weighted arc-length variance (window
+       `t >= t_end / 3`).
+     - Undershoot: `(e_b - min e_cr) / Delta e`.
+   - **Calibration to an equivalent `kappa_perp`.** Repeat at `kappa_perp / kappa_par` = 3e-3 /
+     1e-2 / 3e-2. Leakage against `kappa_perp` is nearly linear. Extrapolate the
+     `kappa_perp = 0` leakage onto that line to get `kappa_perp,num` at each N. Compare it with
+     0.01 `kappa_par`, which is M7's ratio (1e26 / 1e28).
+   - **Gates.**
+     - `min e_cr > 0` (positivity).
+     - `kappa_perp,num` decreasing with N; measure the order, needed in step 4.
+     - `|D_par / kappa_par - 1| < 0.1` at N = 256.
+     - Report, don't gate, the undershoot and `kappa_perp,num / kappa_par` at N = 128.
+   - **Cost:** 2D, at most ~6000 steps per run, 12 runs: under an hour.
+
+4. **M7 frozen-field probe.** Measures what M7's `kappa_perp` claim needs, in M7's own
+   field: is the `kappa_perp = 1e26` effect larger than the transport discretization error at
+   33.3 pc?
+   - **Setup.**
+     - B from `/export/scratch/nknoell/m7_pilot_data_both_mhd_sg_150.npz`
+       (`snap_magnetic_{x,y,z}`, 26 snapshots). Use 3 of them: an early one with ordered field
+       and two tangled ones, e.g. 50 / 150 / 250 Myr.
+     - Scale B so that `B^2 / 2 << P`, which keeps `b_hat` and removes Lorentz forces. Uniform
+       static gas.
+     - About 8 tiny-amplitude `e_cr` blobs at disc heights (`|z| < 300 pc`), each the size of
+       M7's SN injection radius (`sn_injection_radius_pc` in the npz).
+     - M7's `kappa_par = 1e28`, `v_red = 1000`, dx = 33.3 pc, 1 and 3 Myr. That is ~45 / 130
+       steps at `dt ~ 0.023 Myr`.
+   - **Runs.**
+     - `kappa_perp` in {0, 1e26} at the M7 grid.
+     - `kappa_perp = 0` at 2x resolution, with B upsampled (static gas: no induction, and the
+       small `div B` from interpolation only enters the negligible scaled Lorentz force). At 2x
+       (120 x 120 x 300, float64) the full box may not fit 11 GB: use float32 (the probe
+       measures percent-level effects) or the central 1 x 1 x 2 kpc.
+   - **Metrics.** Excess-weighted vertical variance growth `D_zz`, and the CR energy fraction above
+     |z| = 300 / 500 pc.
+     - Physical signal: `S = D_zz(kappa_perp = 1e26) - D_zz(0)` at the M7 grid.
+     - Discretization error: `E = D_zz(N) - D_zz(2N)` at `kappa_perp = 0`. This is about 3/4
+       of the error at N if the order is 2; take the order from step 3.
+   - **Decision.**
+     - `|E| < 0.3 |S|`: M7 resolves `kappa_perp`, and its docstring may keep claiming the paper's
+       value.
+     - Otherwise: the docstring states that M7's cross-field transport is set by resolution, with
+       the measured `E / S` per snapshot.
+   - **Cost:** under an hour of GPU time.
+
+5. **`v_red` convergence for M7.**
+   - **5a, deterministic** (do first). The step-4 probe at `v_red` = 1000 / 3000 / 10000 (dt
+     ∝ 1 / `v_red`, ≤ 1300 steps for 3 Myr), plus an absolute reference.
+     - The reference is a single CR deposit in a uniform periodic 3D box at M7's dx,
+       `kappa = 1e28` isotropic, against the exact spectral solution of the same discrete
+       initial data, `e(k, t) = e(k, 0) exp(-kappa k^2 t)` (FFT).
+     - Report L1 errors and the energy fraction beyond 100 / 300 pc at 0.03 / 0.1 / 0.3 / 1 /
+       3 Myr.
+     - The relevant scales: at `v_red` = 1000, the mean free path is 56 pc, `1 / nu` is
+       0.095 Myr, and transport is capped at 577 km/s. At 3000: 19 pc, 0.011 Myr.
+     - Decision: the smallest `v_red` whose error is below the dx error (the `v_red -> inf` limit
+       at fixed dx) is converged for transport.
+   - **5b, full M7** (only if 5a shows a non-negligible `v_red` effect, or for the report).
+     - Add `--seed` to `m7_girichidis_pilot.py` (`config.random_seed`, default 42).
+     - Run `v_red` = 1000 with seed 43, about 3.4 h at `--res=0.9375`. The seed 42 / seed 43
+       difference on z70 / z90 / eta(1 kpc) / H_gas / the `P_cr(z)` profile is the
+       realization scatter.
+     - The `v_red` = 3000 run (seed 42, launched 2026-10-05) is significant only where it
+       differs from `v_red` = 1000 by more than that scatter. Two seeds give a crude scatter
+       estimate; say so.
+     - Deterministic alternative for all future M7 A/B comparisons: log the SN x/y too (the log
+       has only t, z, n_H, thermal) and add an SN replay mode. More work; worth it if more
+       M7 A/B comparisons follow (kappa_perp, resolution).
+
+6. **Documentation.**
+   - M7 docstring: the step-4 verdict on `kappa_perp` and the step-5 verdict on `v_red`.
+   - M5 docstring: the `v_red = 300 km/s` rationale still cites the removed explicit bound.
+     Replace it with the transport argument: mean free path
+     `kappa / (v_red sqrt(gamma_cr - 1))` = 1.9 pc for `kappa = 1e26`, compared with M5's dx;
+     the CFL now uses 173 km/s.
+   - The T2 docstrings: B is in-plane in every T2 case, which is what made F1 invisible.
+   - PROGRESS.md entry per step, and close this section and "Open: CR diffusion correctness".
+
+**Out of scope here:** the CWB setups (no diffusion configured, so CR transport there is set by
+`v_red` alone; choosing their transport belongs with the streaming plan below) and the streaming
+fix plan itself.
 
 ## Resolved: streaming transport and streaming heating (ladder item 5)
 

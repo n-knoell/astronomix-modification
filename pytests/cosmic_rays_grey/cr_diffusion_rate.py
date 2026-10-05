@@ -105,6 +105,9 @@ RESOLUTIONS_2D = (64, 128, 256)
 
 PERP_PARAM = "perpendicular_diffusion_coefficient"
 
+# T2e/T2f: B tilted out of the plane (follow-up step 1, DESIGN.md F1).
+OUT_OF_PLANE_DEG = 45.0
+
 
 @lru_cache(maxsize=None)
 def _measure_diffusivity(
@@ -115,13 +118,46 @@ def _measure_diffusivity(
     t_end: float,
     theta_deg: float = 0.0,
     kappa_perp: float = 0.0,
+    phi_deg: float = 0.0,
 ):
     """Run one bump and return ``(D_par, D_perp, num_iterations)``.
 
-    1D: ``D_perp`` is NaN. 2D: MHD with uniform B at ``theta_deg``,
-    ``anisotropic_transport=True``; ``D_par``/``D_perp`` are measured along
-    and across B. ``kappa_perp > 0`` sets ``perpendicular_diffusion_coefficient``
+    1D: ``D_perp`` is NaN. 2D: MHD with uniform B at ``theta_deg`` in the
+    plane, tilted out of it by ``phi_deg``, ``anisotropic_transport=True``;
+    ``D_par``/``D_perp`` are measured along and across the in-plane direction
+    ``theta_deg``. ``kappa_perp > 0`` sets ``perpendicular_diffusion_coefficient``
     (fix step 3).
+    """
+    times, var_par, var_perp, num_iterations = _bump_moments(
+        dimensionality, num_cells, kappa, c_cfl, t_end, theta_deg, kappa_perp, phi_deg
+    )
+    window = times >= t_end / 3.0
+    d_par = 0.5 * np.polyfit(times[window], var_par[window], 1)[0]
+    d_perp = (
+        0.5 * np.polyfit(times[window], var_perp[window], 1)[0]
+        if dimensionality == 2
+        else float("nan")
+    )
+    return float(d_par), float(d_perp), num_iterations
+
+
+@lru_cache(maxsize=None)
+def _bump_moments(
+    dimensionality: int,
+    num_cells: int,
+    kappa: float,
+    c_cfl: float,
+    t_end: float,
+    theta_deg: float = 0.0,
+    kappa_perp: float = 0.0,
+    phi_deg: float = 0.0,
+    diffusive_relaxation: bool = True,
+):
+    """Run one bump and return ``(times, var_par, var_perp, num_iterations)``,
+    the ``e_cr``-weighted second moments at every snapshot (see
+    :func:`_measure_diffusivity` for the geometry). ``var_perp`` is empty in
+    1D. ``diffusive_relaxation=False`` gives the undamped two-moment wave
+    (only the B-projection acts, ladder item 3).
     """
     periodic = BoundarySettings1D(
         left_boundary=PERIODIC_BOUNDARY, right_boundary=PERIODIC_BOUNDARY
@@ -141,7 +177,7 @@ def _measure_diffusivity(
         snapshot_settings=SnapshotSettings(return_states=True),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
             grey_cosmic_rays=True,
-            diffusive_relaxation=True,
+            diffusive_relaxation=diffusive_relaxation,
             anisotropic_transport=dimensionality == 2,
         ),
     )
@@ -149,6 +185,7 @@ def _measure_diffusivity(
     helper_data = get_helper_data(config)
 
     theta = np.deg2rad(theta_deg)
+    phi = np.deg2rad(phi_deg)
     shape = (num_cells,) * dimensionality
     primitive_state = jnp.zeros((registered_variables.num_vars,) + shape)
     primitive_state = primitive_state.at[registered_variables.density_index].set(1.0)
@@ -161,8 +198,9 @@ def _measure_diffusivity(
         y = np.asarray(helper_data.geometric_centers[..., 1])
         r2 = (x - 0.5) ** 2 + (y - 0.5) ** 2
         b_index = registered_variables.magnetic_index
-        primitive_state = primitive_state.at[b_index.x].set(np.cos(theta))
-        primitive_state = primitive_state.at[b_index.y].set(np.sin(theta))
+        primitive_state = primitive_state.at[b_index.x].set(np.cos(phi) * np.cos(theta))
+        primitive_state = primitive_state.at[b_index.y].set(np.cos(phi) * np.sin(theta))
+        primitive_state = primitive_state.at[b_index.z].set(np.sin(phi))
     primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(
         AMP * jnp.exp(-0.5 * r2 / SIGMA0**2)
     )
@@ -208,14 +246,7 @@ def _measure_diffusivity(
             var_par.append((w * s_par**2).sum())
             var_perp.append((w * s_perp**2).sum())
 
-    window = times >= t_end / 3.0
-    d_par = 0.5 * np.polyfit(times[window], np.array(var_par)[window], 1)[0]
-    d_perp = (
-        0.5 * np.polyfit(times[window], np.array(var_perp)[window], 1)[0]
-        if dimensionality == 2
-        else float("nan")
-    )
-    return float(d_par), float(d_perp), int(snapshots.num_iterations)
+    return times, np.array(var_par), np.array(var_perp), int(snapshots.num_iterations)
 
 
 def _save(fig, name):
@@ -509,6 +540,130 @@ def test_cr_anisotropic_kappa_perp(
     )
 
 
+def test_cr_anisotropic_out_of_plane_b(
+    resolutions: tuple = (128, 256),
+    c_cfl_values: tuple = (0.4, 0.2, 0.1),
+    phi_deg: float = OUT_OF_PLANE_DEG,
+    tol: float = 0.05,
+    spread_tol: float = 0.02,
+    perp_tol: float = 1e-3,
+):
+    """T2e: B tilted out of the plane by ``phi``, ``kappa_perp = 0``.
+
+    With ``b = (cos phi, 0, sin phi)`` and no z gradients, the in-plane
+    diffusivity along x is ``kappa cos^2(phi)`` (``0.5 kappa`` at 45 deg),
+    and nothing moves along y. That needs the ``F_z`` component of the
+    field-aligned flux: with only x/y ``F_cr`` rows in 2D, the per-stage
+    update drops ``F_z`` and the in-plane factor becomes ``a_par cos^2(phi)``,
+    which is right only in the stiff limit and goes to 0 as dt -> 0
+    (DESIGN.md "Open: CR diffusion follow-up", F1, fix step 1). Every other
+    T2 case has ``B_z = 0`` and cannot see this.
+
+    Before the fix (2026-10-05), ``D_x / (kappa cos^2 phi)`` was 0.344 / 0.233
+    / 0.165 at ``C_cfl`` = 0.4 / 0.2 / 0.1 (N = 128) and 0.115 at N = 256
+    (``C_cfl`` = 0.2): 3-9x too small, dt-dependent, worse under refinement.
+    ``D_y / kappa`` was 1e-4.
+
+    Args:
+        resolutions: Coarse resolution (``C_cfl`` scan) and fine one (gate).
+        c_cfl_values: The CFL numbers scanned at the coarse resolution.
+        phi_deg: Out-of-plane tilt of B.
+        tol: Maximum ``|D_x / (kappa cos^2 phi) - 1|`` at the fine resolution.
+        spread_tol: Maximum relative spread of ``D_x`` over the scan.
+        perp_tol: Maximum ``D_y / kappa`` at the fine resolution.
+    """
+    target = KAPPA_2D * np.cos(np.deg2rad(phi_deg)) ** 2
+    scan = [
+        _measure_diffusivity(2, resolutions[0], KAPPA_2D, c, T_END_2D, 0.0, 0.0, phi_deg)[0]
+        / target
+        for c in c_cfl_values
+    ]
+    d_x, d_y, _ = _measure_diffusivity(
+        2, resolutions[-1], KAPPA_2D, 0.2, T_END_2D, 0.0, 0.0, phi_deg
+    )
+    ratio, spread = d_x / target, (max(scan) - min(scan)) / scan[-1]
+    print(f"T2e: N = {resolutions[0]}, C_cfl {c_cfl_values} -> D_x / target "
+          f"{[round(r, 4) for r in scan]}; N = {resolutions[-1]}: {ratio:.4f}, "
+          f"D_y / kappa {d_y / KAPPA_2D:.2e}")
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    ax.plot(c_cfl_values, scan, "o-", color="C0", label=f"N = {resolutions[0]}")
+    ax.plot([0.2], [ratio], "s", color="C1", label=f"N = {resolutions[-1]}")
+    ax.axhline(1.0, color="black", lw=1, label="target kappa cos^2(phi)")
+    ax.set_xlabel("C_cfl")
+    ax.set_ylabel("D_x / (kappa cos^2 phi)")
+    ax.set_title(f"T2e: B tilted {phi_deg:g} deg out of plane")
+    ax.legend()
+    _save(fig, "cr_diffusion_rate_out_of_plane_test.svg")
+
+    assert abs(ratio - 1.0) < tol, (
+        f"D_x = {ratio:.4f} kappa cos^2(phi) at N = {resolutions[-1]}, expected 1 "
+        f"within {tol}: the field-aligned flux loses its F_z part (fix step 1)."
+    )
+    assert spread < spread_tol, (
+        f"D_x depends on the time step: relative spread {spread:.4f} over "
+        f"C_cfl = {c_cfl_values} ({scan})."
+    )
+    assert d_y / KAPPA_2D < perp_tol, f"D_y / kappa = {d_y / KAPPA_2D:.2e} >= {perp_tol}."
+
+
+def test_cr_anisotropic_out_of_plane_wave_speed(
+    num_cells: int = 256,
+    phi_deg: float = OUT_OF_PLANE_DEG,
+    c_cfl: float = 0.2,
+    t_end: float = 0.08,
+    tol: float = 0.05,
+):
+    """T2f: projection only (no ``diffusive_relaxation``), B tilted out of
+    the plane: the undamped CR wave along x runs at
+    ``v_red sqrt(gamma_cr - 1) cos(phi)``.
+
+    With ``F_cr`` along ``b = (cos phi, 0, sin phi)`` and no z gradients, the
+    flux component ``F_b = F . b`` obeys a 1D wave equation along x with that
+    speed, so the bump splits into two pulses and ``var_x(t) - var_x(0) =
+    c^2 t^2`` (plus ``2 D_num t`` from the Riemann dissipation, fitted
+    alongside). Dropping ``F_z`` (F1) shrinks ``F_x`` by ``cos^2 phi`` every
+    stage instead.
+
+    Before the fix (2026-10-05): ``c_fit / c`` = 0.007, i.e. no wave at all:
+    the bump only diffused (fitted ``D_num`` = 1.3e-3).
+
+    Args:
+        num_cells: The resolution.
+        phi_deg: Out-of-plane tilt of B.
+        c_cfl: The CFL number.
+        t_end: End time; the pulses travel ``c t_end`` = 0.26 (no wrap-around).
+        tol: Maximum ``|c_fit / c - 1|``.
+    """
+    times, var_par, _, _ = _bump_moments(
+        2, num_cells, KAPPA_2D, c_cfl, t_end, 0.0, 0.0, phi_deg, False
+    )
+    growth = var_par - var_par[0]
+    (c2, two_d_num), *_ = np.linalg.lstsq(
+        np.stack([times**2, times], axis=1), growth, rcond=None
+    )
+    c_fit = np.sqrt(max(c2, 0.0))
+    c_exact = REDUCED_STREAMING_SPEED * np.sqrt(GAMMA_CR - 1.0) * np.cos(np.deg2rad(phi_deg))
+    print(f"T2f: c_fit / c = {c_fit / c_exact:.4f} (c = {c_exact:.4f}), "
+          f"D_num = {0.5 * two_d_num:.2e}")
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    ax.plot(times, growth, "o", color="C0", label="measured")
+    ax.plot(times, c2 * times**2 + two_d_num * times, "-", color="C0", label="fit c^2 t^2 + 2 D t")
+    ax.plot(times, c_exact**2 * times**2, "--", color="black", label="exact c^2 t^2")
+    ax.set_xlabel("t")
+    ax.set_ylabel("var_x(t) - var_x(0)")
+    ax.set_title(f"T2f: projection-only wave, B tilted {phi_deg:g} deg")
+    ax.legend()
+    _save(fig, "cr_diffusion_rate_out_of_plane_wave_test.svg")
+
+    assert abs(c_fit / c_exact - 1.0) < tol, (
+        f"In-plane CR wave speed {c_fit:.4f} vs. {c_exact:.4f} "
+        f"(v_red sqrt(gamma_cr - 1) cos phi): the field-aligned flux loses its "
+        f"F_z part (fix step 1)."
+    )
+
+
 def _plot_anisotropic(study):
     fig, (ax_par, ax_perp) = plt.subplots(1, 2, figsize=(11, 4.5))
     for i, (theta, rows) in enumerate(study.items()):
@@ -537,6 +692,8 @@ if __name__ == "__main__":
         test_cr_anisotropic_parallel_rate,
         test_cr_anisotropic_perpendicular_numerical,
         test_cr_anisotropic_kappa_perp,
+        test_cr_anisotropic_out_of_plane_b,
+        test_cr_anisotropic_out_of_plane_wave_speed,
     )
     failed = []
     for test in tests:

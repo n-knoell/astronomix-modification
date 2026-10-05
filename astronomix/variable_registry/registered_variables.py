@@ -211,7 +211,8 @@ def get_registered_variables(config: SimulationConfig) -> RegisteredVariables:
 
         # NOTE: CURRENTLY ONLY IMPLEMENTED FOR FINITE VOLUME MODE. e_cr is a
         # scalar; F_cr has one component per spatial dimension, allocated the
-        # same way velocity_index is above.
+        # same way velocity_index is above -- except in 2D MHD, which gets a
+        # z component too (see the 2D branch).
         if config.cosmic_ray_grey_config.grey_cosmic_rays:
             registered_variables = registered_variables._replace(
                 cosmic_ray_e_index=registered_variables.num_vars
@@ -228,6 +229,20 @@ def get_registered_variables(config: SimulationConfig) -> RegisteredVariables:
                 )
                 registered_variables = registered_variables._replace(
                     num_vars=registered_variables.num_vars + 1
+                )
+            elif config.dimensionality == 2 and config.mhd:
+                # B_z is evolved in 2D MHD, so a field-aligned F_cr has a z
+                # component. F_z has no in-plane divergence (no z gradients)
+                # but takes part in the anisotropic F_cr update; without it
+                # the in-plane parallel transport is too small and depends
+                # on dt (DESIGN.md "Open: CR diffusion follow-up", F1).
+                registered_variables = registered_variables._replace(
+                    cosmic_ray_flux_index=StaticIntVector(
+                        flux_base, flux_base + 1, flux_base + 2
+                    )
+                )
+                registered_variables = registered_variables._replace(
+                    num_vars=registered_variables.num_vars + 3
                 )
             elif config.dimensionality == 2:
                 registered_variables = registered_variables._replace(

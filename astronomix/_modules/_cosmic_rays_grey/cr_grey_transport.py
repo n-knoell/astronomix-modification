@@ -166,6 +166,25 @@ def grey_cr_flux_terms(
     return flux_vector
 
 
+def cr_flux_rows(registered_variables: RegisteredVariables) -> tuple:
+    """The allocated ``F_cr`` state rows, in x/y/z order.
+
+    One row in 1D, x/y in 2D hydro, x/y/z in 2D MHD and 3D (2D MHD carries
+    ``F_z`` for field-aligned transport with ``B_z != 0``, see
+    ``registered_variables.py``). Every loop over the ``F_cr`` rows should use
+    this rather than slicing by ``config.dimensionality``.
+
+    Args:
+        registered_variables: The registered variables.
+
+    Returns:
+        The row indices.
+    """
+    f_cr_index = registered_variables.cosmic_ray_flux_index
+    rows = (f_cr_index,) if isinstance(f_cr_index, int) else tuple(f_cr_index)
+    return tuple(row for row in rows if row >= 0)
+
+
 @partial(jax.jit, static_argnames=["registered_variables"])
 def cr_pressure_coupling_speed(
     primitive_state: STATE_TYPE,

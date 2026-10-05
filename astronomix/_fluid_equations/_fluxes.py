@@ -26,7 +26,10 @@ from astronomix.option_classes.simulation_params import SimulationParams
 from astronomix.variable_registry.registered_variables import AxisInfo, RegisteredVariables
 
 # astronomix functions
-from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_flux_terms
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_flux_rows,
+    grey_cr_flux_terms,
+)
 from astronomix._fluid_equations._equations import (
     get_absolute_velocity,
     total_energy_from_primitives,
@@ -119,29 +122,9 @@ def _euler_flux(
         cr_flux = grey_cr_flux_terms(
             primitive_state, gamma, config, params, registered_variables, flux_direction_index
         )
-        flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].set(
-            cr_flux[registered_variables.cosmic_ray_e_index]
-        )
-        if config.dimensionality == 1:
-            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index].set(
-                cr_flux[registered_variables.cosmic_ray_flux_index]
-            )
-        elif config.dimensionality == 2:
-            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.x].set(
-                cr_flux[registered_variables.cosmic_ray_flux_index.x]
-            )
-            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.y].set(
-                cr_flux[registered_variables.cosmic_ray_flux_index.y]
-            )
-        elif config.dimensionality == 3:
-            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.x].set(
-                cr_flux[registered_variables.cosmic_ray_flux_index.x]
-            )
-            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.y].set(
-                cr_flux[registered_variables.cosmic_ray_flux_index.y]
-            )
-            flux_vector = flux_vector.at[registered_variables.cosmic_ray_flux_index.z].set(
-                cr_flux[registered_variables.cosmic_ray_flux_index.z]
-            )
+        for row in (registered_variables.cosmic_ray_e_index,) + cr_flux_rows(
+            registered_variables
+        ):
+            flux_vector = flux_vector.at[row].set(cr_flux[row])
 
     return flux_vector

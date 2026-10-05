@@ -55,7 +55,7 @@ Usage::
 
     python m7_girichidis_pilot.py [both|thermal|cr] [--setup-only] [--res=F] [--t-end-myr=T] [--snapshots=N] [--sn-radius-pc=R] [--out-dir=DIR]
         [--no-mhd] [--no-self-gravity] [--no-jeans-floor] [--mhd-tolerance=double|single]
-        [--half-height-kpc=H] [--kappa-perp-cgs=K]
+        [--half-height-kpc=H] [--kappa-perp-cgs=K] [--v-red-kms=V]
 
 ``both`` (default) is their "thermal + CR" run (1e51 erg thermal + 1e50 erg CR
 per SN), ``thermal`` their thermal-only run (no CR transport at all, as in the
@@ -276,9 +276,12 @@ DX = L_XY / N_XY
 assert abs(L_Z / N_Z - DX) < 1e-12
 NUM_SNAPSHOTS = int(_OPTS.get("snapshots", 26))  # default: every 10 Myr
 T_END = float(_OPTS.get("t-end-myr", 250.0)) * MYR_CODE
+# Reduced speed of light of the CR closure (decision 2); --v-red-kms changes it.
+V_RED_KMS = float(_OPTS.get("v-red-kms", 1000.0))
 OUT_SUFFIX = (f"_{MODE}{'_mhd' if MHD else ''}{'_sg' if SELF_GRAVITY else ''}"
               f"{'_nojeans' if SELF_GRAVITY and not JEANS_FLOOR else ''}"
-              f"{f'_z{HALF_HEIGHT_KPC:g}kpc' if HALF_HEIGHT_KPC != 2.5 else ''}_{N_Z}")
+              f"{f'_z{HALF_HEIGHT_KPC:g}kpc' if HALF_HEIGHT_KPC != 2.5 else ''}"
+              f"{f'_vred{V_RED_KMS:g}' if V_RED_KMS != 1000.0 else ''}_{N_Z}")
 OUT_DIR = Path(_OPTS.get("out-dir", "/export/scratch/nknoell"))
 
 # ---- disc: Sigma = 10 Msun/pc^2, Gaussian with scale height 60 pc ----
@@ -333,7 +336,7 @@ KAPPA_CODE = _code(1e28 * u.cm**2 / u.s, CODE_UNITS.code_length**2 / CODE_TIME)
 # Across B (MHD only; Girichidis et al. 2016). 0 confines F_cr to B.
 KAPPA_PERP_CGS = float(_OPTS.get("kappa-perp-cgs", 1e26))
 KAPPA_PERP_CODE = _code(KAPPA_PERP_CGS * u.cm**2 / u.s, CODE_UNITS.code_length**2 / CODE_TIME)
-V_RED_CODE = 1000.0  # km/s = code velocity
+V_RED_CODE = V_RED_KMS  # km/s = code velocity
 
 # ---- magnetic field and self-gravity ----
 # SILCC (Walch et al. 2015): B_x = 3 muG sqrt(rho / rho_0). Code units: magnetic

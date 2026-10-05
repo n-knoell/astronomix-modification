@@ -34,6 +34,7 @@ from astronomix.option_classes.simulation_params import SimulationParams
 # astronomix functions
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     cr_closure_signal_speed,
+    cr_flux_rows,
     cr_pressure_coupling_speed,
 )
 from astronomix._stencil_operations._stencil_operations import _stencil_add
@@ -177,13 +178,9 @@ def _grey_cr_hll_rows(
     if cr_wave_speed_factor is not None:
         signal_speed = signal_speed * cr_wave_speed_factor
 
-    f_cr_index = registered_variables.cosmic_ray_flux_index
-    rows = [registered_variables.cosmic_ray_e_index] + (
-        [f_cr_index]
-        if config.dimensionality == 1
-        else [f_cr_index.x, f_cr_index.y, f_cr_index.z][: config.dimensionality]
+    rows = jnp.array(
+        [registered_variables.cosmic_ray_e_index] + list(cr_flux_rows(registered_variables))
     )
-    rows = jnp.array(rows)
     q_L, q_R = conserved_left[rows], conserved_right[rows]
     advective = mass_flux * jnp.where(mass_flux >= 0, q_L / rho_L, q_R / rho_R)
     closure = 0.5 * (
