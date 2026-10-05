@@ -685,14 +685,79 @@ bug, a check of the first follow-up list, and the revised plan.
 | proposed | verdict | why |
 |---|---|---|
 | 1. Fix *or guard* F1 | fix only | `B_z` is state, not config, so `finalize_config` cannot see it. A config guard would forbid every 2D anisotropic run (T2, item 3). A runtime check inside jit cannot raise. |
-| 2. Ring test (Sharma & Hammett 2007) | right test, wrong gates | (a) "no new extrema" is not a valid gate for a two-moment (telegrapher) scheme, which need not satisfy a maximum principle at sub-mean-free-path scales; positivity is the valid gate. (b) The `minimum_e_cr = 1e-10` clamp in `_iteration_level_updates.py` hides negative values, so the background must sit well above the clamp. (c) A leakage fraction alone does not translate to M7: calibrate it as an equivalent `kappa_perp`, at M7's mean free path in cells. |
+| 2. Ring test (Sharma & Hammett 2007) | right test, gates revised (twice) | First revision: (a) "no new extrema" may not hold for a two-moment (telegrapher-type) system, so gate positivity instead; (b) the `minimum_e_cr = 1e-10` clamp hides negative values, so the background must sit well above it; (c) translate leakage into an equivalent `kappa_perp`. **Second revision after the literature check below:** (a) was too pessimistic. JO18 (Sec. 4.1.5) state that for this test their scheme with a van Leer limiter per direction "is enough to ensure the entropy condition", and S&H's limited schemes keep `T_min` at the initial minimum. So `e_min >= background` is a fair gate for this scheme class; a failure is a finding, not a model limitation. Use the published setups and metrics (step 3) so the numbers compare directly with S&H's tables. |
 | 3. M7 `v_red` = 3000 km/s run (launched 2026-10-05) | cannot answer the question alone | SN events are per-step Bernoulli trials with a per-step key split (`sn_driving.py`, `_inject_supernovae`). `v_red` changes the CFL, hence the dt sequence, hence the SN realization. A difference to the `v_red` = 1000 run mixes `v_red` with realization noise. M7 has no `--seed` option, so the noise cannot be estimated. |
 | 4. Write M7's effective `kappa_perp` into its docstring from T2c (`D_perp,num ~ 0.008 v_red dx`) | premature | T2c is a straight uniform field, a smooth bump (13-17 cells per sigma) and `kappa / (v_red dx)` = 0.64. Carrying that to M7's tangled field at unknown structure resolution is the weakest link of the audit. Measure in M7's own field instead (step 4 below). |
 | missing | add | No test runs the 3D tensor path that M7 uses (all T2 runs are 2D). |
 
+### Literature check of step 1 and the plan (2026-10-05)
+
+Sources: Jiang & Oh 2018 (JO18, arXiv:1712.07117), Sharma & Hammett 2007 (S&H, JCP 227, 123,
+arXiv:0707.2616), and `astronomix_CR_implementation_plan.md` (this directory).
+
+- **Step 1 (F_z in 2D MHD) agrees with JO18.** Their source step rotates "all the vectors
+  `F_c`, `v`" with 3 x 3 rotations into a frame with B along x, and their implicit flux update
+  sums over i = 1..3 (JO18 eqs. 15-18). The CR flux is a 3-vector whatever the grid
+  dimensionality, so a 2D run with `B_z != 0` carries `F_z`. The test target is the standard
+  one-moment limit: the flux is `-kappa_par b (b . grad e)`, and with no z gradients the
+  in-plane flux is `-kappa_par b_xy (b_xy . grad e)`, i.e. `D_x = kappa_par b_x^2` for
+  `b = (b_x, 0, b_z)` (T2e). T2f's wave speed follows from the same projection.
+- **The existing scheme matches JO18 in two places the audit relied on.**
+  - HLL wave speed `min(V_m, R V_m / sqrt(3))` with `R = sqrt((1 - exp(-tau^2)) / tau^2)`
+    (JO18 Sec. 3.2.1). Their `tau` is the cell optical depth `Delta l sigma_c V_m`, with
+    `sigma_c = 1 / (3 kappa)` for `gamma_cr = 4/3` (from their eq. 5 and the ring-test solution
+    `D = sqrt(4 t / (3 sigma_c))`). That equals our `(gamma_cr - 1) v_red dx / kappa`. (The
+    extracted PDF text reads `Delta l sigma_c / V_m`, which is not dimensionless; we take it as
+    an extraction or typesetting artefact.)
+  - Source terms implicit inside the integrator's stages (JO18 steps IV and VII).
+- **Ring test (step 3).** JO18 Sec. 4.1.5 and S&H Sec. 7.1 run the same circular-field test
+  (from Parrish & Stone 2005; also Pakmor et al. 2016a):
+  - **S&H, late time.** Box `[-1, 1]^2`; `T = 12` in `0.5 < r < 0.7`,
+    `11 pi / 12 < theta < 13 pi / 12`, else 10; fixed circular B, `chi_par = 0.01`,
+    `chi_perp = 0`; reflective boundaries, B and conduction zero outside `r = 1`; `t = 200`.
+    The steady ring temperature is 10.1667. They tabulate L1 / L2 / Linf against that state,
+    `T_max`, `T_min` and `chi_perp,num / chi_par` at 50^2 - 400^2. Their estimate is eq. 39,
+    `<chi_perp,num> = int (T_f - T_i) dV / (int dt int lap(T) dV)` over the ring. Examples:
+    symmetric MC 0.0072 / 0.00084 / 0.0002 / 6.5e-5 at 50 / 100 / 200 / 400; van Leer-limited
+    0.024 / 0.010 / 0.0038 / 0.0013.
+  - **S&H positivity variant** (their Fig. 7): patch 10 on background 0.1. Centered schemes
+    go negative, limited ones keep 0.1.
+  - **JO18 / Pakmor, early time.** Patch centered on `phi = 0`, `sigma'_c = 1` along B
+    (`kappa = 1/3`), `1e6` across (about 0), fluid fixed, outflow boundaries, `t = 0.26`.
+    Analytic solution (JO18 eq. 28): `E = 10 + erfc((phi - pi/12) r / D) - erfc((phi + pi/12)
+    r / D)` with `D = sqrt(4 kappa t)`. It is exact for pure parallel diffusion, since every
+    field circle is an independent 1D problem. So the L1 error measures parallel accuracy and
+    the smearing of the radial edges by numerical perpendicular diffusion at once.
+- **`v_red` (step 5).** JO18 Sec. 2 and 5.2: `V_m` must be "much larger than the maximum
+  Alfven and flow velocities"; results are then insensitive to it, and "convergence of all the
+  simulations should also be checked with respect to V_m ... repeat part of the simulations
+  with different V_m". Two consequences for M7:
+  - Its hottest gas (about 2600 km/s) exceeds `v_red` = 1000 km/s. Our `F_cr` is the flux
+    relative to the gas (JO18's is the lab-frame flux including `v (E_c + P_c)`), so advection
+    should not need `v_red > |u|`. The audit's Galilean check went only up to 0.65 of the CR
+    signal speed. Step 5a now extends it beyond the signal speed.
+  - The Alfven-speed part of JO18's criterion is about streaming. M7 is diffusion-only, so it
+    does not apply until streaming is on.
+- **Cross-check with `astronomix_CR_implementation_plan.md`.**
+  - Sec. 2 asks for "anisotropic transport along B with a monotonicity-safe operator (Sharma
+    & Hammett 2007)" and "keep the S&H-style guard only where needed". Ladder item 3 asks
+    for anisotropic diffusion oblique to the grid "(Sharma & Hammett 2007) -- heat stays along
+    B, no cross-field leak". The committed item-3 test is a uniform oblique field without
+    diffusion. The S&H test the plan names is the circular-field ring, so step 3 is what
+    closes item 3 as planned, and it decides whether a monotonicity guard is needed.
+  - Sec. 6, open decision: "Reduced free-streaming speed: pick the largest value that leaves
+    wind/emission properties unchanged (short convergence study)." Step 5 is that study. The
+    wording looks inverted: cost grows with `v_red` and accuracy improves with it, so the aim is
+    the *smallest* `v_red` beyond which results no longer change. Raise with the user before
+    editing the plan file.
+  - Ladder item 4 (isotropic diffusion vs the Green's function, convergence order) and item 18
+    (energy budget) are covered by the existing tests plus T1/T2; nothing in steps 2-6
+    contradicts the plan.
+
 ### Revised plan
 
-Order: steps 1-3 are cheap and independent of M7. Step 4 needs step 3's convergence order. Step
+Order: steps 1-3 are cheap and independent of M7 (1 and 2 done 2026-10-05). Step 4 needs
+step 3's convergence order. Step
 5a can run any time; 5b needs GPU hours. Step 6 closes the section. Test first, as before: each
 new test is committed failing (or as a measurement), with the before-fix numbers in its
 docstring.
@@ -743,8 +808,8 @@ docstring.
        (isotropic), 7.509e-14 (CR-off control), mass 2.4e-15; CR cavity 0.039 / 0.086 along /
        across B, all as after fix step 4 (3D row layout unchanged).
 
-2. **3D tensor check, T3** (`cr_diffusion_rate.py`, new measurement test). It covers the code
-   path M7 runs.
+2. **3D tensor check, T3 -- done 2026-10-05** (`cr_diffusion_rate.py`, new measurement test).
+   It covers the code path M7 runs.
    - **Setup.** 3D MHD periodic box, the T2 bump with `sigma0 = 0.1` (0.05 is 1.6 cells at
      N = 32), `kappa = 0.02`, `v_red = 8`, N = 32 / 64 / 128, `C_cfl` = 0.2.
      - D along b, and the mean of the two perpendicular directions, from the second-moment
@@ -757,37 +822,69 @@ docstring.
        `D_perp` decreasing.
      - Report `D_perp,num / (v_red dx)` next to T2c's 45 deg value.
    - **Cost:** minutes on one GPU.
+   - **Result.** Passes (`test_cr_anisotropic_3d`, 21 min on one RTX 2080 Ti; the 128^3 float64
+     runs use ~9.1 GB of 11 GB). `_bump_moments` gained 3D and a `sigma0` argument; the 1D/2D
+     tests reproduce their previous numbers exactly.
 
-3. **Curved-field ring test** (new `pytests/cosmic_rays_grey/cr_anisotropic_ring.py`). Verify
-   the exact setup against Sharma & Hammett (2007, JCP 227, 123, Sec. 4) and Parrish & Quataert
-   (2005) before coding.
-   - **Setup.**
-     - Box `[-1, 1]^2`, periodic; static uniform gas (`rho = P = 1`); circular B,
-       `B = B0 (-y, x) / r` with `B0 = 1e-4`. The tension `B0^2 / r ~ 1e-8` keeps the gas
-       static; verify `max |u|` stays below `1e-3 v_red`.
-     - `e_cr` = background `e_b` plus `Delta e` in the sharp-edged patch `0.5 < r < 0.7`,
-       `|theta - pi| < pi/12`. Use `Delta e = 1e-4` and `e_b = 1e-6`: the background sits far
-       above the 1e-10 clamp, so any negative excursion deeper than 1% of `Delta e` is visible.
-     - `kappa_par = 0.01`, `v_red = 0.64`. The mean free path
-       `kappa / (v_red sqrt(gamma_cr - 1))` is then 1.7 cells at N = 128, the same as M7
-       (56 pc at 33.3 pc), and `kappa / (v_red dx)` is about 1, like M7.
-     - N = 64 / 128 / 256, `t_end = 20` (arc diffusion length about 0.63, before the patch wraps
-       around the ring).
-   - **Measurements.**
-     - Leakage: the fraction of the excess outside the annulus at `t_end`.
-     - `D_par / kappa_par` from the excess-weighted arc-length variance (window
-       `t >= t_end / 3`).
-     - Undershoot: `(e_b - min e_cr) / Delta e`.
-   - **Calibration to an equivalent `kappa_perp`.** Repeat at `kappa_perp / kappa_par` = 3e-3 /
-     1e-2 / 3e-2. Leakage against `kappa_perp` is nearly linear. Extrapolate the
-     `kappa_perp = 0` leakage onto that line to get `kappa_perp,num` at each N. Compare it with
-     0.01 `kappa_par`, which is M7's ratio (1e26 / 1e28).
-   - **Gates.**
-     - `min e_cr > 0` (positivity).
-     - `kappa_perp,num` decreasing with N; measure the order, needed in step 4.
-     - `|D_par / kappa_par - 1| < 0.1` at N = 256.
-     - Report, don't gate, the undershoot and `kappa_perp,num / kappa_par` at N = 128.
-   - **Cost:** 2D, at most ~6000 steps per run, 12 runs: under an hour.
+     | N | in-plane 3D / 2D `D_par/kappa` | in-plane 3D / 2D `D_perp/kappa` | `D_z/kappa` | diagonal `D_par/kappa` | diagonal `D_perp/kappa` |
+     |---|---|---|---|---|---|
+     | 32 | 1.10865 / 1.10876 | 0.06658 / 0.06665 | 9.3e-5 | 1.0601 | 0.0599 |
+     | 64 | 1.05584 / 1.05591 | 0.03439 / 0.03444 | 9.8e-5 | 1.0313 | 0.0313 |
+     | 128 | 1.02608 / 1.02615 | 0.01662 / 0.01667 | 1.0e-4 | 1.0157 | 0.0157 |
+
+     - The in-plane case agrees with 2D to <= 7e-5 kappa, so the 3D tensor update and the
+       z-face reduction (`R ~ 0` across an in-plane B) behave as derived. `D_z` is the bump's
+       own gas advection (T2c's floor).
+     - Diagonal B: `D_par - kappa` and `D_perp` are equal to 3 digits. The numerical part is one
+       isotropic diffusivity added on top of kappa (about 0.016 kappa at 128^3).
+     - **It converges at first order** over N = 32-128 (ratios 1.9 / 2.0; 2.6-10 cells per
+       sigma). 2D T2c at 45 deg went 2.0 / 2.5 at 6-26 cells per sigma. Step 4's Richardson
+       estimate must therefore not assume order 2: measure the order in step 3 (S&H eq. 39 at
+       four resolutions) and use it.
+     - `D_perp / (v_red dx)` = 0.0050 at N = 128 (2D T2c, 45 deg, N = 256: 0.0093). Scaled to
+       M7 (`v_red dx ~ 1e28 cm^2/s`): about 5e25-9e25 cm^2/s for structures resolved by ~10 cells
+       per sigma, i.e. 0.5-0.9 of the prescribed `kappa_perp = 1e26`, more for less-resolved
+       structures. This is still an extrapolation from a smooth bump in a uniform field; step 4
+       measures it in M7's field.
+     - Memory: 128^3 in float64 needs about 9.1 GB, so step 4's 2x grid (120 x 120 x 300, about
+       2x the cells) does not fit 11 GB in float64. Its float32 / sub-box fallback is needed.
+
+3. **Curved-field ring test** (new `pytests/cosmic_rays_grey/cr_anisotropic_ring.py`).
+   Revised after the literature check: use the published setups and metrics, so the results
+   compare directly with S&H's tables and JO18's analytic solution.
+   - **Shared setup.**
+     - Box `[-1, 1]^2`, outflow boundaries; fixed circular B, `B = B0 (-y, x) / r` for `r < 1`
+       and 0 outside (S&H: no conduction outside `r = 1`; `b_hat -> 0` there, which our update
+       treats as perpendicular, so `F_cr` vanishes with `kappa_perp = 0`).
+     - JO18 and S&H hold the fluid fixed; we cannot, so make it static in practice: dense, cold
+       gas (e.g. `rho = 100`, `P = 1e-4`), tiny `e_cr` (the published values times about 1e-7)
+       and `B0 = 1e-5`. CR pressure and tension forces then move the gas by much less than a
+       cell over the run. Gate `max |u|` and the gas displacement (below 0.1 dx) to confirm it.
+       Transport is linear in `e_cr`, so the scaling is exact.
+     - `v_red`: large enough that the mean free path `kappa / (v_red sqrt(gamma_cr - 1))` is
+       well below the patch scales, and spanning M7's 1.7 cells across the resolution study.
+   - **3a, S&H late time.** `e = 12 / 10`, `chi = kappa_par = 0.01`, `kappa_perp = 0`,
+     `t = 200`; N = 50 / 100 / 200 / 400 like their Tables 1-4.
+     - With `v_red = 1`, the mean free path is 0.017: 0.9 / 1.7 / 3.5 cells at 100 / 200 / 400.
+       200^2 is the M7-like point. The CR closure speed 0.58 sets dt (the cold gas is slower),
+       so about 115k steps at 400^2.
+     - Report L1 / L2 / Linf against the steady ring (10.1667 in `0.5 < r < 0.7`, 10 outside),
+       `e_max`, `e_min`, and `kappa_perp,num / kappa_par` from S&H eq. 39, next to S&H's
+       symmetric-MC and van Leer rows.
+     - Gates: `e_min >= 10 (1 - 1e-6)` at all times (JO18's entropy-condition claim; S&H's
+       limited schemes); `kappa_perp,num` decreasing with N, and its order (step 4 uses it).
+   - **3b, positivity variant** (S&H Fig. 7). Patch 10 on background 0.1, same otherwise, N =
+     100 and 200. Gate: `e_min >= 0.1 (1 - 1e-6)` at all times (scaled values stay far above the
+     1e-10 clamp, so an undershoot cannot hide).
+   - **3c, JO18 / Pakmor early time.** Patch centered on `phi = 0`, `kappa_par = 1/3`,
+     `kappa_perp = 0`, `t = 0.26`, `v_red` about 50 (mean free path 0.012). N = 64 / 128 / 256.
+     Gate: L1 error against JO18 eq. 28 decreasing with N. Report the order and compare
+     visually with JO18 Fig. 8.
+   - **Optional (for step 4):** the equivalent-`kappa_perp` calibration. Repeat 3a at
+     `kappa_perp / kappa_par` = 3e-3 / 1e-2 / 3e-2 and read `kappa_perp,num` off the leakage
+     line. This checks the eq.-39 estimate against M7's ratio of 0.01.
+   - **Cost.** 3a dominates: 2D float64, up to 400^2 x 115k steps. Measure the per-step cost at
+     100^2 first; drop 400^2 if it exceeds about 30 min on one GPU.
 
 4. **M7 frozen-field probe.** Measures what M7's `kappa_perp` claim needs, in M7's own
    field: is the `kappa_perp = 1e26` effect larger than the transport discretization error at
@@ -832,13 +929,17 @@ docstring.
        0.095 Myr, and transport is capped at 577 km/s. At 3000: 19 pc, 0.011 Myr.
      - Decision: the smallest `v_red` whose error is below the dx error (the `v_red -> inf` limit
        at fixed dx) is converged for transport.
+     - **Galilean check beyond the signal speed** (added after the literature check). Rerun the
+       audit's 1D moving-gas diffusion test at `u` = 1, 2 and 3 times `v_red sqrt(gamma_cr - 1)`.
+       Gate: D/kappa and the centroid drift as at `u = 0`. This tests that our comoving `F_cr`
+       relaxes JO18's `V_m >> |u|` requirement, which M7's hottest gas violates.
    - **5b, full M7** (only if 5a shows a non-negligible `v_red` effect, or for the report).
      - Add `--seed` to `m7_girichidis_pilot.py` (`config.random_seed`, default 42).
      - Run `v_red` = 1000 with seed 43, about 3.4 h at `--res=0.9375`. The seed 42 / seed 43
        difference on z70 / z90 / eta(1 kpc) / H_gas / the `P_cr(z)` profile is the
        realization scatter.
-     - The `v_red` = 3000 run (seed 42, launched 2026-10-05) is significant only where it
-       differs from `v_red` = 1000 by more than that scatter. Two seeds give a crude scatter
+     - A `v_red` = 3000 run (seed 42) is significant only where it differs from `v_red` = 1000
+       by more than that scatter. (The one launched 2026-10-05 was stopped at 10.8%.) Two seeds give a crude scatter
        estimate; say so.
      - Deterministic alternative for all future M7 A/B comparisons: log the SN x/y too (the log
        has only t, z, n_H, thermal) and add an SN replay mode. More work; worth it if more

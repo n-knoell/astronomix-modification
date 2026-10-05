@@ -1,7 +1,8 @@
 """
 CR diffusion-rate pytests (DESIGN.md "Open: CR diffusion correctness", fix-plan
 step 0): measure the ``e_cr`` diffusivity the two-moment scheme actually
-produces, isotropic (1D, T1) and B-projected anisotropic (2D MHD, T2).
+produces, isotropic (1D, T1) and B-projected anisotropic (2D MHD, T2; 3D MHD, T3,
+added with DESIGN.md "Open: CR diffusion follow-up", step 2).
 
 Written *before* the fix, per the plan's TDD rule -- most tests here fail on
 the current code. Each test's docstring names the fix step that should make it
@@ -108,6 +109,15 @@ PERP_PARAM = "perpendicular_diffusion_coefficient"
 # T2e/T2f: B tilted out of the plane (follow-up step 1, DESIGN.md F1).
 OUT_OF_PLANE_DEG = 45.0
 
+# T3 (3D MHD, follow-up step 2): a wider bump than T2's, so the coarsest grid
+# (2.6 cells per sigma at N = 32) still resolves it; it stays > 5 sigma from
+# the periodic images until t_end.
+SIGMA0_3D = 0.08
+T_END_3D = 0.08
+RESOLUTIONS_3D = (32, 64, 128)
+# b = (1, 1, 1) / sqrt(3): in-plane angle 45 deg, tilted by asin(1 / sqrt(3)).
+B_DIAGONAL_DEG = (45.0, float(np.degrees(np.arcsin(1.0 / np.sqrt(3.0)))))
+
 
 @lru_cache(maxsize=None)
 def _measure_diffusivity(
@@ -119,6 +129,7 @@ def _measure_diffusivity(
     theta_deg: float = 0.0,
     kappa_perp: float = 0.0,
     phi_deg: float = 0.0,
+    sigma0: float = SIGMA0,
 ):
     """Run one bump and return ``(D_par, D_perp, num_iterations)``.
 
@@ -126,19 +137,49 @@ def _measure_diffusivity(
     plane, tilted out of it by ``phi_deg``, ``anisotropic_transport=True``;
     ``D_par``/``D_perp`` are measured along and across the in-plane direction
     ``theta_deg``. ``kappa_perp > 0`` sets ``perpendicular_diffusion_coefficient``
-    (fix step 3).
+    (fix step 3). 3D: see :func:`_measure_diffusivity_3d`.
     """
     times, var_par, var_perp, num_iterations = _bump_moments(
-        dimensionality, num_cells, kappa, c_cfl, t_end, theta_deg, kappa_perp, phi_deg
+        dimensionality, num_cells, kappa, c_cfl, t_end, theta_deg, kappa_perp, phi_deg,
+        True, sigma0,
     )
+    d_par = _diffusivity(times, var_par, t_end)
+    d_perp = _diffusivity(times, var_perp, t_end) if dimensionality == 2 else float("nan")
+    return d_par, d_perp, num_iterations
+
+
+@lru_cache(maxsize=None)
+def _measure_diffusivity_3d(
+    num_cells: int,
+    kappa: float,
+    c_cfl: float,
+    t_end: float,
+    theta_deg: float,
+    phi_deg: float,
+    sigma0: float = SIGMA0_3D,
+):
+    """3D MHD bump with uniform ``b = (cos phi cos theta, cos phi sin theta,
+    sin phi)``, ``kappa_perp = 0``. Returns ``(D_par, D_perp1, D_perp2,
+    num_iterations)``: along b, along ``e1 = z x b / |z x b|`` (horizontal, the
+    in-plane perpendicular when ``phi = 0``) and along ``e2 = b x e1`` (z when
+    ``phi = 0``).
+    """
+    times, var_par, var_perp, num_iterations = _bump_moments(
+        3, num_cells, kappa, c_cfl, t_end, theta_deg, 0.0, phi_deg, True, sigma0
+    )
+    return (
+        _diffusivity(times, var_par, t_end),
+        _diffusivity(times, var_perp[:, 0], t_end),
+        _diffusivity(times, var_perp[:, 1], t_end),
+        num_iterations,
+    )
+
+
+def _diffusivity(times, variance, t_end):
+    """Half the slope of a second moment over ``t >= t_end / 3`` (skipping the
+    relaxation transient)."""
     window = times >= t_end / 3.0
-    d_par = 0.5 * np.polyfit(times[window], var_par[window], 1)[0]
-    d_perp = (
-        0.5 * np.polyfit(times[window], var_perp[window], 1)[0]
-        if dimensionality == 2
-        else float("nan")
-    )
-    return float(d_par), float(d_perp), num_iterations
+    return float(0.5 * np.polyfit(times[window], variance[window], 1)[0])
 
 
 @lru_cache(maxsize=None)
@@ -152,24 +193,28 @@ def _bump_moments(
     kappa_perp: float = 0.0,
     phi_deg: float = 0.0,
     diffusive_relaxation: bool = True,
+    sigma0: float = SIGMA0,
 ):
     """Run one bump and return ``(times, var_par, var_perp, num_iterations)``,
     the ``e_cr``-weighted second moments at every snapshot (see
-    :func:`_measure_diffusivity` for the geometry). ``var_perp`` is empty in
-    1D. ``diffusive_relaxation=False`` gives the undamped two-moment wave
-    (only the B-projection acts, ladder item 3).
+    :func:`_measure_diffusivity` and :func:`_measure_diffusivity_3d` for the
+    geometry). ``var_perp`` is empty in 1D and has two columns (``e1``,
+    ``e2``) in 3D. ``diffusive_relaxation=False`` gives the undamped
+    two-moment wave (only the B-projection acts, ladder item 3).
     """
     periodic = BoundarySettings1D(
         left_boundary=PERIODIC_BOUNDARY, right_boundary=PERIODIC_BOUNDARY
     )
     config = SimulationConfig(
-        mhd=dimensionality == 2,
+        mhd=dimensionality >= 2,
         solver_mode=FINITE_VOLUME,
         dimensionality=dimensionality,
         num_cells=num_cells,
         box_size=1.0,
         boundary_settings=(
-            periodic if dimensionality == 1 else BoundarySettings(periodic, periodic)
+            periodic
+            if dimensionality == 1
+            else BoundarySettings(*(periodic,) * dimensionality)
         ),
         numerical_precision=DOUBLE_PRECISION,
         return_snapshots=True,
@@ -178,7 +223,7 @@ def _bump_moments(
         cosmic_ray_grey_config=CosmicRayGreyConfig(
             grey_cosmic_rays=True,
             diffusive_relaxation=diffusive_relaxation,
-            anisotropic_transport=dimensionality == 2,
+            anisotropic_transport=dimensionality >= 2,
         ),
     )
     registered_variables = get_registered_variables(config)
@@ -197,12 +242,15 @@ def _bump_moments(
         x = np.asarray(helper_data.geometric_centers[..., 0])
         y = np.asarray(helper_data.geometric_centers[..., 1])
         r2 = (x - 0.5) ** 2 + (y - 0.5) ** 2
+        if dimensionality == 3:
+            z = np.asarray(helper_data.geometric_centers[..., 2])
+            r2 = r2 + (z - 0.5) ** 2
         b_index = registered_variables.magnetic_index
         primitive_state = primitive_state.at[b_index.x].set(np.cos(phi) * np.cos(theta))
         primitive_state = primitive_state.at[b_index.y].set(np.cos(phi) * np.sin(theta))
         primitive_state = primitive_state.at[b_index.z].set(np.sin(phi))
     primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(
-        AMP * jnp.exp(-0.5 * r2 / SIGMA0**2)
+        AMP * jnp.exp(-0.5 * r2 / sigma0**2)
     )
     # F_cr = 0 initial.
 
@@ -239,6 +287,15 @@ def _bump_moments(
         if dimensionality == 1:
             xc = (w * x).sum()
             var_par.append((w * (x - xc) ** 2).sum())
+        elif dimensionality == 3:
+            b_hat = np.array([np.cos(phi) * np.cos(theta), np.cos(phi) * np.sin(theta), np.sin(phi)])
+            e1 = np.cross([0.0, 0.0, 1.0], b_hat)
+            e1 = e1 / np.linalg.norm(e1)
+            e2 = np.cross(b_hat, e1)
+            d = [c - (w * c).sum() for c in (x, y, z)]
+            proj = [sum(v[i] * d[i] for i in range(3)) for v in (b_hat, e1, e2)]
+            var_par.append((w * proj[0] ** 2).sum())
+            var_perp.append([(w * proj[1] ** 2).sum(), (w * proj[2] ** 2).sum()])
         else:
             xc, yc = (w * x).sum(), (w * y).sum()
             s_par = (x - xc) * np.cos(theta) + (y - yc) * np.sin(theta)
@@ -664,6 +721,118 @@ def test_cr_anisotropic_out_of_plane_wave_speed(
     )
 
 
+
+# -------------------------------------------------------------
+# ================= T3: 3D MHD anisotropic ====================
+# -------------------------------------------------------------
+
+
+def test_cr_anisotropic_3d(
+    in_plane_tol: float = 0.01,
+    aligned_tol: float = 1e-3,
+    par_tol: float = 0.1,
+):
+    """T3: the 3D tensor path M7 runs (follow-up step 2, DESIGN.md).
+
+    Every T2 case is 2D. Here a 3D MHD bump (``sigma0 = 0.08``,
+    ``kappa_perp = 0``) at N = 32 / 64 / 128, ``C_cfl = 0.2``, with two fields:
+
+    - ``b = (cos 30, sin 30, 0)``, in the x-y plane. The bump is a product
+      ``f(x, y) g(z)``, the z faces see ``R ~ 0`` (``kappa_n = 0``) and
+      ``F_z`` is projected away, so the x-y transport must match 2D T2 at the
+      same N and ``sigma0`` (gate: ``D_par`` and the in-plane ``D_perp``
+      within ``in_plane_tol`` kappa; dt differs, 3 vs. 2 axes in the CFL sum,
+      but D is dt-independent, T1a), and nothing may move along z (gate:
+      ``D_z < aligned_tol`` kappa).
+    - ``b = (1, 1, 1) / sqrt(3)``, oblique to all three axes:
+      ``|D_par / kappa - 1|`` and the mean perpendicular ``D_perp`` must both
+      decrease under refinement, with ``|D_par / kappa - 1| < par_tol`` at
+      the finest N. ``D_perp / (v_red dx)`` at the finest N is printed next
+      to T2c's 45 deg value for comparison.
+
+    Args:
+        in_plane_tol: Maximum 3D-vs-2D difference of D in the in-plane case,
+            in units of kappa.
+        aligned_tol: Maximum ``D_z / kappa`` in the in-plane case.
+        par_tol: Maximum ``|D_par / kappa - 1|`` for the diagonal field at
+            the finest resolution.
+
+    Measured (2026-10-05, RTX 2080 Ti, ~21 min, 128^3 float64 uses ~9.1 GB):
+    in-plane 3D vs. 2D agree to <= 7e-5 kappa at every N (D_par 1.1087 /
+    1.0558 / 1.0261, D_perp 0.0666 / 0.0344 / 0.0166); ``D_z`` ~ 1e-4 kappa
+    (the bump's own gas advection, as in T2c). Diagonal: ``D_par / kappa`` =
+    1.0601 / 1.0313 / 1.0157 and ``D_perp`` = 0.0599 / 0.0313 / 0.0157 kappa,
+    i.e. one isotropic numerical diffusivity on top of kappa, converging at
+    first order over N = 32-128; ``D_perp / (v_red dx)`` = 0.0050 at N = 128.
+    """
+    rows = []
+    for n in RESOLUTIONS_3D:
+        d3_par, d3_e1, d3_z, _ = _measure_diffusivity_3d(n, KAPPA_2D, 0.2, T_END_3D, 30.0, 0.0)
+        d2_par, d2_perp, _ = _measure_diffusivity(
+            2, n, KAPPA_2D, 0.2, T_END_3D, 30.0, 0.0, 0.0, SIGMA0_3D
+        )
+        dd_par, dd_e1, dd_e2, _ = _measure_diffusivity_3d(
+            n, KAPPA_2D, 0.2, T_END_3D, *B_DIAGONAL_DEG
+        )
+        rows.append(dict(
+            n=n,
+            in_plane=(d3_par / KAPPA_2D, d3_e1 / KAPPA_2D, d3_z / KAPPA_2D),
+            two_d=(d2_par / KAPPA_2D, d2_perp / KAPPA_2D),
+            diagonal=(dd_par / KAPPA_2D, 0.5 * (dd_e1 + dd_e2) / KAPPA_2D),
+        ))
+        r = rows[-1]
+        print(f"T3: N = {n}: in-plane 3D D_par/kappa {r['in_plane'][0]:.5f} vs 2D "
+              f"{r['two_d'][0]:.5f}, D_perp {r['in_plane'][1]:.5f} vs {r['two_d'][1]:.5f}, "
+              f"D_z {r['in_plane'][2]:.2e}; diagonal D_par {r['diagonal'][0]:.4f}, "
+              f"D_perp {r['diagonal'][1]:.4f}")
+    finest = rows[-1]
+    alpha = finest["diagonal"][1] * KAPPA_2D / (REDUCED_STREAMING_SPEED / finest["n"])
+    print(f"T3: diagonal D_perp / (v_red dx) = {alpha:.4f} at N = {finest['n']} "
+          f"(2D T2c, 45 deg, N = 256: 0.0093)")
+
+    n = [r["n"] for r in rows]
+    fig, (ax_par, ax_perp) = plt.subplots(1, 2, figsize=(11, 4.5))
+    ax_par.plot(n, [r["in_plane"][0] for r in rows], "o-", color="C0", label="3D, b in x-y plane")
+    ax_par.plot(n, [r["two_d"][0] for r in rows], "x--", color="C0", label="2D, same b")
+    ax_par.plot(n, [r["diagonal"][0] for r in rows], "s-", color="C1", label="3D, b = (1,1,1)/sqrt3")
+    ax_par.axhline(1.0, color="black", lw=1, label="target")
+    ax_par.set_ylabel("D_par / kappa_par")
+    ax_par.set_title("T3: along B")
+    ax_perp.plot(n, [r["in_plane"][1] for r in rows], "o-", color="C0", label="3D in-plane, across B in x-y")
+    ax_perp.plot(n, [r["two_d"][1] for r in rows], "x--", color="C0", label="2D, same b")
+    ax_perp.plot(n, [max(r["in_plane"][2], 1e-6) for r in rows], "^-", color="C2", label="3D in-plane, along z")
+    ax_perp.plot(n, [r["diagonal"][1] for r in rows], "s-", color="C1", label="3D diagonal, mean across B")
+    ax_perp.set_yscale("log")
+    ax_perp.set_ylabel("D_perp / kappa_par (kappa_perp = 0)")
+    ax_perp.set_title("T3: across B (numerical)")
+    for ax in (ax_par, ax_perp):
+        ax.set_xscale("log", base=2)
+        ax.set_xlabel("N")
+        ax.legend(fontsize=8)
+    _save(fig, "cr_diffusion_rate_3d_test.svg")
+
+    for r in rows:
+        dev = max(abs(r["in_plane"][0] - r["two_d"][0]), abs(r["in_plane"][1] - r["two_d"][1]))
+        assert dev < in_plane_tol, (
+            f"3D in-plane transport differs from 2D by {dev:.4f} kappa at N = {r['n']} "
+            f"(3D {r['in_plane'][:2]}, 2D {r['two_d']})."
+        )
+        assert r["in_plane"][2] < aligned_tol, (
+            f"D_z / kappa = {r['in_plane'][2]:.2e} with B in the x-y plane at N = {r['n']}."
+        )
+    par_err = [abs(r["diagonal"][0] - 1.0) for r in rows]
+    perp = [r["diagonal"][1] for r in rows]
+    assert all(b < a for a, b in zip(par_err, par_err[1:])), (
+        f"|D_par/kappa - 1| does not decrease under refinement for b = (1,1,1)/sqrt3: {par_err}."
+    )
+    assert par_err[-1] < par_tol, (
+        f"D_par/kappa = {rows[-1]['diagonal'][0]:.4f} for b = (1,1,1)/sqrt3 at N = "
+        f"{rows[-1]['n']}, expected 1 within {par_tol}."
+    )
+    assert all(b < a for a, b in zip(perp, perp[1:])), (
+        f"D_perp does not decrease under refinement for b = (1,1,1)/sqrt3: {perp}."
+    )
+
 def _plot_anisotropic(study):
     fig, (ax_par, ax_perp) = plt.subplots(1, 2, figsize=(11, 4.5))
     for i, (theta, rows) in enumerate(study.items()):
@@ -694,6 +863,7 @@ if __name__ == "__main__":
         test_cr_anisotropic_kappa_perp,
         test_cr_anisotropic_out_of_plane_b,
         test_cr_anisotropic_out_of_plane_wave_speed,
+        test_cr_anisotropic_3d,
     )
     failed = []
     for test in tests:

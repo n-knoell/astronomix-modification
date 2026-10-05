@@ -4,6 +4,33 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Done (2026-10-05): CR diffusion follow-up step 2 (3D tensor test T3) + literature check
+
+DESIGN.md "Open: CR diffusion follow-up (audit 2026-10-05)": steps 1-2 done, 3-6 open.
+
+- **Literature check** (DESIGN.md "Literature check of step 1 and the plan"):
+  - Step 1 agrees with Jiang & Oh 2018: they carry a 3-component CR flux and rotate it into the
+    B frame in every dimensionality.
+  - Our HLL reduction `R` and `tau = (gamma_cr - 1) v_red dx / kappa` match their Sec. 3.2.1.
+  - Step 3 is rewritten to use the published ring tests: Sharma & Hammett 2007 Sec. 7.1 (with
+    their Tables 1-4 for comparison and their positivity variant) and JO18 Sec. 4.1.5 (with an
+    analytic solution).
+  - Step 5a gains a moving-gas check above the CR signal speed, because JO18 require
+    `V_m >> |u|` and M7's hottest gas exceeds `v_red`.
+  - The implementation plan's open decision ("pick the *largest* `v_red` that leaves results
+    unchanged") looks inverted (the aim is the smallest converged value); not edited, raised
+    with the user.
+- **T3** (`test_cr_anisotropic_3d`, passes, 21 min on one 2080 Ti):
+  - In-plane B: 3D matches 2D to <= 7e-5 kappa at N = 32 / 64 / 128.
+  - Diagonal B: `D_par / kappa` = 1.060 / 1.031 / 1.016 and `D_perp` = 0.060 / 0.031 /
+    0.016 kappa. That is one isotropic numerical diffusivity on top of kappa, converging at
+    **first order** (step 4 must not assume order 2).
+  - `D_perp / (v_red dx)` = 0.0050 at 128^3, i.e. roughly 0.5-0.9 of M7's `kappa_perp` for
+    well-resolved structures. Still an extrapolation; step 4 measures it in M7's field.
+  - 128^3 float64 needs about 9.1 GB.
+  - The other 9 tests in the file reproduce their numbers exactly.
+  - Plot: `pics/cr_diffusion_rate_3d_test.svg`.
+
 ## Done (2026-10-05): CR diffusion follow-up step 1 (F_z in 2D MHD, bug F1)
 
 DESIGN.md "Open: CR diffusion follow-up (audit 2026-10-05)" is the plan; steps 2-6 are open.
