@@ -48,7 +48,11 @@ building this test, neither specific to anisotropic transport):
    ``anisotropic_flux_projection``'s docstring for the consequence (a small,
    per-step, non-accumulating residual: the isotropic per-axis pressure
    gradient can push a tiny perpendicular component into F_cr within a step,
-   which the *next* step's correction removes again).
+   which the *next* step's correction removes again). **Superseded
+   2026-10-04:** the projection is now part of the implicit F_cr update
+   after every RK stage (``cr_grey_sources.cr_flux_relaxation_update``,
+   with B passed into the gas-only half-steps), which has no such residual
+   (DESIGN.md "Open: CR diffusion correctness", fix step 3).
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md and PROGRESS.md.
 """

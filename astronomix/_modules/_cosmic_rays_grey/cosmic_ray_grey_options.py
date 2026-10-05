@@ -38,8 +38,12 @@ class CosmicRayGreyConfig(NamedTuple):
     #: reconstruction cannot yet carry e_cr/F_cr.
     grey_cosmic_rays: bool = False
 
-    #: evolve F_cr projected along the local B direction (Sharma & Hammett
-    #: 2007 monotonicity-safe operator) rather than isotropically.
+    #: anisotropic CR transport along the local B direction: the implicit
+    #: per-RK-stage F_cr update (cr_grey_sources.cr_flux_relaxation_update)
+    #: relaxes the components along and across b_hat separately, with
+    #: CosmicRayGreyParams.diffusion_coefficient along B and
+    #: perpendicular_diffusion_coefficient across it (0: F_cr confined to B).
+    #: Requires config.mhd (2D/3D) and the unsplit FV RK2 scheme.
     anisotropic_transport: bool = False
 
     #: turn on CR streaming (with tanh-regularized sign) and the associated
@@ -108,14 +112,15 @@ class CosmicRayGreyParams(NamedTuple):
     streaming_sign_regularization: float = 1e-2
 
     #: smooth floor on |B|, in the same units as the magnetic-field primitive
-    #: variable, used by anisotropic_flux_projection's b_hat = B / sqrt(|B|^2
-    #: + b_field_floor^2) -- keeps the unit vector well-defined and
+    #: variable, used by cr_grey_transport.magnetic_unit_vector's b_hat =
+    #: B / sqrt(|B|^2 + b_field_floor^2) -- keeps the unit vector well-defined and
     #: differentiable at B=0 instead of a hard jnp.maximum/where floor.
     #: Should be well below any physically relevant |B| for the problem.
     b_field_floor: float = 1e-10
 
     #: smooth floor on the CR-pressure-coupling contribution to
-    #: grey_cr_fast_speed (sqrt(gamma_cr (gamma_cr - 1) e_cr / rho)) -- added
+    #: the gas signal speed (cr_grey_transport.cr_pressure_coupling_speed,
+    #: sqrt(gamma_cr (gamma_cr - 1) e_cr / rho)) -- added
     #: in quadrature under the sqrt, same "prefer smooth regularization"
     #: philosophy as b_field_floor. Without it, sqrt(x) has an infinite
     #: gradient at x = 0, which is exactly the CR-free-background case
@@ -129,12 +134,22 @@ class CosmicRayGreyParams(NamedTuple):
     #: values can be passed in directly. Only used when
     #: CosmicRayGreyConfig.diffusive_relaxation is set. Sets the F_cr
     #: relaxation rate nu = (gamma_cr - 1) reduced_streaming_speed^2 /
-    #: diffusion_coefficient (cr_grey_sources.cr_flux_relaxation_rate); at
+    #: diffusion_coefficient (cr_grey_sources.cr_flux_relaxation_update); at
     #: steady state this relaxes F_cr toward -diffusion_coefficient *
     #: grad(e_cr). Until 2026-10-04 nu had no (gamma_cr - 1) factor and the
     #: e_cr diffusivity was diffusion_coefficient / 3: runs from before then
-    #: correspond to diffusion_coefficient / 3 now.
+    #: correspond to diffusion_coefficient / 3 now. With
+    #: CosmicRayGreyConfig.anisotropic_transport this is the diffusivity
+    #: along B (kappa_par).
     diffusion_coefficient: float = 1.0
+
+    #: CR diffusivity across B, kappa_perp (length^2 / time, e_cr
+    #: diffusivity like diffusion_coefficient), only used with
+    #: CosmicRayGreyConfig.anisotropic_transport. 0 (default) keeps F_cr
+    #: exactly along B, the projection used until 2026-10-04. Applied
+    #: implicitly (cr_grey_sources.cr_flux_relaxation_update), so small
+    #: values cost no time steps.
+    perpendicular_diffusion_coefficient: float = 0.0
 
     #: fraction of each shock's dissipated kinetic-energy flux
     #: (find_shocks_pfrommer's thermal_energy_flux) diverted into e_cr

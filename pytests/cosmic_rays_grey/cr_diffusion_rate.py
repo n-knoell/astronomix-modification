@@ -242,7 +242,8 @@ def test_cr_diffusion_time_step_independence_1d(
     ``F_cr`` undamped through the RK2 gas step, so today
     ``D = D_0 (1 + nu dt / 2)``. Before the fix, with ``nu dt`` = 0.31 / 0.16 /
     0.08, D / kappa was 0.393 / 0.368 / 0.355. The range relative to the
-    smallest-dt value is 11%.
+    smallest-dt value is 11% (3.8% after step 1, which lowered ``nu``). After
+    step 2: 1.0073 at all three, spread below 1e-4.
 
     Args:
         num_cells: The resolution.
@@ -273,9 +274,8 @@ def test_cr_diffusion_rate_1d(
     Passes after fix step 1. Before it, D / kappa was 0.400 / 0.368 / 0.349 at
     N = 256 / 512 / 1024: ``1/3`` (the convention) times the time-step bias
     ``1 + nu dt / 2``, moving *away* from 1 under refinement. After step 1:
-    1.080 / 1.033 / 1.015. About 1.3 points of the last value are the step-2
-    bias (``nu dt = 0.026``), so step 2 should leave mostly the spatial
-    error.
+    1.080 / 1.033 / 1.015. After step 2: 1.029 / 1.0073 / 1.0020, second
+    order (the time-step bias is gone).
 
     Args:
         resolutions: Increasing resolutions.
@@ -329,9 +329,9 @@ def test_cr_diffusion_stiff_1d(
       most the hydro-CFL step count at ``|u| + c = v_red``.
     - HLL dissipation at ``v_red`` must not swamp ``D`` (step 4).
     - Before the fix: relaxation-limited, 114286 steps against 5120 from the
-      hydro CFL (22x), and D / kappa = 0.68. The plan check measured the
-      Riemann part of this regime at +27% with a per-stage implicit
-      relaxation, and +4% with a reduced CR wave speed.
+      hydro CFL (22x), and D / kappa = 0.68. After step 2: 5133 steps (step
+      gate passes) and D / kappa = 1.25 -- the Riemann part. The plan check
+      measured +4% with a reduced CR wave speed.
 
     Args:
         num_cells: The resolution.
@@ -370,7 +370,9 @@ def test_cr_anisotropic_no_leak(
     Passes after fix step 3. The once-per-step projection lets the first gas
     half-step build ``F_perp`` undamped. Before the fix, ``D_perp / kappa``
     was 0.349 at ``nu dt = 0.4`` and 0.306 at 0.1, a leak of
-    ``0.14 nu dt kappa``.
+    ``0.14 nu dt kappa``. After step 2: 0.391 / 0.320 at ``C_cfl`` = 0.4 / 0.1
+    (the scalar per-stage relaxation does not remove it). After step 3:
+    0.2917 at both.
 
     Args:
         num_cells: The resolution.
@@ -409,7 +411,9 @@ def test_cr_anisotropic_parallel_rate(tol: float = 0.1):
     1, ``D_par / kappa`` at N = 64 / 128 / 256 was 0.89 / 0.49 / 0.38 at 0
     deg: ``1/3`` times the time-step bias, plus numerical diffusion that
     shrinks under refinement. After step 1: 1.51 / 1.14 / 1.04 at 0 deg, and
-    1.046 (30 deg) and 1.046 (45 deg) at N = 256.
+    1.045 (30 deg) and 1.046 (45 deg) at N = 256. After step 2: 1.47 / 1.12 /
+    1.029 at 0 deg, 1.032 (30 deg) and 1.033 (45 deg) at N = 256. After step
+    3: 1.029 / 1.032 / 1.033, unchanged.
 
     Args:
         tol: Maximum ``|D_par/kappa - 1|`` at the finest resolution.
@@ -431,11 +435,17 @@ def test_cr_anisotropic_parallel_rate(tol: float = 0.1):
         )
 
 
-def test_cr_anisotropic_perpendicular_numerical(aligned_tol: float = 0.01):
+def test_cr_anisotropic_perpendicular_numerical(
+    aligned_tol: float = 0.01, advection_floor: float = 1e-3
+):
     """T2c: numerical cross-field diffusion with ``kappa_perp = 0``.
 
-    - Every angle: ``D_perp`` must decrease under refinement. This already
-      holds today and guards against a regression.
+    - Every angle: ``D_perp`` must decrease under refinement, unless it is
+      already below ``advection_floor``. Below that, the bump's own CR
+      pressure drives a gas flow that advects ``e_cr`` across B: after step 4
+      the aligned ``D_perp`` is 8.8e-5 / 8.9e-5 / 9.0e-5 kappa at N = 64 /
+      128 / 256, and exactly 100x smaller at 100x smaller amplitude, i.e.
+      physical, resolution-independent, not diffusion.
     - Grid-aligned B: ``D_perp < aligned_tol * kappa`` at the finest
       resolution. Passes after fix steps 3 and 4: the face-normal optical
       depth ``tau_n`` is infinite across an aligned B, so the reduced CR wave
@@ -443,16 +453,20 @@ def test_cr_anisotropic_perpendicular_numerical(aligned_tol: float = 0.01):
     - Oblique B keeps ``R ~ 1`` on both axes (DESIGN.md fix step 4). Its
       ``D_perp`` is reported and plotted but not gated on an absolute value.
     - Before the fix, ``D_perp / kappa`` at N = 64 / 128 / 256 was 0.63 /
-      0.20 / 0.064 at 0 deg, and within 5% of that at 30 and 45 deg.
+      0.20 / 0.064 at 0 deg, and within 5% of that at 30 and 45 deg. After
+      step 3 (leak removed, Riemann part left): 0.60 / 0.17 / 0.039 at 0 deg,
+      0.034 (30 deg) and 0.033 (45 deg) at N = 256.
 
     Args:
         aligned_tol: Maximum ``D_perp/kappa`` for grid-aligned B.
+        advection_floor: ``D_perp/kappa`` below which the refinement check
+            is skipped (see above).
     """
     study = _anisotropic_resolution_study()
     for theta, rows in study.items():
         d_perp = [d for _, _, d in rows]
         print(f"T2c: theta {theta:4.1f} -> D_perp/kappa = {[round(d, 4) for d in d_perp]}")
-        assert all(b < a for a, b in zip(d_perp, d_perp[1:])), (
+        assert all(b < a or b < advection_floor for a, b in zip(d_perp, d_perp[1:])), (
             f"D_perp does not decrease under refinement at theta = {theta}: {d_perp}."
         )
     d_aligned = study[0.0][-1][2]
@@ -474,6 +488,7 @@ def test_cr_anisotropic_kappa_perp(
     Passes after fix step 3. The numerical part of ``D_perp`` is the same with
     and without ``kappa_perp``, so the difference isolates the physical part.
     Before the fix the parameter does not exist and the test fails on that.
+    After step 3: 0.943.
 
     Args:
         num_cells: The resolution.

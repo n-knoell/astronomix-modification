@@ -357,7 +357,7 @@ def _surface_mach(sf_result):
 
 def test_cr_dsa_mach_dependence(
     conservation_tol: float = 1e-3,
-    scale_ratio_tol: float = 0.05,
+    scale_ratio_tol: float = 0.08,
     cross_check_tol: float = 1e-5,
     domain_half_width: float = 0.5,
     containment_margin: float = 0.03,
@@ -376,7 +376,11 @@ def test_cr_dsa_mach_dependence(
             (~1.9% with the old fixed 1-cell sampling) -- not
             near-machine-precision, since these are two independent full time
             integrations with a genuine (if small) dynamical feedback between
-            them (see module docstring); 0.05 leaves only a ~1.4x margin.
+            them (see module docstring). Since the separate gas/CR Riemann
+            wave speeds (2026-10-04, DESIGN.md "Open: CR diffusion
+            correctness" fix step 4) the CR fraction, and with it the
+            feedback, is ~3x larger: 5.7% observed; 0.08 leaves a ~1.4x
+            margin.
         cross_check_tol: Maximum allowed relative error on the exact
             formula cross-check (layer 2's main check) -- both sides use the
             same deterministic computation, so any mismatch beyond float32
@@ -441,6 +445,13 @@ def test_cr_dsa_mach_dependence(
     # energy budget. Calibrated at NUM_CELLS=48 with the adaptive shock
     # sampling (2026-10-02): KR13 ~12.4%, CS14-like ~6.4% (the old fixed
     # 1-cell sampling gave ~4.8% / ~2.4%, from Mach numbers 6-60x too low).
+    # Since the separate gas/CR Riemann wave speeds (2026-10-04, DESIGN.md
+    # "Open: CR diffusion correctness" fix step 4) the gas rows are no longer
+    # dissipated at v_red, so the early, strongest shock is sharper: KR13
+    # 37.4%, CS14-like 19.8%. Not over-injection but discretization error
+    # from the other side -- a resolution study converges both schemes toward
+    # each other (KR13 at N = 48 / 64 / 96: old 0.124 / 0.145 / 0.150, new
+    # 0.374 / 0.311 / 0.273). Band widened from 0.3 to 0.5 accordingly.
     # The blast's shock is genuinely strong at t=0.07 (exact Sedov Ms~176;
     # the finder's surface cells read ~120-150 -- see the diagnostic plot), so
     # every cell sits on KR13's plateau; the total is a time-integrated quantity over the
@@ -449,9 +460,9 @@ def test_cr_dsa_mach_dependence(
     # precise a priori match to item 7's flat model is expected either way.
     for name, run in (("kr13", kr13), ("cs14", cs14)):
         cr_fraction = run["E_cr"] / E_total_initial
-        assert 0.001 < cr_fraction < 0.3, (
+        assert 0.001 < cr_fraction < 0.5, (
             f"{name} run's CR energy fraction ({cr_fraction:.4f}) is outside "
-            f"the expected [0.001, 0.3] band -- either injection is not "
+            f"the expected [0.001, 0.5] band -- either injection is not "
             f"happening, or is wildly over-injecting."
         )
 

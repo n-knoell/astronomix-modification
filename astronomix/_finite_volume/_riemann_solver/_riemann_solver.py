@@ -68,8 +68,13 @@ def _riemann_solver(
     params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
+    cr_wave_speed_factor=None,
 ) -> STATE_TYPE:
-    """Wrapper function for the Riemann solver."""
+    """Wrapper function for the Riemann solver.
+
+    ``cr_wave_speed_factor``: per-interface optical-depth reduction of the
+    grey-CR rows' wave speed (HLL/HLLC/AM-HLLC only), or None.
+    """
     if config.riemann_solver == HLL:
         return _hll_solver(
             primitives_left,
@@ -79,6 +84,7 @@ def _riemann_solver(
             params,
             registered_variables,
             flux_direction_index,
+            cr_wave_speed_factor=cr_wave_speed_factor,
         )
     elif config.riemann_solver == HLLC or config.riemann_solver == HLLC_LM:
         return _hllc_solver(
@@ -89,6 +95,7 @@ def _riemann_solver(
             params,
             registered_variables,
             flux_direction_index,
+            cr_wave_speed_factor=cr_wave_speed_factor,
         )
     elif config.riemann_solver == AM_HLLC or config.riemann_solver == HYBRID_HLLC:
         return _am_hllc_solver(
@@ -100,6 +107,7 @@ def _riemann_solver(
             params,
             registered_variables,
             flux_direction_index,
+            cr_wave_speed_factor=cr_wave_speed_factor,
         )
     elif config.riemann_solver == LAX_FRIEDRICHS:
         return _lax_friedrichs_solver(

@@ -18,7 +18,12 @@ resolution):
    repeated DSA injection at a cell that never advects away grows the local
    CR pressure without bound. Both are documented in DESIGN.md's "Open
    questions" and are **not** fixed here -- Finding 1 in particular is a real
-   change to shared FV code, out of scope to attempt unprompted.
+   change to shared FV code, out of scope to attempt unprompted. **Finding 1
+   was fixed 2026-10-04** (DESIGN.md "Open: CR diffusion correctness", fix
+   step 4: the gas rows no longer see ``v_red``; the CR rows get their own
+   flux). Both tests below still pass unchanged; the Finding-1-limited
+   tolerances and the Test A/Test B ``reduced_streaming_speed`` split could
+   now be revisited.
 2. Root mechanism for Finding 2 (found 2026-09-09): a *stationary* shock cell
    never releases the compressive ``-P_cr * div(v)`` term
    (``cr_grey_sources.cr_adiabatic_work_source``) the way a fluid parcel

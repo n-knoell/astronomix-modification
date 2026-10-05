@@ -34,9 +34,10 @@ configuration with the default `SINGLE_PRECISION` tolerance to pin that
 explanation down.
 
 **How the CR module couples to B, and so what this test exercises.** CR-grey
-only reads B in `anisotropic_flux_projection` (projects F_cr onto the local
-B direction once per step, `_iteration_level_continuous_updates`), which
-rewrites F_cr but moves no energy. Streaming (`streaming_flux_target`/
+only reads B in the anisotropic F_cr update (`cr_flux_relaxation_update`,
+after every RK stage with B passed into the gas half-steps; until
+2026-10-04 a once-per-step `anisotropic_flux_projection`), which rewrites
+F_cr but moves no energy. Streaming (`streaming_flux_target`/
 `cr_streaming_heating_source`) uses the isotropic `reduced_streaming_speed`,
 not the Alfven speed. DSA injection (`inject_crs_at_shocks`) runs on the full
 state, B rows included. The CR source terms run inside the gas half-steps,

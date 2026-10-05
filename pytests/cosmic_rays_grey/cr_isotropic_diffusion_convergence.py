@@ -15,7 +15,8 @@ hyperbolic, undamped* two-moment system -- a localized ``e_cr`` bump
 propagates rigidly as a wave (verified explicitly in ladder item 3's
 PROGRESS.md note), it never spreads/diffuses, no matter the resolution.
 There is no diffusion limit to converge to without a relaxation/scattering
-term. Added ``cr_grey_sources.cr_flux_relaxation_source`` (Jiang & Oh 2018):
+term. Added the ``F_cr`` relaxation (Jiang & Oh 2018; since 2026-10-04
+``cr_grey_sources.cr_flux_relaxation_update``, implicit in every RK stage):
 ``d(F_cr)/dt |_relax = -nu * F_cr``, ``nu = (gamma_cr - 1) *
 reduced_streaming_speed^2 / diffusion_coefficient`` (``diffusion_coefficient``
 a new ``CosmicRayGreyParams`` field, ``kappa``). At a quasi-steady balance
@@ -27,11 +28,9 @@ correctness"). Gated behind a new ``CosmicRayGreyConfig.diffusive_relaxation``
 flag (default ``False``) so ladder items 1-3's already-verified undamped-wave
 behavior is unchanged unless a config explicitly opts in. See that
 function's docstring and ``DESIGN.md``/``PROGRESS.md`` for the full
-derivation, and the new ``_cfl_time_step`` branch
-(``_finite_volume/_timestep_estimation/_timestep_estimator.py``) for the
-matching parabolic-like CFL constraint this reintroduces (explicit forward
-Euler on the relaxation rate ``nu``, same category as the existing
-``config.diffusion`` viscous ``dt_visc`` constraint).
+derivation. Until 2026-10-04 the relaxation was an explicit operator-split
+source with a matching ``dt <~ 1/nu`` limit in ``_cfl_time_step``; the
+implicit per-stage update needs no time-step limit.
 
 Setup: a narrow ``e_cr`` Gaussian bump on a uniform, static gas (``F_cr = 0``
 initial), periodic BCs, run to a fixed ``t_end`` at increasing resolution;
@@ -43,14 +42,23 @@ the pre-2026-10-04 convention, same run) were chosen, via an ad hoc calibration 
 relaxation rate ``nu ~= 1067`` comfortably above the diffusion rate of the
 smallest resolved scale (``1 / (D / sigma0^2) ~= 50``) -- deep enough in the
 quasi-steady/diffusive regime that the telegrapher-equation-vs-diffusion
-model bias is negligible next to the resolutions tested here. Calibration
-run (N = 128/256/512/1024): L2 relative error 0.0089 -> 0.0042 -> 0.0020 ->
-0.0010, monotonically decreasing, total ``e_cr`` conserved to 6 significant
-figures at every resolution, pairwise convergence order ~1.0-1.1. That first
-order is the operator-split relaxation's ``+nu dt / 2`` bias in D (``nu dt``
-scales with ``dx`` in these hydro-CFL-limited runs), not spatial truncation
--- DESIGN.md "Open: CR diffusion correctness", Problem 3; fix-plan step 2
-should raise it to ~2.
+model bias is small: ~1e-4 of ``amp``, which only the finest pair resolves
+(below).
+
+Calibration (2026-10-04, after fix-plan step 2, N = 128/256/512/1024): L2
+relative error 3.6e-3 -> 9.2e-4 -> 2.7e-4 -> 1.4e-4; least-squares order 1.58,
+pairwise 1.95 / 1.78 / 0.94.
+- The last pair flattens on a floor of ~1.2e-4 (still 1.2e-4 at N = 2048). It
+  is the finite-``v_red`` two-moment model, not the scheme: it is the same in
+  float64 and at amplitude 1e-5, and it halves when ``v_red`` doubles (16:
+  6.7e-5 at N = 2048). The diffusion *rate* itself converges at second order
+  (``cr_diffusion_rate.py`` T1b: ``D/kappa - 1`` = 0.029 / 0.0073 / 0.0020 at
+  N = 256 / 512 / 1024).
+- Before step 2 the errors were 8.9e-3 -> 4.2e-3 -> 2.0e-3 -> 9.9e-4 (order
+  ~1.0-1.1). That first order was the operator-split relaxation's
+  ``+nu dt / 2`` bias in D (``nu dt`` scales with ``dx`` in these
+  hydro-CFL-limited runs) -- DESIGN.md "Open: CR diffusion correctness",
+  Problem 3.
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
 """
@@ -158,14 +166,18 @@ def _run_diffusion(
     return l2_err, x, e_cr_final, analytic
 
 
-def test_cr_isotropic_diffusion_convergence(min_order: float = 0.7):
+def test_cr_isotropic_diffusion_convergence(
+    min_order: float = 1.3, max_finest_error: float = 2e-4
+):
     """Isotropic diffusion vs. the analytic Gaussian Green's function.
 
     Args:
-        min_order: The minimum acceptable convergence order. Calibrated
-            against pairwise orders of ~1.0-1.1 (see module docstring); 0.7
-            leaves comfortable margin while still catching a broken/
-            non-converging relaxation term.
+        min_order: The minimum acceptable least-squares convergence order
+            over N = 128-512, i.e. before the error reaches the ~1.2e-4
+            finite-``v_red`` model floor (see module docstring). Calibrated
+            against 1.56; the old operator-split relaxation gave 1.08.
+        max_finest_error: Maximum L2 error at N = 1024, just above the floor
+            (1.3e-4 measured; 9.9e-4 with the old relaxation).
     """
     gamma_cr = 4.0 / 3.0
     reduced_streaming_speed = 8.0
@@ -194,11 +206,12 @@ def test_cr_isotropic_diffusion_convergence(min_order: float = 0.7):
         errors.append(l2_err)
         profiles[num_cells] = (x, e_cr_final, analytic)
 
-    # Least-squares fit of log(error) vs log(N) across all resolutions --
-    # more robust than a single pairwise ratio.
-    log_n = [math.log(n) for n in resolutions]
-    log_err = [math.log(e) for e in errors]
-    n_pts = len(resolutions)
+    # Least-squares fit of log(error) vs log(N) over all but the finest
+    # resolution (which sits on the model floor) -- more robust than a single
+    # pairwise ratio.
+    log_n = [math.log(n) for n in resolutions[:-1]]
+    log_err = [math.log(e) for e in errors[:-1]]
+    n_pts = len(log_n)
     mean_log_n = sum(log_n) / n_pts
     mean_log_err = sum(log_err) / n_pts
     cov = sum(
@@ -224,7 +237,7 @@ def test_cr_isotropic_diffusion_convergence(min_order: float = 0.7):
     ax_convergence.loglog(resolutions, errors, "o-", color="C0", label="L2 rel. error")
     ax_convergence.set_xlabel("N (resolution)")
     ax_convergence.set_ylabel("L2 relative error")
-    ax_convergence.set_title(f"Convergence order = {convergence_order:.2f}")
+    ax_convergence.set_title(f"Convergence order (N <= 512) = {convergence_order:.2f}")
     ax_convergence.legend()
 
     fig.tight_layout()
@@ -236,6 +249,10 @@ def test_cr_isotropic_diffusion_convergence(min_order: float = 0.7):
     assert convergence_order >= min_order, (
         f"CR isotropic diffusion did not converge as expected: order "
         f"{convergence_order:.3f} < min {min_order}. Errors: {errors}."
+    )
+    assert errors[-1] < max_finest_error, (
+        f"L2 error {errors[-1]:.3e} at N = {resolutions[-1]} >= "
+        f"{max_finest_error:.1e}. Errors: {errors}."
     )
 
 

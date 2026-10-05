@@ -6,6 +6,8 @@ Each function returns a conserved-state-shaped **rate** (not yet multiplied
 by ``dt``), matching the convention of the existing FD source terms in
 ``astronomix._modules._time_integrator_sources`` (e.g. ``fd_viscosity_source``),
 so callers there compose them as ``source_term += cr_xxx_source(...) * dt``.
+Exception: :func:`cr_flux_relaxation_update` returns the updated state, applied
+implicitly inside every RK stage (see its docstring).
 Phase A scaffolding: typed signatures, ``NotImplementedError`` bodies.
 """
 
@@ -33,6 +35,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import (
     pressure_from_e_cr,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    magnetic_unit_vector,
     regularized_streaming_sign,
 )
 from astronomix._stencil_operations._stencil_operations import _stencil_add
@@ -151,90 +154,131 @@ def cr_adiabatic_work_source(
     return source_term
 
 
-def cr_flux_relaxation_rate(params: SimulationParams) -> Union[float, Float[Array, ""]]:
-    """``F_cr`` relaxation rate ``nu = (gamma_cr - 1) v_red^2 / kappa``.
-
-    Chosen so that the quasi-steady flux is ``F_cr = -kappa grad(e_cr)``,
-    i.e. ``diffusion_coefficient`` is the ``e_cr`` diffusivity. Shared by
-    :func:`cr_flux_relaxation_source` and the matching ``_cfl_time_step``
-    constraint so the two cannot drift apart.
-
-    Args:
-        params: The simulation parameters.
-
-    Returns:
-        The relaxation rate.
-    """
-    cr_params = params.cosmic_ray_grey_params
-    return (
-        (cr_params.gamma_cr - 1.0)
-        * cr_params.reduced_streaming_speed**2
-        / cr_params.diffusion_coefficient
-    )
-
-
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
-def cr_flux_relaxation_source(
+def cr_flux_relaxation_update(
     primitive_state: STATE_TYPE,
+    dt: Union[float, Float[Array, ""]],
     config: SimulationConfig,
     registered_variables: RegisteredVariables,
     params: SimulationParams,
+    magnetic_field: Union[Float[Array, "3 ..."], None] = None,
 ) -> STATE_TYPE:
-    """``F_cr`` scattering/relaxation term (Jiang & Oh 2018), ``-nu * F_cr``
-    with ``nu = (gamma_cr - 1) * reduced_streaming_speed^2 /
-    diffusion_coefficient``. Only active when
-    ``config.cosmic_ray_grey_config.diffusive_relaxation``.
+    """Implicit ``F_cr`` scattering/relaxation step (Jiang & Oh 2018),
+    ``d(F_cr)/dt = -nu . F_cr`` over ``dt`` (backward Euler), isotropic or
+    along/across B.
+
+    - Isotropic (``diffusive_relaxation``): ``F_cr <- F_cr / (1 + nu dt)``,
+      ``nu = (gamma_cr - 1) v_red^2 / kappa``.
+    - Anisotropic (``anisotropic_transport``): the rate is a tensor,
+      ``nu = (gamma_cr - 1) v_red^2 K^-1`` with
+      ``K = kappa_par b b + kappa_perp (I - b b)``, so
+
+          F_cr <- [ a_par b b + a_perp (I - b b) ] . F_cr,
+          a = kappa / (kappa + (gamma_cr - 1) v_red^2 dt)
+
+      per direction (``kappa_par = diffusion_coefficient``,
+      ``kappa_perp = perpendicular_diffusion_coefficient``). The kappa form
+      stays finite and smooth at ``kappa_perp = 0``, where ``a_perp = 0``
+      removes ``F_perp`` completely (the B-projection). Without
+      ``diffusive_relaxation`` the parallel part is undamped (``a_par = 1``,
+      pure wave transport along B, ladder item 3).
 
     Args:
-        primitive_state: The primitive state of the fluid on all cells.
+        primitive_state: The primitive state after an explicit hydro stage.
+        dt: The stage time step.
         config: The simulation configuration.
         registered_variables: The registered variables.
         params: The simulation parameters (carries
-            ``params.cosmic_ray_grey_params.diffusion_coefficient``).
+            ``params.cosmic_ray_grey_params.diffusion_coefficient`` and
+            ``perpendicular_diffusion_coefficient``).
+        magnetic_field: The cell-centered ``(B_x, B_y, B_z)`` on the same
+            grid as ``primitive_state``; required with
+            ``anisotropic_transport``. Passed separately because in FV MHD
+            the gas half-steps run on a gas-only state
+            (``evolve_state._split_gas_and_magnetic_state``). B does not
+            change during a gas half-step, so this is exact.
 
     Returns:
-        The ``F_cr``-row source-term rate.
+        The state with the updated ``F_cr`` row(s).
 
     Without this term, ``grey_cr_flux_terms``'s two-moment system is a pure
     undamped wave equation (verified in ladder items 1-3: a localized e_cr
     bump propagates rigidly, it does not spread). This term damps ``F_cr``
-    at rate ``nu`` toward its flux-gradient forcing
+    at rate ``nu`` against its flux-gradient forcing
     (``-v_red^2 * grad(P_cr)``, from ``grey_cr_flux_terms``'s pressure-driving
-    term); at a quasi-steady balance (``d(F_cr)/dt ~ 0`` on timescales long
-    compared to ``1/nu``, ignoring bulk advection) this gives
-    ``F_cr ~= -(v_red^2 / nu) grad(P_cr) = -diffusion_coefficient *
-    grad(e_cr)``, i.e. Fick's law with diffusion coefficient
-    ``diffusion_coefficient`` for ``e_cr`` itself -- the literature
-    convention ``d(e_cr)/dt = div(kappa grad e_cr)`` (Girichidis et al. 2016)
-    -- see ``cr_isotropic_diffusion_convergence.py`` (ladder item 4). Until
-    2026-10-04 the rate had no ``(gamma_cr - 1)`` factor, so the ``e_cr``
-    diffusivity was ``diffusion_coefficient / 3`` (DESIGN.md "Open: CR
-    diffusion correctness", Problem 1).
+    term) -- *toward zero*, the drive stays in the flux; relaxing toward
+    ``-K . grad(e_cr)`` as well would count it twice. At a quasi-steady
+    balance (``d(F_cr)/dt ~ 0`` on timescales long compared to ``1/nu``,
+    ignoring bulk advection) this gives ``F_cr ~= -(v_red^2 / nu) grad(P_cr)
+    = -K . grad(e_cr)``, i.e. Fick's law with diffusivity ``K`` for ``e_cr``
+    itself -- the literature convention ``d(e_cr)/dt = div(K grad e_cr)``
+    (Girichidis et al. 2016) -- see ``cr_isotropic_diffusion_convergence.py``
+    (ladder item 4) and ``cr_diffusion_rate.py``. Until 2026-10-04 the rate
+    had no ``(gamma_cr - 1)`` factor, so the ``e_cr`` diffusivity was
+    ``diffusion_coefficient / 3`` (DESIGN.md "Open: CR diffusion
+    correctness", Problem 1).
 
-    Applied as a plain additive rate via the same explicit
-    ``source_term * dt`` composition as every other CR-grey source in
-    ``_time_integrator_sources`` (no special implicit/exact-exponential
-    treatment) -- this reintroduces a genuine parabolic-like CFL constraint
-    (``dt <~ 1 / nu``), handled the
-    same way the existing viscosity module's ``dt_visc`` constrains
-    ``_cfl_time_step`` (see that function's ``diffusive_relaxation`` branch).
-    Deliberately opt-in (``diffusive_relaxation`` defaults to False) so
-    ladder items 1-3's already-verified undamped-wave behavior is unchanged.
+    Called by ``_evolve_gas_state_unsplit`` after *every* forward-Euler hydro
+    stage of the SSP-RK2 step (Jiang & Oh 2018 likewise add the source
+    implicitly in each stage of their integrator). Placement matters:
+    - Applied once per step on the operator-split source path (the
+      explicit ``-nu F_cr`` rate used until 2026-10-04), ``F_cr`` evolves
+      undamped through both RK stages, and the stage-averaged ``e_cr`` flux,
+      hence D, comes out too large by ``1 + nu dt / 2``. Applied implicitly
+      once after the step, the same bias grows without bound (measured
+      ``+0.49 nu dt``). Per stage, a steady ``F_cr`` is a fixed point of
+      every stage, so the bias is gone (DESIGN.md Problem 3).
+    - The same holds across B: the old once-per-step projection let each
+      step's first stage build ``F_perp`` undamped, a leak of ~0.14
+      ``nu dt kappa`` (DESIGN.md Problem 2). Here every stage starts from
+      ``F_perp = a_perp F_perp``.
+    - Backward Euler is unconditionally stable, so there is no ``dt <~ 1 /
+      nu`` limit on the time step (formerly a ``_cfl_time_step`` branch),
+      also not for small ``kappa_perp``.
+    - Every factor is smooth, so the update stays differentiable.
+
+    Deliberately opt-in (``diffusive_relaxation`` and
+    ``anisotropic_transport`` default to False) so ladder items 1-3's
+    already-verified undamped-wave behavior is unchanged.
     """
-    relaxation_rate = cr_flux_relaxation_rate(params)
+    cr_config = config.cosmic_ray_grey_config
+    cr_params = params.cosmic_ray_grey_params
+    # (gamma_cr - 1) v_red^2 dt, the "kappa" of one implicit step.
+    kappa_step = (
+        (cr_params.gamma_cr - 1.0) * cr_params.reduced_streaming_speed**2 * dt
+    )
+    if cr_config.diffusive_relaxation:
+        damping_par = cr_params.diffusion_coefficient / (
+            cr_params.diffusion_coefficient + kappa_step
+        )
+    else:
+        damping_par = 1.0
 
     f_cr_index = registered_variables.cosmic_ray_flux_index
-    source_term = jnp.zeros_like(primitive_state)
-    for axis_index in (
+    flux_rows = (
         (f_cr_index,)
         if config.dimensionality == 1
         else (f_cr_index.x, f_cr_index.y, f_cr_index.z)[: config.dimensionality]
-    ):
-        source_term = source_term.at[axis_index].set(
-            -relaxation_rate * primitive_state[axis_index]
-        )
+    )
 
-    return source_term
+    if not cr_config.anisotropic_transport:
+        for row in flux_rows:
+            primitive_state = primitive_state.at[row].multiply(damping_par)
+        return primitive_state
+
+    kappa_perp = cr_params.perpendicular_diffusion_coefficient
+    damping_perp = kappa_perp / (kappa_perp + kappa_step)
+
+    # In 2D, b_hat keeps its z component (B_z is evolved), but F_cr has
+    # only x/y rows: F_z = 0 by construction.
+    b_hat = magnetic_unit_vector(magnetic_field, params)
+    f_dot_b = sum(primitive_state[row] * b_hat[i] for i, row in enumerate(flux_rows))
+    for i, row in enumerate(flux_rows):
+        primitive_state = primitive_state.at[row].set(
+            damping_perp * primitive_state[row]
+            + (damping_par - damping_perp) * f_dot_b * b_hat[i]
+        )
+    return primitive_state
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])

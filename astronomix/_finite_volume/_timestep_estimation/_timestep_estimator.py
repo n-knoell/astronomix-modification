@@ -36,8 +36,10 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 from astronomix._modules._stellar_wind.stellar_wind import _wind_injection
 from astronomix._fluid_equations._fluxes import _euler_flux
 from astronomix._fluid_equations._equations import speed_of_sound
-from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
-from astronomix._modules._cosmic_rays_grey.cr_grey_sources import cr_flux_relaxation_rate
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_closure_signal_speed,
+    cr_pressure_coupling_speed,
+)
 from astronomix._modules._cooling._cooling import dtemperature_dt, get_temperature_from_pressure
 
 
@@ -69,7 +71,7 @@ def get_wave_speeds(
         registered_variables: The registered variables.
         config: The simulation configuration.
         params: The simulation parameters, forwarded to
-            :func:`grey_cr_fast_speed` when CR-grey is active.
+            the grey-CR wave speeds when CR-grey is active.
         flux_direction_index: The state index of the velocity normal to the
             interface (the flux direction).
 
@@ -90,11 +92,18 @@ def get_wave_speeds(
     c_L = speed_of_sound(rho_L, p_L, gamma)
     c_R = speed_of_sound(rho_R, p_R, gamma)
 
-    # Grey two-moment cosmic rays: combine with the CR-grey fast speed as
-    # max(., .), not folded in -- see hll.py's identical pattern.
+    # Grey two-moment cosmic rays: the fastest of the gas signal speed (with
+    # the CR-pressure coupling in quadrature) and the CR closure's own
+    # signal speed -- see hll.py's _grey_cr_hll_rows.
     if registered_variables.cosmic_ray_e_active:
-        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, params, registered_variables))
-        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, params, registered_variables))
+        c_L = jnp.maximum(
+            jnp.sqrt(c_L**2 + cr_pressure_coupling_speed(primitives_left, params, registered_variables) ** 2),
+            cr_closure_signal_speed(params),
+        )
+        c_R = jnp.maximum(
+            jnp.sqrt(c_R**2 + cr_pressure_coupling_speed(primitives_right, params, registered_variables) ** 2),
+            cr_closure_signal_speed(params),
+        )
 
     # A simple symmetric estimate of the maximum signal speed on either side of
     # the interface; the |u| + c form is sufficient for the time-step bound.
@@ -156,7 +165,10 @@ def _cfl_time_step(
             c = jnp.sqrt(c**2 + jnp.sum(b**2, axis=0) / rho)
 
         if registered_variables.cosmic_ray_e_active:
-            c = jnp.maximum(c, grey_cr_fast_speed(primitive_state, params, registered_variables))
+            c = jnp.maximum(
+                jnp.sqrt(c**2 + cr_pressure_coupling_speed(primitive_state, params, registered_variables) ** 2),
+                cr_closure_signal_speed(params),
+            )
 
         alpha_lax = jnp.zeros((config.dimensionality,))
         for axis in range(1, config.dimensionality + 1):
@@ -279,19 +291,9 @@ def _cfl_time_step(
         dt_visc = C_CFL * grid_spacing**2 / (2.0 * config.dimensionality * nu_max)
         dt = jnp.minimum(dt, dt_visc)
 
-    # CR-grey F_cr relaxation constraint: cr_flux_relaxation_source damps
-    # F_cr explicitly at rate cr_flux_relaxation_rate(params) =
-    # (gamma_cr - 1) v_red^2 / diffusion_coefficient (see that function's
-    # docstring) -- a genuine parabolic-like stiffness,
-    # same category as the viscous dt_visc constraint above. Forward-Euler
-    # stability of dF/dt = -nu*F requires dt < 2/nu; mirror dt_visc's
-    # conservative C_CFL-scaled convention.
-    if (
-        registered_variables.cosmic_ray_e_active
-        and config.cosmic_ray_grey_config.diffusive_relaxation
-    ):
-        dt_relax = C_CFL / cr_flux_relaxation_rate(params)
-        dt = jnp.minimum(dt, dt_relax)
+    # No CR-grey F_cr relaxation constraint: cr_flux_relaxation_update is
+    # implicit (backward Euler inside every RK stage), so it is stable for
+    # any nu dt.
 
     # SN-driving trigger constraint: _inject_supernovae runs
     # max_sn_per_step independent trials per step, each with probability
@@ -316,7 +318,7 @@ def _cfl_time_step(
     # and silently return a wrong temperature, since jax.lax.while_loop just
     # stops at max_iter regardless of whether tol was reached). Bound dt by
     # the fastest (smallest) local relaxation time anywhere on the grid,
-    # mirroring dt_visc/dt_relax's C_CFL-scaled convention.
+    # mirroring dt_visc's C_CFL-scaled convention.
     # subcycle_stiff_cooling (see CoolingConfig's docstring): when set, the
     # implicit solve itself subdivides into several sub-steps sized to the
     # local cooling time, so the stiffness this dt_cool term exists to guard

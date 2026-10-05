@@ -150,11 +150,11 @@ def grey_cr_flux_terms(
     # rows have already been split off into a separate array
     # (evolve_state._split_gas_and_magnetic_state) and are not part of
     # ``primitive_state`` here -- so this function structurally cannot read
-    # B. Projecting F_cr onto B instead happens once per full step, before
-    # the hydro update, in _iteration_level_continuous_updates (see that module and
-    # anisotropic_flux_projection's docstring) -- by the time this function
-    # runs, F_cr is already B-aligned if anisotropic_transport is on, so the
-    # isotropic-looking flux below is correct either way.
+    # B. The anisotropy instead lives in the implicit F_cr update applied
+    # after every RK stage (cr_grey_sources.cr_flux_relaxation_update, with
+    # B passed in separately): each stage starts from a B-aligned F_cr (up to
+    # kappa_perp) if anisotropic_transport is on, so the isotropic-looking
+    # flux below is correct either way.
     flux_vector = u_n * primitive_state
     flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].add(
         primitive_state[f_cr_index_along_flux_direction]
@@ -167,167 +167,188 @@ def grey_cr_flux_terms(
 
 
 @partial(jax.jit, static_argnames=["registered_variables"])
-def grey_cr_fast_speed(
+def cr_pressure_coupling_speed(
     primitive_state: STATE_TYPE,
     params: SimulationParams,
     registered_variables: RegisteredVariables,
 ) -> Float[Array, "..."]:
-    """Maximum signal speed of the two-moment CR subsystem.
+    """CR-pressure contribution to the *gas* signal speed,
+    ``sqrt(gamma_cr (gamma_cr - 1) e_cr / rho)``.
 
-    This is the reduced free-streaming speed (a tunable accuracy/cost knob,
-    plan Sec. 2), not folded into the gas sound speed the way the old
-    polytropic model's ``speed_of_sound_crs`` was -- the two subsystems are
-    combined as ``max(u_gas + c_gas, v_cr_fast)`` at each call site (hll.py,
-    reconstruction.py, the CFL estimator) rather than added inside one
-    effective sound speed.
+    Combined with the gas sound speed in quadrature,
+    ``sqrt(c_gas^2 + c_cr^2)``, for the gas rows of the Riemann solver and for
+    the CFL estimate.
 
     Args:
         primitive_state: The primitive state of the fluid on all cells.
-        params: The simulation parameters (carries
-            ``params.cosmic_ray_grey_params.reduced_streaming_speed``).
+        params: The simulation parameters.
         registered_variables: The registered variables.
 
     Returns:
-        The CR-grey fast/reduced-streaming speed.
+        The CR-pressure coupling speed.
 
-    Implementation note: the true characteristic speed of
-    :func:`grey_cr_flux_terms`'s isotropic-closure system, *relative to the
-    local advecting velocity* ``u_n`` (the CR subsystem now advects with the
-    gas -- see that function's docstring), is
-    ``reduced_streaming_speed * sqrt(gamma_cr - 1)`` (< ``reduced_streaming_speed``
-    for ``gamma_cr = 4/3``), but every call site here uses this as a safety
-    bound for the Riemann solver's wave-speed clamp / the CFL estimate, not
-    as the exact eigenvalue -- so, matching standard reduced-speed-of-light
-    two-moment practice, this returns the un-scaled ``reduced_streaming_speed``
-    itself as a conservative (never-too-small) bound, independent of the
-    local state. Every call site adds this to ``|u_n|`` itself (the same
-    ``jnp.maximum(c, grey_cr_fast_speed(...))`` widening of the *sound-speed*
-    term, before the surrounding ``|u| + c`` combination) rather than here,
-    so this function must NOT add ``u_n`` itself -- doing so would double
-    count it.
+    Why (found while building the ladder-item-2 adiabatic-compression test):
+    ``-grad(P_cr)`` on gas momentum
+    (``cr_grey_sources.cr_pressure_gradient_source``) and ``-P_cr div(v)``
+    back onto ``e_cr`` (``cr_adiabatic_work_source``) form a genuine coupled
+    gas+CR acoustic mode, independent of ``F_cr``/``reduced_streaming_speed``
+    -- linearizing the coupled continuity/momentum/adiabatic equations around
+    a uniform background gives ``omega^2 = k^2 (c_gas^2 + gamma_cr (gamma_cr -
+    1) e_cr / rho)``, a real, stable, *faster*-than-``c_gas`` sound speed.
+    Without it in the wave-speed bounds, any state with ``e_cr`` large enough
+    for this term to matter violated CFL and blew up to NaN. Until
+    2026-10-04 it was added *linearly* on top of ``reduced_streaming_speed``
+    and the sum shared by all rows (``grey_cr_fast_speed``); see
+    :func:`cr_closure_signal_speed` for the split.
 
-    Second contribution -- the CR-pressure momentum coupling (found while
-    building the ladder-item-2 adiabatic-compression test): ``-grad(P_cr)``
-    on gas momentum (``cr_grey_sources.cr_pressure_gradient_source``) and
-    ``-P_cr div(v)`` back onto ``e_cr`` (``cr_adiabatic_work_source``) form a
-    genuine coupled gas+CR acoustic mode, independent of ``F_cr``/
-    ``reduced_streaming_speed`` entirely -- linearizing the coupled
-    continuity/momentum/adiabatic equations around a uniform background
-    gives ``omega^2 = k^2 (c_gas^2 + gamma_cr (gamma_cr - 1) e_cr / rho)``,
-    i.e. a real, stable, *faster*-than-``c_gas`` sound speed, not an
-    instability -- but nothing in the CFL/Riemann wave-speed bound accounted
-    for it before now (only ``reduced_streaming_speed`` was returned here),
-    so any state with ``e_cr`` large enough for this term to matter silently
-    violated CFL and blew up to NaN. `ladder item 1 never exercised this
-    (its CR background was zero, so the momentum coupling was a no-op the
-    whole run). Added as a straightforward sum (not the tighter
-    ``sqrt(a^2+b^2)``, to keep this a simple, easily-conservative widening
-    of an already-"never-too-small" bound, matching this function's existing
-    contract) on top of ``reduced_streaming_speed``.
+    The floor (``CosmicRayGreyParams.cr_pressure_speed_floor``) is added in
+    quadrature under the sqrt, not as ``jnp.maximum`` on the result, so the
+    gradient stays finite at ``e_cr = 0`` -- the CR-free-background case
+    (confirmed to NaN reverse-mode AD otherwise, see cr_gradient_check.py).
     """
     gamma_cr = params.cosmic_ray_grey_params.gamma_cr
     speed_floor = params.cosmic_ray_grey_params.cr_pressure_speed_floor
     rho = primitive_state[registered_variables.density_index]
     e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
-    # Floor added in quadrature under the sqrt (not jnp.maximum on the
-    # result) so the gradient stays finite at e_cr = 0 -- see
-    # CosmicRayGreyParams.cr_pressure_speed_floor's docstring.
-    cr_pressure_coupling_speed = jnp.sqrt(
+    return jnp.sqrt(
         jnp.maximum(gamma_cr * (gamma_cr - 1.0) * e_cr / rho, 0.0) + speed_floor**2
     )
-    return (
-        params.cosmic_ray_grey_params.reduced_streaming_speed
-        + cr_pressure_coupling_speed
-    )
 
 
-@partial(jax.jit, static_argnames=["config", "registered_variables"])
-def anisotropic_flux_projection(
+def cr_closure_signal_speed(params: SimulationParams) -> Union[float, Float[Array, ""]]:
+    """Signal speed of the two-moment ``(e_cr, F_cr)`` subsystem relative to
+    the gas, ``reduced_streaming_speed * sqrt(gamma_cr - 1)`` (``v_red /
+    sqrt(3)`` for ``gamma_cr = 4/3``).
+
+    The eigenvalues of :func:`grey_cr_flux_terms`'s isotropic-closure system
+    are ``u_n +- v_red sqrt(gamma_cr - 1)``. The Riemann solver gives the CR
+    rows their own HLL flux with this speed (scaled by
+    :func:`cr_wave_speed_reduction` in the diffusive regime), and the CFL
+    estimate uses ``max(gas speed, this)``. Until 2026-10-04 the un-scaled
+    ``v_red`` (plus the CR-pressure coupling speed) was a single bound shared
+    by gas and CR rows: ``sqrt(3)`` too much dissipation on the CR rows, and
+    ``v_red``-inflated dissipation on the gas rows that smeared shocks
+    (DESIGN.md "Finding 1"; "Open: CR diffusion correctness", fix step 4).
+
+    Args:
+        params: The simulation parameters.
+
+    Returns:
+        The CR closure signal speed.
+    """
+    cr_params = params.cosmic_ray_grey_params
+    return cr_params.reduced_streaming_speed * jnp.sqrt(cr_params.gamma_cr - 1.0)
+
+
+def cr_wave_speed_reduction(
+    kappa_normal: Float[Array, "..."],
+    params: SimulationParams,
+    grid_spacing: Union[float, Float[Array, ""]],
+) -> Float[Array, "..."]:
+    """Optical-depth reduction ``R`` of the CR rows' HLL wave speed (Jiang &
+    Oh 2018, Sec. 3.2.1, after Jiang et al. 2013).
+
+    ``R = sqrt((1 - exp(-tau^2)) / tau^2)``, ``tau = (gamma_cr - 1) v_red dx /
+    kappa_normal``: the cell size in units of the CR mean free path. In the
+    diffusive regime (``tau >> 1``) the HLL dissipation at the full signal
+    speed would be a numerical diffusivity ``~ v_red dx`` far above
+    ``kappa``; ``R ~ 1 / tau`` scales it down to ``~ kappa``. For ``tau
+    << 1`` (free streaming) ``R -> 1``.
+
+    ``kappa_normal`` is the ``e_cr`` diffusivity along the face normal ``n``:
+    ``kappa`` isotropically, ``n . K . n = kappa_par b_n^2 + kappa_perp (1 -
+    b_n^2)`` with anisotropic transport. JO18 define ``tau`` for a scalar
+    ``sigma_c``; the face-normal projection is this module's choice
+    (validated by ``cr_diffusion_rate.py`` T2c).
+
+    Written as ``R^2 = x^2 (1 - exp(-1/x^2))`` with ``x = 1/tau`` plus a tiny
+    floor, so ``kappa_normal = 0`` (B along another axis, ``kappa_perp = 0``)
+    gives ``R ~ 0`` with finite values and gradients.
+
+    Args:
+        kappa_normal: The face-normal ``e_cr`` diffusivity, per cell.
+        params: The simulation parameters.
+        grid_spacing: The cell size.
+
+    Returns:
+        ``R``, same shape as ``kappa_normal``.
+    """
+    cr_params = params.cosmic_ray_grey_params
+    kappa_dx = (cr_params.gamma_cr - 1.0) * cr_params.reduced_streaming_speed * grid_spacing
+    x2 = (kappa_normal / kappa_dx) ** 2 + 1e-30
+    return jnp.sqrt(x2 * -jnp.expm1(-1.0 / x2))
+
+
+def magnetic_unit_vector(
+    magnetic_field: Float[Array, "3 ..."],
+    params: SimulationParams,
+) -> Float[Array, "3 ..."]:
+    """Smoothly floored unit vector ``b_hat = B / sqrt(|B|^2 + b_floor^2)``.
+
+    Used by the anisotropic ``F_cr`` update
+    (``cr_grey_sources.cr_flux_relaxation_update``). The floor
+    (``CosmicRayGreyParams.b_field_floor``) keeps ``b_hat`` well-defined and
+    differentiable at ``B = 0`` (where it goes to zero, so the update treats
+    the cell as purely perpendicular), instead of a hard
+    ``jnp.maximum``/``where``.
+
+    Args:
+        magnetic_field: The cell-centered ``(B_x, B_y, B_z)`` (all three
+            components, also in 2D).
+        params: The simulation parameters.
+
+    Returns:
+        ``b_hat``, same shape as ``magnetic_field``.
+    """
+    b_field_floor = params.cosmic_ray_grey_params.b_field_floor
+    b_mag = jnp.sqrt(jnp.sum(magnetic_field**2, axis=0) + b_field_floor**2)
+    return magnetic_field / b_mag
+
+
+def cr_wave_speed_factors(
     primitive_state: STATE_TYPE,
     config: SimulationConfig,
     params: SimulationParams,
     registered_variables: RegisteredVariables,
-) -> STATE_TYPE:
-    """Project the CR flux onto the local magnetic-field direction.
+    magnetic_field: Union[Float[Array, "3 ..."], None] = None,
+) -> Union[Float[Array, "..."], None]:
+    """Per-cell, per-axis :func:`cr_wave_speed_reduction` for the Riemann
+    solver, shape ``(dimensionality, *grid)``; None (no reduction) without
+    ``diffusive_relaxation``.
 
-    Returns ``F_cr_parallel = (F_cr . b_hat) * b_hat``, ``b_hat = B / |B|``,
-    i.e. the component of ``F_cr`` along the local field, with the
-    perpendicular component discarded. Only meaningful when
-    ``config.mhd`` and ``config.cosmic_ray_grey_config.anisotropic_transport``
-    are both set (requires an actual field to project onto); the isotropic
-    closure (raw, unprojected ``F_cr``) is the default.
+    The face-normal diffusivity is ``diffusion_coefficient`` isotropically,
+    and ``kappa_par b_n^2 + kappa_perp (1 - b_n^2)`` with
+    ``anisotropic_transport`` (``b`` from ``magnetic_field``, the split-off
+    B of the FV MHD gas half-step, constant within it).
 
     Args:
-        primitive_state: The primitive state of the fluid on all cells.
+        primitive_state: The (gas) primitive state, for the grid shape.
         config: The simulation configuration.
-        params: The simulation parameters (carries ``CosmicRayGreyParams``,
-            in particular ``b_field_floor``).
+        params: The simulation parameters.
         registered_variables: The registered variables.
+        magnetic_field: The cell-centered ``(B_x, B_y, B_z)``; required with
+            ``anisotropic_transport``.
 
     Returns:
-        A ``STATE_TYPE``-shaped array with the ``cosmic_ray_flux_index``
-        row(s) set to the B-projected flux; other rows are zero and unused
-        by the caller.
-
-    Where this is called from, and why (not from :func:`grey_cr_flux_terms`):
-    the FV MHD Strang split (``evolve_state._evolve_state_fv``) splits
-    ``primitive_state`` into a gas-only sub-array and a separate magnetic
-    sub-array for each half-step (``evolve_state._split_gas_and_magnetic_state``)
-    -- the magnetic-field rows are structurally unavailable inside the
-    gas-only Riemann solve where :func:`grey_cr_flux_terms` runs, so this
-    function cannot be called from there. Instead it's applied once per full
-    step, as a primitive-state correction in
-    ``astronomix._modules._iteration_level_continuous_updates`` (alongside the ``e_cr``
-    positivity floor), overwriting ``F_cr`` with its B-projected value
-    *before* the hydro update runs -- so by the time
-    :func:`grey_cr_flux_terms` reads ``F_cr`` mid-step, it is already
-    B-aligned if ``anisotropic_transport`` is on. Consequence: within a
-    single step, the isotropic per-axis ``v_red^2 * P_cr`` driving term
-    (unchanged, not projected -- see :func:`grey_cr_flux_terms`) can still
-    push a small (order ``dt``) perpendicular component into ``F_cr`` before
-    the *next* step's correction removes it again -- a per-step residual,
-    not a steady-state leak. Scope note (plan Sec. 2: "the flux limiter is
-    largely avoided [in two-moment form]... keep the S&H-style guard only
-    where needed"): this is a direct projection, not the full Sharma &
-    Hammett (2007) monotonicity-preserving flux-limiting scheme (which
-    exists for *diffusive/parabolic* oblique discretizations; this system is
-    hyperbolic/Riemann-solved, and the plan itself expects less limiting
-    machinery to be needed here). See PROGRESS.md for the numerical
-    verification of how small the residual leak actually is.
+        The factors, or None.
     """
-    b_index = registered_variables.magnetic_index
-    f_cr_index = registered_variables.cosmic_ray_flux_index
-
-    b_x = primitive_state[b_index.x]
-    b_y = primitive_state[b_index.y]
-    f_x = primitive_state[f_cr_index.x]
-    f_y = primitive_state[f_cr_index.y]
-    if config.dimensionality == 3:
-        b_z = primitive_state[b_index.z]
-        f_z = primitive_state[f_cr_index.z]
+    cr_config = config.cosmic_ray_grey_config
+    if not (registered_variables.cosmic_ray_e_active and cr_config.diffusive_relaxation):
+        return None
+    cr_params = params.cosmic_ray_grey_params
+    grid_shape = primitive_state.shape[1:]
+    if cr_config.anisotropic_transport:
+        b_hat = magnetic_unit_vector(magnetic_field, params)
+        kappa_normal = jnp.stack([
+            cr_params.diffusion_coefficient * b_hat[i] ** 2
+            + cr_params.perpendicular_diffusion_coefficient * (1.0 - b_hat[i] ** 2)
+            for i in range(config.dimensionality)
+        ])
     else:
-        b_z = jnp.zeros_like(b_x)
-        f_z = jnp.zeros_like(f_x)
-
-    # Smooth (always-positive, differentiable) floor on |B| -- same "prefer
-    # smooth regularization over min/max" philosophy as
-    # regularized_streaming_sign (plan Sec. 2) -- instead of jnp.maximum,
-    # which would have a non-smooth gradient at the floor.
-    b_field_floor = params.cosmic_ray_grey_params.b_field_floor
-    b_mag = jnp.sqrt(b_x**2 + b_y**2 + b_z**2 + b_field_floor**2)
-    b_hat_x = b_x / b_mag
-    b_hat_y = b_y / b_mag
-    b_hat_z = b_z / b_mag
-
-    f_dot_b = f_x * b_hat_x + f_y * b_hat_y + f_z * b_hat_z
-
-    flux_vector = jnp.zeros_like(primitive_state)
-    flux_vector = flux_vector.at[f_cr_index.x].set(f_dot_b * b_hat_x)
-    flux_vector = flux_vector.at[f_cr_index.y].set(f_dot_b * b_hat_y)
-    if config.dimensionality == 3:
-        flux_vector = flux_vector.at[f_cr_index.z].set(f_dot_b * b_hat_z)
-
-    return flux_vector
+        kappa_normal = jnp.full(
+            (config.dimensionality,) + grid_shape, cr_params.diffusion_coefficient
+        )
+    return cr_wave_speed_reduction(kappa_normal, params, config.grid_spacing)
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
@@ -348,17 +369,16 @@ def streaming_flux_target(
     hard ``sign``, for the same adjoint reason as everywhere else in this
     module). Applied once per full step in
     ``astronomix._modules._iteration_level_continuous_updates`` as a discrete
-    correction that **overwrites** ``F_cr`` -- the same "instantaneous
-    relaxation" pattern :func:`anisotropic_flux_projection` already uses for
-    item 3 (see that function's docstring), not a new stiff relaxation-rate
-    source term.
+    correction that **overwrites** ``F_cr`` -- an "instantaneous
+    relaxation", not a stiff relaxation-rate source term.
 
     Isotropic per-axis, not projected along a true magnetic-field direction
     -- this does not require ``config.mhd`` (matches the plan's own "1D
     streaming" staging for this ladder item). If both ``streaming`` and
-    ``anisotropic_transport`` are enabled, ``_iteration_level_continuous_updates``
-    applies this correction first and the B-projection second, so the
-    combination is "isotropic streaming target, then projected onto B" --
+    ``anisotropic_transport`` are enabled, this correction runs first and the
+    per-RK-stage F_cr update then projects it onto B
+    (``cr_grey_sources.cr_flux_relaxation_update``), so the combination is
+    "isotropic streaming target, then projected onto B" --
     a reasonable but **not separately verified** approximation (no ladder
     item tests the combination); flagged here rather than assumed correct.
 

@@ -32,7 +32,10 @@ from astronomix.option_classes.simulation_config import SimulationConfig
 from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
-from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_closure_signal_speed,
+    cr_pressure_coupling_speed,
+)
 from astronomix._stencil_operations._stencil_operations import _stencil_add
 from astronomix._fluid_equations._equations import (
     conserved_state_from_primitive,
@@ -54,6 +57,7 @@ def _hll_solver(
     params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
+    cr_wave_speed_factor=None,
 ) -> STATE_TYPE:
     """
     Returns the conservative fluxes.
@@ -64,7 +68,10 @@ def _hll_solver(
         gamma: The adiabatic index.
         config: The simulation configuration.
         params: The simulation parameters (threaded through for the grey CR
-            fast speed and Euler flux; unused otherwise).
+            wave speeds and Euler flux; unused otherwise).
+        cr_wave_speed_factor: Per-interface optical-depth reduction ``R`` of
+            the grey-CR rows' wave speed (``cr_grey_transport.
+            cr_wave_speed_reduction``), or None for ``R = 1``.
 
     Returns:
         The conservative fluxes at the interfaces.
@@ -86,13 +93,12 @@ def _hll_solver(
     c_L = speed_of_sound(rho_L, p_L, gamma)
     c_R = speed_of_sound(rho_R, p_R, gamma)
 
-    # Grey two-moment cosmic rays: a separate hyperbolic subsystem with its
-    # own (reduced free-streaming) characteristic speed, combined with the
-    # gas wave speed as max(., .) rather than folded into one effective
-    # sound speed -- see cr_grey_transport.py's module docstring.
+    # Grey two-moment cosmic rays: the gas rows see the CR-pressure coupling
+    # in quadrature; the CR rows get their own HLL flux below
+    # (_grey_cr_hll_rows).
     if registered_variables.cosmic_ray_e_active:
-        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, params, registered_variables))
-        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, params, registered_variables))
+        c_L = jnp.sqrt(c_L**2 + cr_pressure_coupling_speed(primitives_left, params, registered_variables) ** 2)
+        c_R = jnp.sqrt(c_R**2 + cr_pressure_coupling_speed(primitives_right, params, registered_variables) ** 2)
 
     # get the left and right states and fluxes
     fluxes_left = _euler_flux(
@@ -126,7 +132,64 @@ def _hll_solver(
         * (conserved_right - conserved_left)
     ) / (wave_speeds_right_plus - wave_speeds_left_minus)
 
+    if registered_variables.cosmic_ray_e_active:
+        fluxes = _grey_cr_hll_rows(
+            fluxes, fluxes_left, fluxes_right, conserved_left, conserved_right,
+            u_L, u_R, config, params, registered_variables, cr_wave_speed_factor,
+        )
+
     return fluxes
+
+
+def _grey_cr_hll_rows(
+    fluxes, fluxes_left, fluxes_right, conserved_left, conserved_right,
+    u_L, u_R, config, params, registered_variables, cr_wave_speed_factor,
+):
+    """Overwrite the grey-CR rows (``e_cr``, ``F_cr``) of ``fluxes`` with
+    their own interface flux, split into an advective and a closure part.
+
+    - Advective part (``u_n e_cr``, ``u_n F_cr``): the gas mass flux already
+      in ``fluxes`` times the upwind ``q / rho`` -- the standard
+      passive-scalar treatment. The CR rows are then transported exactly
+      like the gas density (``e_cr / rho`` is preserved across contacts and
+      by the gas solver's own dissipation), and static gas adds no
+      dissipation to them. With a separate HLL speed for the whole CR row,
+      density and ``e_cr`` would get different numerical diffusion and drift
+      apart (seen as a 13% error in ``cr_adiabatic_compression.py``'s
+      ``e_cr ~ rho^gamma_cr`` check).
+    - Closure part (``F_cr`` in the ``e_cr`` row, ``v_red^2 P_cr`` in the
+      normal ``F_cr`` row): central flux plus Rusanov dissipation at the
+      closure's own signal speed ``v_red sqrt(gamma_cr - 1)``
+      (``cr_grey_transport.cr_closure_signal_speed``), times the
+      optical-depth reduction ``R`` in the diffusive regime.
+
+    So neither subsystem inflates the other's dissipation: the gas rows keep
+    the gas signal speed (until 2026-10-04 ``v_red`` was folded into a
+    shared bound, DESIGN.md "Finding 1"), and the CR rows are no longer
+    dissipated at the full ``v_red`` (DESIGN.md "Open: CR diffusion
+    correctness", fix step 4).
+    """
+    rho_L = conserved_left[registered_variables.density_index]
+    rho_R = conserved_right[registered_variables.density_index]
+    mass_flux = fluxes[registered_variables.density_index]
+
+    signal_speed = cr_closure_signal_speed(params)
+    if cr_wave_speed_factor is not None:
+        signal_speed = signal_speed * cr_wave_speed_factor
+
+    f_cr_index = registered_variables.cosmic_ray_flux_index
+    rows = [registered_variables.cosmic_ray_e_index] + (
+        [f_cr_index]
+        if config.dimensionality == 1
+        else [f_cr_index.x, f_cr_index.y, f_cr_index.z][: config.dimensionality]
+    )
+    rows = jnp.array(rows)
+    q_L, q_R = conserved_left[rows], conserved_right[rows]
+    advective = mass_flux * jnp.where(mass_flux >= 0, q_L / rho_L, q_R / rho_R)
+    closure = 0.5 * (
+        fluxes_left[rows] - u_L * q_L + fluxes_right[rows] - u_R * q_R
+    ) - 0.5 * signal_speed * (q_R - q_L)
+    return fluxes.at[rows].set(advective + closure)
 
 
 # @jaxtyped(typechecker=typechecker)
@@ -150,6 +213,7 @@ def _hllc_solver(
     flux_direction_index: int,
     hllc_lm: bool = False,
     low_mach_dissipation_control: bool = False,
+    cr_wave_speed_factor=None,
 ) -> STATE_TYPE:
     """
     HLLC Riemann solver returning the conservative interface fluxes.
@@ -169,6 +233,7 @@ def _hllc_solver(
         low_mach_dissipation_control: Scale the velocity-component dissipation
             by the local Mach number to suppress excess dissipation in the
             low-Mach regime.
+        cr_wave_speed_factor: See :func:`_hll_solver`.
 
     Returns:
         The conservative fluxes at the interfaces.
@@ -193,13 +258,10 @@ def _hllc_solver(
     c_L = speed_of_sound(rho_L, p_L, gamma)
     c_R = speed_of_sound(rho_R, p_R, gamma)
 
-    # Grey two-moment cosmic rays: a separate hyperbolic subsystem with its
-    # own (reduced free-streaming) characteristic speed, combined with the
-    # gas wave speed as max(., .) rather than folded into one effective
-    # sound speed -- see cr_grey_transport.py's module docstring.
+    # Grey two-moment cosmic rays: see _hll_solver.
     if registered_variables.cosmic_ray_e_active:
-        c_L = jnp.maximum(c_L, grey_cr_fast_speed(primitives_left, params, registered_variables))
-        c_R = jnp.maximum(c_R, grey_cr_fast_speed(primitives_right, params, registered_variables))
+        c_L = jnp.sqrt(c_L**2 + cr_pressure_coupling_speed(primitives_left, params, registered_variables) ** 2)
+        c_R = jnp.sqrt(c_R**2 + cr_pressure_coupling_speed(primitives_right, params, registered_variables) ** 2)
 
     # get the left and right states and fluxes
     F_L = _euler_flux(
@@ -306,6 +368,12 @@ def _hllc_solver(
     fluxes = jnp.where(S_L >= 0, F_L, F_star)
     fluxes = jnp.where(S_R <= 0, F_R, fluxes)
 
+    if registered_variables.cosmic_ray_e_active:
+        fluxes = _grey_cr_hll_rows(
+            fluxes, F_L, F_R, U_L, U_R, u_L, u_R,
+            config, params, registered_variables, cr_wave_speed_factor,
+        )
+
     return fluxes
 
 
@@ -322,6 +390,7 @@ def _am_hllc_solver(
     params: SimulationParams,
     registered_variables: RegisteredVariables,
     flux_direction_index: int,
+    cr_wave_speed_factor=None,
 ) -> STATE_TYPE:
     """
     Adaptive/hybrid HLLC solver that blends two HLLC fluxes per interface using
@@ -388,6 +457,7 @@ def _am_hllc_solver(
         registered_variables,
         flux_direction_index,
         low_mach_dissipation_control=low_mach_dissipation_control,
+        cr_wave_speed_factor=cr_wave_speed_factor,
     )
     fluxes_hllc_lm = _hllc_solver(
         primitives_left,
@@ -399,6 +469,7 @@ def _am_hllc_solver(
         flux_direction_index,
         hllc_lm=True,
         low_mach_dissipation_control=low_mach_dissipation_control,
+        cr_wave_speed_factor=cr_wave_speed_factor,
     )
 
     return g * fluxes_hllc_lm + (1 - g) * fluxes_hllc

@@ -4,9 +4,95 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Done (2026-10-04): CR diffusion fix-plan steps 0-1 (tests + convention)
+## Done (2026-10-05): CR diffusion fix-plan step 4 (separate gas/CR Riemann wave speeds)
 
-DESIGN.md "Open: CR diffusion correctness" is the plan; steps 2-5 are still open.
+DESIGN.md "Open: CR diffusion correctness" is the plan; step 5 (re-runs of items 4/9/Phase D
+are done here; M5-M7 and CWB remain) is open. This also fixes Finding 1 (shared gas/CR wave-speed
+bound).
+
+- **Gas rows** of HLL/HLLC/AM-HLLC use `sqrt(c_gas^2 + c_cr^2)`
+  (`cr_grey_transport.cr_pressure_coupling_speed`), with no `v_red` any more.
+- **CR rows** get their own flux (`hll._grey_cr_hll_rows`):
+  - advective part = gas mass flux times upwind `q / rho`;
+  - closure part = central flux plus Rusanov dissipation at `R v_red sqrt(gamma_cr - 1)`.
+- **Optical-depth reduction** `R = cr_wave_speed_reduction(kappa_n)` follows Jiang & Oh 2018;
+  `kappa_n` is the face-normal diffusivity, so it is B-aware with anisotropic transport. Per-cell
+  factors are computed once per gas half-step and passed down to the Riemann solver.
+- **CFL:** `max(gas speed, v_red sqrt(gamma_cr - 1))`. `grey_cr_fast_speed` was removed.
+- **Why the CR-row flux is split:** a single HLL flux for the whole CR row at a CR-only speed
+  gave `e_cr` and `rho` different numerical diffusion (`cr_adiabatic_compression.py`: 12.7%
+  error vs. 0.5% tolerance). With `v_red = 0` it was also 0/0 (NaN in `cr_shock_tube.py`).
+- **`cr_diffusion_rate.py`: 7/7.**
+  - Stiff 1D: D/kappa = 1.018 (was 1.25).
+  - Aligned `D_perp` = 8.8e-5 kappa, which is the bump's own pressure-driven advection
+    (proportional to amplitude); T2c now skips its refinement check below 1e-3.
+  - Oblique `D_perp` at N = 256: 0.011 (30 deg) / 0.015 (45 deg) kappa.
+- **Recalibrated:**
+  - Item 4: order >= 1.3 over N = 128-512 plus N = 1024 error < 2e-4; errors are now
+    1.7e-3 -> 1.3e-4.
+  - Item 8: CR-fraction band 0.3 -> 0.5 and CS14/KR13 ratio tolerance 5% -> 8%.
+- **Why item 8 moved:** the gas rows no longer smear shocks at `v_red`, so the Sedov CR fraction
+  rose (KR13 0.124 -> 0.374, constant 0.061 -> 0.187 at 48^3). The resolution study converges old
+  and new toward each other (KR13 at 48 / 64 / 96: 0.124 / 0.145 / 0.150 old, 0.374 / 0.311 /
+  0.273 new), so it is discretization error from the other side, not over-injection. Item 8's
+  exact formula cross-check (~1e-7) passes unchanged.
+- **Regression:** all grey-CR pytests pass, plus `sn_driving_energy_conservation`. Items 11 and
+  15 ran at 128^3, because their 256^3 / 300^3 defaults do not fit an 11 GB GPU (also true
+  before). Item 9's docstring now notes Finding 1 is fixed.
+  - MHD energy budget closes to 9.1e-14.
+  - Phase D injection recovers `mach_scale` = 1.061 (true 1.0).
+- **Cost:** +4% per step at fixed dt (3D MHD+CR HLLC, 96^3), with the CR-row flux vectorized
+  over rows (a per-row loop cost +20%). The CFL now uses `v_red / sqrt(3)`, so `v_red`-limited
+  runs take up to `sqrt(3)` fewer steps.
+
+## Done (2026-10-04): CR diffusion fix-plan step 3 (tensor relaxation, kappa_perp)
+
+DESIGN.md "Open: CR diffusion correctness" is the plan; steps 4-5 are still open.
+
+- `cr_flux_relaxation_update` now does the anisotropic transport too. After every RK stage,
+  `F <- [a_par b b + a_perp (I - b b)] . F` with `a = kappa / (kappa + (gamma_cr - 1) v_red^2
+  dt)`.
+  - The relaxation goes toward zero: the gradient drive stays in the flux.
+  - `a_perp = 0` at `kappa_perp = 0` is the old projection, now per stage.
+  - `a_par = 1` without `diffusive_relaxation` (item 3's pure wave transport).
+- B plumbing: the FV MHD gas half-steps run on a gas-only state, so `_evolve_state_fv` passes
+  the split-off B into `_evolve_gas_state_unsplit(..., magnetic_field)`. The second half-step
+  gets the B after `magnetic_update`; B is constant within a half-step, so this is exact.
+- New `CosmicRayGreyParams.perpendicular_diffusion_coefficient` (default 0).
+- Removed: `anisotropic_flux_projection` and its iteration-level call. Replaced by
+  `cr_grey_transport.magnetic_unit_vector`, which keeps the same smooth `b_field_floor`.
+  `cr_flux_relaxation_rate` was folded into the kappa form.
+- `finalize_config` guards `anisotropic_transport`: FV + UNSPLIT + RK2_SSP, and `mhd`.
+- `cr_diffusion_rate.py`: 5/7 pass. T2a passes (leak gone, `D_perp` 0.2917 kappa at both
+  `C_cfl`); T2d passes (`kappa_perp` recovered at 0.943). Aligned `D_perp` at N = 256 is
+  0.039 kappa (was 0.064), all Riemann part now. That is step 4, along with T1c's D/kappa = 1.25.
+- Regression checks pass: item 3 oblique, `cr_divergence_b_preservation` (div B 9.2e-15 with
+  anisotropic CRs), item 4, item 9, and `cr_mhd_energy_budget` (MHD+CR energy error 9.1e-14,
+  mass 4.9e-15).
+
+## Done (2026-10-04): CR diffusion fix-plan step 2 (implicit relaxation per RK stage)
+
+DESIGN.md "Open: CR diffusion correctness" is the plan; steps 3-5 are still open.
+
+- The `F_cr` relaxation is now `cr_grey_sources.cr_flux_relaxation_update`:
+  `F_cr <- F_cr / (1 + nu dt)` at the end of every SSP-RK2 stage (`_evolve_gas_state_unsplit`'s
+  `rhs`).
+  - Removed: the explicit `cr_flux_relaxation_source` from the operator-split bundle
+    (`_time_integrator_sources`) and the `dt_relax` limit from `_cfl_time_step`.
+  - `finalize_config` now raises for `diffusive_relaxation` outside FV + UNSPLIT + RK2_SSP; the
+    other paths have no stages and would silently drop the relaxation.
+- Effect: the `+nu dt_gas / 2` time-step bias in D is gone. `cr_diffusion_rate.py` T1a passes
+  (D/kappa = 1.0073 at `C_cfl` 0.4, 0.2 and 0.1). T1b converges at second order (0.029 /
+  0.0073 / 0.0020). Stiff runs are no longer relaxation-limited (T1c: 5133 vs. 114286 steps).
+  3/7 pass.
+- Item 4: L2 errors 3.6e-3 / 9.2e-4 / 2.7e-4 / 1.4e-4 (were 8.9e-3 ... 9.9e-4), order 1.58
+  (was 1.06); `min_order` raised to 1.3. The finest pair flattens on a ~1.2e-4 floor that is
+  the finite-`v_red` two-moment model (same in float64 and at amplitude 1e-5; halves at
+  `v_red` = 16).
+- Item 9 (all 3 tests) and Phase D pass; Phase D's recovered-kappa error drops 4.0e-3 -> 9.0e-4.
+- M5/M7 docstring notes updated: the dt_relax cost reasoning there no longer applies.
+
+## Done (2026-10-04): CR diffusion fix-plan steps 0-1 (tests + convention)
 
 **Step 0.** New `pytests/cosmic_rays_grey/cr_diffusion_rate.py`, 7 tests (T1a-c 1D isotropic,
 T2a-d 2D MHD anisotropic). They measure D from the second-moment growth of a tiny Gaussian

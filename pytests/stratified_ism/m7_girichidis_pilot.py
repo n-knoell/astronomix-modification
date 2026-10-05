@@ -7,9 +7,12 @@ atmosphere when CRs are injected.
 **Diffusion convention changed 2026-10-04 (DESIGN.md "Open: CR diffusion correctness",
 fix-plan step 1).** ``diffusion_coefficient`` is now the ``e_cr`` diffusivity, so the kappa
 below now diffuses with ``D = kappa``. Every run made before then had ``D = kappa/3`` and a
-3x faster relaxation rate ``nu``. The dt_relax reasoning below (``dt <= C_cfl * kappa / v_red^2``)
-is now ``C_cfl * kappa / ((gamma_cr - 1) v_red^2)``, 3x larger, and the run has not been redone yet
-(fix-plan step 5).
+3x faster relaxation rate ``nu``. Since fix-plan step 2 (same day) the relaxation is implicit,
+so the dt_relax bound the cost reasoning below relies on (``dt <= C_cfl * kappa / v_red^2``) no
+longer exists, and an isotropic ``kappa_perp = 1e26`` costs no extra steps. Since step 3, the
+MHD "projection onto B" below is a per-stage tensor relaxation, and the paper's
+``kappa_perp = 1e26`` can be set (``CosmicRayGreyParams.perpendicular_diffusion_coefficient``).
+The run has not been redone yet (fix-plan step 5).
 
 **NOT a committed pytest -- an exploratory script, not yet run.** M5's box
 (37.5 x 37.5 x 300 pc) is narrower than one scale height and 26x over-driven,

@@ -425,7 +425,8 @@ each land separately, each with step 0's tests as the gate.
    `pics/cr_diffusion_rate_{1d,2d}_test.svg`. Targets use the new convention
    (`D = diffusion_coefficient`). Expected to pass after: T1a step 2; T1b step 1; T1c steps
    1, 2, 4; T2a step 3; T2b step 1; T2c steps 3-4; T2d step 3. After step 1: T1b and T2b pass
-   (2/7). Original spec: Measure D from the second-moment growth
+   (2/7); after step 2: T1a, T1b, T2b (3/7); after step 3: also T2a, T2d (5/7); after step 4:
+   all 7. Original spec: Measure D from the second-moment growth
    after `t_end/3`, in a periodic box with a tiny-amplitude bump. Scan `C_cfl` (or fix the
    ignored `dt_max`).
    - **T1, 1D isotropic:**
@@ -459,7 +460,21 @@ each land separately, each with step 0's tests as the gate.
    - Changing the meaning of an existing parameter is silent for any script not updated in the
      same commit. All users are listed by `grep -rl diffusion_coefficient` (6 scripts + 3 library
      files).
-2. **Implicit relaxation inside every RK stage** (scalar `nu` first). In
+2. **Implicit relaxation inside every RK stage -- done 2026-10-04.**
+   - `cr_grey_sources.cr_flux_relaxation_update` (`F_cr <- F_cr / (1 + nu dt_stage)`) is called
+     at the end of every stage in `_evolve_gas_state_unsplit`'s `rhs`. The explicit source left
+     the operator-split bundle, and the dt_relax branch left `_cfl_time_step`. `finalize_config`
+     raises for `diffusive_relaxation` outside FV + UNSPLIT + RK2_SSP.
+   - Results: T1a passes (D identical to 4 digits over `C_cfl` 0.4-0.1, was 3.8% spread). T1b:
+     `D/kappa - 1` = 0.029 / 0.0073 / 0.0020, second order. T1c's step gate passes (5133 vs.
+     5120 hydro steps; its D still needs step 4). T2b: 2.9-3.3% at N = 256. T2a's leak is
+     unchanged, as expected, since the projection is step 3.
+   - Item 4: L2 errors 2.5-7x smaller, least-squares order 1.06 -> 1.58, gate raised 0.7 -> 1.3.
+     The finest pair flattens on a ~1.2e-4 finite-`v_red` model floor (same in float64 and at
+     1e-5 amplitude; halves when `v_red` doubles). Item 9 (all 3 tests) and Phase D pass; Phase
+     D's error drops 4.0e-3 -> 9.0e-4.
+
+   Original spec (scalar `nu` first): in
    `_evolve_gas_state_unsplit`'s `rhs`, after the forward-Euler hydro stage, set
    `F_cr <- F_cr / (1 + nu dt_stage)`.
    - Remove `cr_flux_relaxation_source` from the operator-split bundle, and remove the
@@ -473,7 +488,24 @@ each land separately, each with step 0's tests as the gate.
      `diffusive_relaxation` with `split=SPLIT` (no CR script uses it).
    - Gate: T1 and item 4. Item 4's convergence order should rise to ~2, so re-calibrate its
      docstring numbers.
-3. **Tensor relaxation instead of projection.**
+3. **Tensor relaxation instead of projection -- done 2026-10-04.**
+   - `cr_flux_relaxation_update` now takes the split-off B (`magnetic_field`), which
+     `_evolve_state_fv` passes into both gas half-steps (the second gets the updated B). It
+     applies `F <- [a_par b b + a_perp (I - b b)] . F` with `a = kappa / (kappa + (gamma_cr - 1)
+     v_red^2 dt)`. Without `diffusive_relaxation`, `a_par = 1`, so pure wave transport along B
+     (item 3) still works.
+   - New `CosmicRayGreyParams.perpendicular_diffusion_coefficient` (default 0).
+   - Removed `anisotropic_flux_projection` and its iteration-level call. `magnetic_unit_vector`
+     (`cr_grey_transport`) keeps the smooth `b_field_floor`. `cr_flux_relaxation_rate` (step 1)
+     was folded into the update's kappa form.
+   - `finalize_config` also guards `anisotropic_transport` (FV + UNSPLIT + RK2_SSP, and `mhd`).
+   - Results: T2a passes (`D_perp` 0.2917 kappa at both `C_cfl`, i.e. no leak). T2d passes
+     (`kappa_perp` recovered at 0.943). T2c's aligned `D_perp` dropped 0.064 -> 0.039 kappa at
+     N = 256; the rest is the Riemann part (step 4). T2b is unchanged. 5/7 pass.
+   - Item 3 oblique, the div B check, item 4 and item 9 pass. The MHD energy budget was still
+     running at the time of writing; see PROGRESS.md.
+
+   Original spec:
    - Source `-nu . F_cr` with `nu = (gamma_cr - 1) v_red^2 K^-1` and
      `K = kappa_par b b + kappa_perp (I - b b)`. The relaxation goes toward **zero**: the
      gradient drive stays in the flux (`v_red^2 P_cr` in `grey_cr_flux_terms`), and the steady
@@ -495,7 +527,63 @@ each land separately, each with step 0's tests as the gate.
      The first plan (and the streaming plan's (c)) assumed it could. Pass `b_hat` built from the
      split-off magnetic array into `_evolve_gas_state_unsplit`. B is constant during a gas
      half-step (the magnetic update sits between the two half-steps), so this is exact.
-4. **CR-specific wave speed.** Use a separate HLL bound for the CR rows:
+4. **CR-specific wave speed -- done 2026-10-04/05.**
+   - **Gas rows** (HLL, HLLC, AM-HLLC): `sqrt(c_gas^2 + c_cr^2)`, with the CR-pressure coupling
+     speed in quadrature (`cr_grey_transport.cr_pressure_coupling_speed`). `v_red` is gone from
+     the gas rows, which is the Finding-1 fix.
+   - **CR rows** (`hll._grey_cr_hll_rows`) get their own flux, split into two parts:
+     - advective `u e_cr`, `u F_cr` = the gas mass flux times the upwind `q / rho` (passive-scalar
+       treatment);
+     - closure (`F_cr`, `v_red^2 P_cr`) = central flux plus Rusanov dissipation at
+       `R v_red sqrt(gamma_cr - 1)`.
+
+     The split was needed: one HLL flux at a CR-only speed for the whole CR row gave `e_cr` and
+     `rho` different numerical diffusion. `cr_adiabatic_compression.py`'s pointwise
+     `e_cr ~ rho^gamma_cr` check then failed at 12.7%. With `v_red = 0` it also divided 0 by 0
+     (NaN in `cr_shock_tube.py`).
+   - **R** = `cr_grey_transport.cr_wave_speed_reduction`: `R^2 = x^2 (1 - exp(-1/x^2))`,
+     `x = kappa_n / ((gamma_cr - 1) v_red dx)` plus a 1e-30 floor, so it is finite and
+     differentiable at `kappa_n = 0`.
+     - Per cell and axis it comes from `cr_wave_speed_factors`: `kappa` isotropically, or
+       `kappa_par b_n^2 + kappa_perp (1 - b_n^2)`, computed once per gas half-step. At each face
+       the larger of the two neighbouring cells' values is used.
+     - It is passed down as `_evolve_gas_state_unsplit_inner(cr_wave_speed_factors)` ->
+       `_riemann_solver(cr_wave_speed_factor)` -> HLL/HLLC.
+     - Without `diffusive_relaxation`, R = 1.
+   - **CFL:** `max(sqrt(c_gas^2 + c_cr^2), v_red sqrt(gamma_cr - 1))` (unsplit and split
+     estimators). `grey_cr_fast_speed` is removed.
+   - **`cr_diffusion_rate.py`: 7/7.** T1c D/kappa = 1.018 (was 1.25; 2957 steps, fewer than
+     before). T2b `D_par` error 1.4-1.6% at N = 256 (was 2.9-3.3%).
+     - T2c: aligned `D_perp` is 8.8e-5 kappa, flat in N and exactly proportional to amplitude.
+       That is gas advection driven by the bump's own pressure, not diffusion, so the test now
+       skips its refinement check below 1e-3 kappa.
+     - T2c oblique (30 / 45 deg, N = 256): 0.011 / 0.015 kappa, down from 0.034 / 0.033. That is
+       better than the "only sqrt(3)" this plan predicted, because `R(tau_n)` still gives ~0.77
+       at 45 deg at this resolution.
+   - **Item 4:** errors 1.7e-3 -> 1.3e-4 (order 1.56 over N = 128-512). The gate is now
+     least-squares order >= 1.3 over N <= 512 plus N = 1024 error < 2e-4, because the finest
+     pair sits on the finite-`v_red` floor.
+   - **Item 8 recalibrated.** With the gas rows no longer smeared by `v_red`, the early,
+     strongest Sedov shock is sharper and the injected CR fraction rose: KR13 0.124 -> 0.374,
+     constant-0.1 0.061 -> 0.187 at N = 48.
+     - Not over-injection: a resolution study converges the old and new schemes toward each
+       other from opposite sides (KR13 at N = 48 / 64 / 96: old 0.124 / 0.145 / 0.150, new
+       0.374 / 0.311 / 0.273).
+     - The band went 0.3 -> 0.5 and the CS14/KR13 ratio tolerance 5% -> 8% (5.7% measured, more
+       CR feedback). The exact formula cross-check (~1e-7) and the weak-blast Mach span pass
+       unchanged.
+   - **Regression:** every grey-CR pytest passes.
+     - Items 11 and 15 ran at 128^3, because their 256^3 / 300^3 defaults never fit an 11 GB
+       GPU.
+     - Item 7's Sedov CR fraction is 18.7% (band 0.01-0.3).
+     - MHD energy budget: 9.1e-14 with CRs (control 7.5e-14). Its CR cavity is narrower
+       (0.039 / 0.086 along / across B, was 0.070 / 0.133), because there is less numerical CR
+       diffusion.
+   - **Cost:** 3D MHD+CR HLLC at 96^3 and fixed dt costs 50.4 vs. 48.5 ms/step (+4%), after
+     vectorizing the CR-row flux over rows (+20% with a per-row loop). Adaptive-dt runs where
+     `v_red` sets the CFL (M5-M7) gain up to `sqrt(3)` in dt.
+
+   Original spec: use a separate HLL bound for the CR rows:
    `|u_n| + R(tau_n) v_red / sqrt(3)`.
    - `R = sqrt((1 - exp(-tau^2)) / tau^2)` and the max speed `min(v_red, R v_red/sqrt(3))` are
      JO18 Sec. 3.2.1.
@@ -2193,7 +2281,8 @@ open BCs).
   above; currently deferred.
 - **Spectral-interface contract** (Girichidis collaboration, Phase E): agree the `spectrum`
   object API early so Phase E is a swap, not a rewrite; not touched in Phase A.
-- **Shared gas/CR Riemann-solver wave-speed bound degrades shock-capturing** (found 2026-08-27,
+- **[FIXED 2026-10-04, diffusion fix step 4: separate gas/CR wave speeds]** **Shared gas/CR
+  Riemann-solver wave-speed bound degrades shock-capturing** (found 2026-08-27,
   ladder item 9 investigation): `grey_cr_fast_speed`'s `reduced_streaming_speed` is combined with
   the gas sound speed via `max(...)` into one shared HLL wave-speed bound (`hll.py`), regardless of
   whether any `e_cr` is actually present. Reproduced: a stationary Mach-4 shock with zero `e_cr`

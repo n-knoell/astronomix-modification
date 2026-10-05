@@ -87,7 +87,7 @@ def cr_precursor_ode_rhs(
       *not* an enthalpy-like ``u * P_cr`` term, unlike the gas equation, see
       that function's flux formula -- plus ``cr_adiabatic_work_source``'s
       ``-P_cr * du/dx`` work term, plus ``F_cr = -diffusion_coefficient *
-      de_cr/dx`` from ``cr_flux_relaxation_source``'s quasi-steady limit,
+      de_cr/dx`` from ``cr_flux_relaxation_update``'s quasi-steady limit,
       ladder item 4): ``d/dx[u * P_cr/(gamma_cr-1) + F_cr] = -P_cr * du/dx``.
       Solving for ``dF_cr/dx`` gives the third return value, using the
       already-solved ``du/dx`` and ``dP_cr/dx = -(gamma_cr - 1) F_cr /

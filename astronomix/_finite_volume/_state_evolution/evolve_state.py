@@ -43,6 +43,8 @@ from astronomix._finite_volume._riemann_solver._riemann_solver import _riemann_s
 from astronomix._finite_volume._magnetic_update._magnetic_field_update import magnetic_update
 from astronomix._integrators._explicit_rk import rk2_ssp
 from astronomix._modules._time_integrator_sources import _time_integrator_sources
+from astronomix._modules._cosmic_rays_grey.cr_grey_sources import cr_flux_relaxation_update
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import cr_wave_speed_factors
 from astronomix._stencil_operations._stencil_operations import _stencil_add
 from astronomix._geometry.geometric_terms import _pressure_nozzling_source
 from astronomix._finite_volume._state_evolution.reconstruction import (
@@ -272,7 +274,7 @@ def _apply_gravity_source(
     # RK2 hydro stages (floored since M4, 2026-09-15), this operator-split
     # source-term addition -- self-gravity, and since CR-grey feedback was
     # wired through the same "gravity_source" path, also the CR
-    # pressure-gradient/adiabatic-work/relaxation terms -- had no positivity
+    # pressure-gradient/adiabatic-work terms -- had no positivity
     # protection at all. Confirmed via debug instrumentation against a real
     # SILCC-ISM M5 run: pressure stayed positive through every RK2-floored
     # hydro stage, then went negative for the first time immediately after
@@ -660,8 +662,12 @@ def _evolve_gas_state_unsplit_inner(
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
     dual_energy_shock_mask=None,
+    cr_wave_speed_factors=None,
 ) -> STATE_TYPE:
-    
+    # cr_wave_speed_factors: per-cell, per-axis optical-depth reduction of the
+    # grey-CR rows' HLL wave speed, shape (dimensionality, *grid), from
+    # _grey_cr_wave_speed_factors; None for no reduction.
+
     if config.boundary_handling == GHOST_CELLS:
         primitive_state = _boundary_handler(primitive_state, config, registered_variables, params)
 
@@ -747,6 +753,16 @@ def _evolve_gas_state_unsplit_inner(
                 )
             )
 
+        # Interface i lies between cells i - 1 (left state) and i (right
+        # state); take the larger, i.e. more dissipative, of the two cells'
+        # CR wave-speed factors.
+        cr_wave_speed_factor = None
+        if cr_wave_speed_factors is not None:
+            cell_factor = cr_wave_speed_factors[axis - 1]
+            cr_wave_speed_factor = jnp.maximum(
+                jnp.roll(cell_factor, shift=1, axis=axis - 1), cell_factor
+            )
+
         # get the fluxes at the interfaces
         fluxes = _riemann_solver(
             primitives_left_interface,
@@ -757,6 +773,7 @@ def _evolve_gas_state_unsplit_inner(
             params,
             registered_variables,
             axis,
+            cr_wave_speed_factor,
         )
 
         # update the conserved variables
@@ -821,7 +838,11 @@ def _evolve_gas_state_unsplit(
     params: SimulationParams,
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
+    magnetic_field=None,
 ) -> STATE_TYPE:
+    # magnetic_field: the split-off (B_x, B_y, B_z) of an FV MHD run -- the
+    # gas-only primitive_state has no B rows -- for the anisotropic grey-CR
+    # F_cr update; None otherwise.
 
     # See _evolve_gas_state_split's identical comment: this pair is gated on
     # either gravity or CR-grey being active, not gravity alone.
@@ -878,6 +899,12 @@ def _evolve_gas_state_unsplit(
         # in sync too (other modules and the initial condition leave it stale).
         primitive_state = _dual_energy_sync(primitive_state, gamma, registered_variables)
 
+    # Grey-CR wave-speed reduction for the Riemann solver: depends only on B
+    # and the CR parameters, both constant during this (half-)step.
+    cr_factors = cr_wave_speed_factors(
+        primitive_state, config, params, registered_variables, magnetic_field
+    )
+
     if config.time_integrator == RK2_SSP:
         # Generic SSP-RK2 (Heun) over the conserved state.  The stage
         # increment is one forward-Euler hydro step expressed in conserved
@@ -895,7 +922,19 @@ def _evolve_gas_state_unsplit(
                 helper_data,
                 registered_variables,
                 dual_energy_shock_mask=shock_mask,
+                cr_wave_speed_factors=cr_factors,
             )
+            # Grey-CR F_cr relaxation / anisotropy, implicit at the end of
+            # every stage (not on the operator-split source path below): see
+            # cr_flux_relaxation_update for why the placement matters.
+            if registered_variables.cosmic_ray_e_active and (
+                config.cosmic_ray_grey_config.diffusive_relaxation
+                or config.cosmic_ray_grey_config.anisotropic_transport
+            ):
+                p_stepped = cr_flux_relaxation_update(
+                    p_stepped, dt_step, config, registered_variables, params,
+                    magnetic_field,
+                )
             du = (
                 conserved_state_from_primitive(
                     p_stepped, gamma, config, registered_variables
@@ -1105,6 +1144,7 @@ def _evolve_state_fv(
                     params,
                     helper_data,
                     registered_variables_gas,
+                    magnetic_field,
                 )
             else:
                 evolved_gas = _evolve_gas_state_split(
@@ -1136,6 +1176,7 @@ def _evolve_state_fv(
                     params,
                     helper_data,
                     registered_variables_gas,
+                    magnetic_field,
                 )
             else:
                 evolved_gas = _evolve_gas_state_split(

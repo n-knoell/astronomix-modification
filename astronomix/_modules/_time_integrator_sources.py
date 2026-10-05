@@ -52,7 +52,6 @@ from astronomix._modules._cooling._simple_mixing_cooling import (
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_adiabatic_work_source,
-    cr_flux_relaxation_source,
     cr_pressure_gradient_source,
     cr_streaming_heating_source,
 )
@@ -224,7 +223,9 @@ def _time_integrator_sources(
 
     # Grey two-moment cosmic-ray feedback (astronomix._modules._cosmic_rays_grey):
     # -grad(P_cr) momentum coupling, adiabatic -P_cr * div(v) work, and
-    # streaming heating. registered_variables.cosmic_ray_e_active is only ever
+    # streaming heating. The F_cr relaxation is not here: it is applied
+    # implicitly inside every RK stage (cr_flux_relaxation_update, called from
+    # _evolve_gas_state_unsplit). registered_variables.cosmic_ray_e_active is only ever
     # set by the FV branch of get_registered_variables (see that module's
     # DESIGN.md "FD limitation"), so this is a no-op under FD for now.
     if registered_variables.cosmic_ray_e_active:
@@ -246,13 +247,6 @@ def _time_integrator_sources(
         if config.cosmic_ray_grey_config.streaming:
             source_term += (
                 cr_streaming_heating_source(
-                    cr_primitive_state, config, registered_variables, params
-                )
-                * dt
-            )
-        if config.cosmic_ray_grey_config.diffusive_relaxation:
-            source_term += (
-                cr_flux_relaxation_source(
                     cr_primitive_state, config, registered_variables, params
                 )
                 * dt

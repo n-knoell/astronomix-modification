@@ -37,7 +37,7 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
-from astronomix._modules._cosmic_rays_grey.cr_grey_transport import grey_cr_fast_speed
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import cr_pressure_coupling_speed
 from astronomix._modules._gravity._poisson_solver import (
     _compute_gravitational_potential,
 )
@@ -74,10 +74,11 @@ def _reconstruct_at_interface_split(
         # calculate the sound speed
         c = speed_of_sound(rho, p, gamma)
 
-        # Grey two-moment cosmic rays: combine with the CR-grey fast speed as
-        # max(., .), not folded in -- see hll.py's identical pattern.
+        # Grey two-moment cosmic rays: the gas sees the CR-pressure coupling in
+        # quadrature (the CR closure's own waves are not in this gas
+        # Jacobian; its rows only carry the u_n advection below).
         if registered_variables.cosmic_ray_e_active:
-            c = jnp.maximum(c, grey_cr_fast_speed(primitive_state, params, registered_variables))
+            c = jnp.sqrt(c**2 + cr_pressure_coupling_speed(primitive_state, params, registered_variables) ** 2)
 
         # ================ construct A_W, the "primitive Jacabian" (not an actual Jacabian) ================
         # see https://diglib.uibk.ac.at/download/pdf/4422963.pdf, 2.11

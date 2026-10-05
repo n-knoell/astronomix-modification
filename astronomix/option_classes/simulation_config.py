@@ -1026,6 +1026,27 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
             "solver_mode == FINITE_VOLUME."
         )
 
+    # The grey-CR F_cr relaxation and anisotropic transport are applied
+    # implicitly inside every RK stage of the unsplit FV scheme
+    # (_evolve_gas_state_unsplit); the other integrator paths have no stages
+    # to apply them in and would silently run without them.
+    cr_grey_config = config.cosmic_ray_grey_config
+    if (cr_grey_config.diffusive_relaxation or cr_grey_config.anisotropic_transport) and not (
+        config.solver_mode == FINITE_VOLUME
+        and config.split == UNSPLIT
+        and config.time_integrator == RK2_SSP
+    ):
+        raise ValueError(
+            "cosmic_ray_grey_config.diffusive_relaxation and anisotropic_transport "
+            "require solver_mode == FINITE_VOLUME, split == UNSPLIT and "
+            "time_integrator == RK2_SSP."
+        )
+    if cr_grey_config.anisotropic_transport and not config.mhd:
+        raise ValueError(
+            "cosmic_ray_grey_config.anisotropic_transport requires mhd (a magnetic "
+            "field to transport along)."
+        )
+
     # The N-body -> gas mass-deposition kernels (NGP/CIC/TSC) are 3D-only.
     if (
         config.nbody_config.nbody
