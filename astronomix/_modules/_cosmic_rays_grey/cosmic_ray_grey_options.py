@@ -96,11 +96,15 @@ class CosmicRayGreyParams(NamedTuple):
     gamma_cr: float = 4.0 / 3.0
 
     #: reduced free-streaming speed entering the two-moment closure (Jiang &
-    #: Oh 2018). Open question (plan Sec. 6): pick the largest value that
-    #: leaves wind/emission properties unchanged, via a convergence study.
+    #: Oh 2018). Open question (plan Sec. 6): pick the smallest value beyond
+    #: which wind/emission properties no longer change, via a convergence
+    #: study (cost grows with it).
     reduced_streaming_speed: float = 1.0
 
-    #: positivity floor on e_cr.
+    #: positivity floor on e_cr, applied once per step whenever grey CRs are
+    #: active (since 2026-10-05; before, only under positivity_config.
+    #: per_step_mode = HARD_FLOOR). Not conservative: it adds energy where
+    #: it clips, which then shows up in the energy budget.
     minimum_e_cr: float = 1e-10
 
     #: efficiency with which streaming losses heat the gas thermal energy.
@@ -150,6 +154,24 @@ class CosmicRayGreyParams(NamedTuple):
     #: implicitly (cr_grey_sources.cr_flux_relaxation_update), so small
     #: values cost no time steps.
     perpendicular_diffusion_coefficient: float = 0.0
+
+    #: shape sensor range of the CR rows' monotonicity guard
+    #: (cr_grey_transport.cr_monotonicity_guard, only with
+    #: diffusive_relaxation). Per face, psi = |d_c| / (|d_l| + |d_c| + |d_r|)
+    #: compares the e_cr jump across the face with the jumps across its two
+    #: neighbouring faces: <= 1/3 on any linear or exponential profile, ~0.2 at
+    #: a smooth extremum, <= 0.38 for a Gaussian with 2.6 cells per sigma, 0.5
+    #: for a step smeared over two cells and 1 for a one-cell step. The
+    #: optical-depth reduction R of the Rusanov dissipation is raised toward 1
+    #: (full dissipation) as psi goes from onset to full (C1 smoothstep): a
+    #: flux-limiter blend of the low- and full-dissipation fluxes (Sweby 1984;
+    #: Harten & Zwas 1972; the shape-based monotonicity fix of Sharma &
+    #: Hammett 2007). Without it, the face-normal R -> 0 across B makes the CR
+    #: flux central at cross-field fronts: 2-3% undershoots and negative e_cr
+    #: in the ring tests (DESIGN.md "Open: CR diffusion follow-up", step 3).
+    #: onset >= 1 switches the guard off.
+    cr_guard_sensor_onset: float = 0.45
+    cr_guard_sensor_full: float = 0.75
 
     #: fraction of each shock's dissipated kinetic-energy flux
     #: (find_shocks_pfrommer's thermal_energy_flux) diverted into e_cr

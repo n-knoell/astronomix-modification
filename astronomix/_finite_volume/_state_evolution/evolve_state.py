@@ -44,7 +44,10 @@ from astronomix._finite_volume._magnetic_update._magnetic_field_update import ma
 from astronomix._integrators._explicit_rk import rk2_ssp
 from astronomix._modules._time_integrator_sources import _time_integrator_sources
 from astronomix._modules._cosmic_rays_grey.cr_grey_sources import cr_flux_relaxation_update
-from astronomix._modules._cosmic_rays_grey.cr_grey_transport import cr_wave_speed_factors
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_monotonicity_guard,
+    cr_wave_speed_factors,
+)
 from astronomix._stencil_operations._stencil_operations import _stencil_add
 from astronomix._geometry.geometric_terms import _pressure_nozzling_source
 from astronomix._finite_volume._state_evolution.reconstruction import (
@@ -695,6 +698,13 @@ def _evolve_gas_state_unsplit_inner(
             registered_variables,
         )
 
+    # Grey-CR monotonicity guard: per-cell weight from this stage's e_cr,
+    # applied to the CR rows' wave-speed reduction on every axis below.
+    if cr_wave_speed_factors is not None:
+        cr_guard = cr_monotonicity_guard(
+            primitive_state[registered_variables.cosmic_ray_e_index], params
+        )
+
     # in case of the van albada pp limiter, the limited
     # gradients along all dimensions are needed at once for
     # the proper multidimensional limiting
@@ -755,12 +765,19 @@ def _evolve_gas_state_unsplit_inner(
 
         # Interface i lies between cells i - 1 (left state) and i (right
         # state); take the larger, i.e. more dissipative, of the two cells'
-        # CR wave-speed factors.
+        # CR wave-speed factors, then raise it across sharp e_cr fronts
+        # (monotonicity guard, evaluated on this stage's state).
         cr_wave_speed_factor = None
         if cr_wave_speed_factors is not None:
             cell_factor = cr_wave_speed_factors[axis - 1]
             cr_wave_speed_factor = jnp.maximum(
                 jnp.roll(cell_factor, shift=1, axis=axis - 1), cell_factor
+            )
+            face_guard = jnp.maximum(
+                jnp.roll(cr_guard, shift=1, axis=axis - 1), cr_guard
+            )
+            cr_wave_speed_factor = (
+                cr_wave_speed_factor + (1.0 - cr_wave_speed_factor) * face_guard
             )
 
         # get the fluxes at the interfaces

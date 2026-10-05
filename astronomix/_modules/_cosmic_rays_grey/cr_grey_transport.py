@@ -298,6 +298,87 @@ def cr_wave_speed_reduction(
     return jnp.sqrt(x2 * -jnp.expm1(-1.0 / x2))
 
 
+def cr_monotonicity_guard(
+    e_cr: Float[Array, "..."],
+    params: SimulationParams,
+) -> Float[Array, "..."]:
+    """Per-cell weight ``g`` in [0, 1] of the CR rows' monotonicity guard:
+    the optical-depth reduction ``R`` of the Rusanov dissipation is raised to
+    ``R_eff = R + (1 - R) g`` on the faces of cells near a sharp ``e_cr``
+    front (DESIGN.md "Open: CR diffusion follow-up", step 3).
+
+    A flux-limiter blend of the reduced-dissipation flux (``R``) and the full
+    Rusanov flux (``R = 1``) driven by a shape sensor, not by the size of the
+    jump. Per face, ``psi = |d_c| / (|d_l| + |d_c| + |d_r|)``, with ``d_c`` the
+    ``e_cr`` jump across the face and ``d_l``, ``d_r`` the jumps across its two
+    neighbouring faces along the same axis. Values: <= 1/3 on any linear or
+    exponential profile, ~0.2 at a smooth extremum, <= 0.38 for a Gaussian
+    with 2.6 cells per sigma, 1 for a one-cell step. ``psi`` relates to the
+    ratio of consecutive gradients of TVD flux limiters (Sweby 1984) and the
+    self-adjusting hybrid schemes of Harten & Zwas (1972); Sharma & Hammett
+    (2007) limit anisotropic fluxes with the same kind of comparison.
+    The face weight is a C1 smoothstep of ``psi`` from
+    ``cr_guard_sensor_onset`` to ``cr_guard_sensor_full``. Each cell takes
+    the largest weight of its faces on all axes, and that is spread over the
+    3^d neighbourhood, as Jameson, Schmidt & Turkel (1981) spread their shock
+    sensor over neighbouring cells. Spreading matters: the undershoots form
+    in cells next to the front's corners, via the transverse direction, on
+    faces that look smooth along their own axis; a face-local guard reduced
+    them only 10-15x.
+
+    Why: the face-normal ``R`` makes the CR-row flux central across faces
+    nearly perpendicular to B (S&H's unlimited centered differencing),
+    giving undershoots of 2-3% of the jump and negative ``e_cr`` at
+    cross-field fronts in ``cr_anisotropic_ring.py``. A sensor scaled by
+    ``e_cr`` itself was tried first and fired on every Gaussian tail running
+    into a CR-free background.
+
+    The absolute values are smoothed, ``sqrt(d^2 + eps^2)``, so the sensor is
+    differentiable and gives ``psi = 1/3`` (off) in exactly flat or CR-free
+    regions instead of 0/0.
+
+    Args:
+        e_cr: The cell-centered ``e_cr`` (spatial axes only).
+        params: The simulation parameters.
+
+    Returns:
+        ``g`` per cell; a face uses the larger value of its two cells.
+    """
+    cr_params = params.cosmic_ray_grey_params
+    eps = 1e-15
+
+    def smooth_abs(d):
+        return jnp.sqrt(d**2 + eps**2)
+
+    cell_guard = jnp.zeros_like(e_cr)
+    for axis in range(e_cr.ndim):
+        jump_center = e_cr - jnp.roll(e_cr, 1, axis=axis)  # face i: e_i - e_{i-1}
+        jump_left = jnp.roll(jump_center, 1, axis=axis)
+        jump_right = jnp.roll(jump_center, -1, axis=axis)
+        psi = smooth_abs(jump_center) / (
+            smooth_abs(jump_left) + smooth_abs(jump_center) + smooth_abs(jump_right)
+        )
+        ramp = jnp.clip(
+            (psi - cr_params.cr_guard_sensor_onset)
+            / (cr_params.cr_guard_sensor_full - cr_params.cr_guard_sensor_onset),
+            0.0,
+            1.0,
+        )
+        face_guard = ramp**2 * (3.0 - 2.0 * ramp)
+        # Both cells adjacent to face i (cells i - 1 and i) see it.
+        cell_guard = jnp.maximum(
+            cell_guard,
+            jnp.maximum(face_guard, jnp.roll(face_guard, -1, axis=axis)),
+        )
+    # Spread over the 3^d neighbourhood.
+    for axis in range(e_cr.ndim):
+        cell_guard = jnp.maximum(
+            cell_guard,
+            jnp.maximum(jnp.roll(cell_guard, 1, axis=axis), jnp.roll(cell_guard, -1, axis=axis)),
+        )
+    return cell_guard
+
+
 def magnetic_unit_vector(
     magnetic_field: Float[Array, "3 ..."],
     params: SimulationParams,

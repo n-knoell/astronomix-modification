@@ -4,6 +4,48 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Done (2026-10-05): step 3d -- CR monotonicity guard (option B) + always-on e_cr floor
+
+- **Guard:** `cr_grey_transport.cr_monotonicity_guard`, a shape-based (magnitude-independent),
+  spread switch that raises the CR rows' Rusanov dissipation to full near sharp `e_cr` fronts.
+  Params `cr_guard_sensor_onset` / `cr_guard_sensor_full` (0.45 / 0.75). Two earlier versions
+  were rejected: a magnitude sensor damaged smooth profiles (T3 `D_z` up to 0.71 kappa), and a
+  face-local one reduced the undershoots only 10-15x. Details in DESIGN.md step 3d.
+- **Floor:** `minimum_e_cr` is now applied every step whenever grey CRs are active.
+- **Ring 3a passes:** undershoot <= 1.1e-5 of the jump; cross-field numerical diffusion +2-22%.
+  **Ring 3c passes.**
+- **Ring 3b misses its gate at N = 100 by 1.1e-4** (`e_min` 0.099890, 1.1e-5 of the jump);
+  exact at N = 200. The user decides whether to keep the gate.
+- **Regression:** T1/T2/T3 identical to the unguarded numbers; items 4 and 9 and Phase D pass.
+- **Phase D:** its recovered-kappa error is 1.282e-2 at HEAD too. The 9.0e-4 recorded below was
+  from fix step 2; fix step 4 changed it unrecorded.
+- **Not yet re-run:** M5-M7 (step 4 and later); `cr_gradient_check.py` does not use
+  `diffusive_relaxation`, so it does not test the guard -- Phase D's AD inference does.
+
+## Run (2026-10-05): CR diffusion follow-up step 3 (ring tests) -- 1/3 pass without a guard (see 3d above)
+
+New `pytests/cosmic_rays_grey/cr_anisotropic_ring.py`: the Sharma & Hammett (2007) and
+Jiang & Oh (2018) circular-field tests (ladder item 3 as the implementation plan specifies
+it). Full numbers in DESIGN.md "Open: CR diffusion follow-up", step 3.
+
+- **3c (JO18 analytic) passes:** L1 1.8e-2 / 1.35e-2 / 1.0e-2 at 64 / 128 / 256.
+- **3a (S&H, t = 200):** `kappa_perp,num / kappa_par` = 0.033 / 0.018 / 0.0083 / 0.0032 at
+  50 / 100 / 200 / 400, converging at order ~1-1.4. That is between S&H's van Leer and minmod
+  rows and ~5x their asymmetric-MC (FLASH) scheme. At the M7-like 200^2 it is ~0.8 of M7's
+  `kappa_perp` ratio, consistent with T3.
+  - **Fails** its no-undershoot gate: a 2-3% undershoot of the jump at the cross-field edges
+    during the early transient, not shrinking with N.
+- **3b (positivity variant) fails:** `e_cr` reaches -0.09 / -0.13.
+- **Cause, tested:** the face-normal `R(kappa_n) -> 0` across B makes the CR-row flux central.
+  JO18's isotropic `R` is monotone but has 1.8-4.6x more cross-field numerical diffusion.
+- **Also found:** the `minimum_e_cr` floor only acts under `positivity_config.per_step_mode =
+  HARD_FLOOR` (default off, not set in M5-M7). The plan's "positivity floor on `e_cr`" is
+  therefore not active in production runs.
+- **Open:** the guard decision (DESIGN.md 3d: A floor only / B jump-triggered dissipation /
+  C isotropic R / D positivity-preserving flux scaling). Step 4 waits for it.
+- The implementation plan's `v_red` open decision was reworded to "smallest value beyond which
+  results no longer change" (confirmed by the user).
+
 ## Done (2026-10-05): CR diffusion follow-up step 2 (3D tensor test T3) + literature check
 
 DESIGN.md "Open: CR diffusion follow-up (audit 2026-10-05)": steps 1-2 done, 3-6 open.

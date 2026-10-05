@@ -162,7 +162,9 @@ def _grey_cr_hll_rows(
       normal ``F_cr`` row): central flux plus Rusanov dissipation at the
       closure's own signal speed ``v_red sqrt(gamma_cr - 1)``
       (``cr_grey_transport.cr_closure_signal_speed``), times the
-      optical-depth reduction ``R`` in the diffusive regime.
+      optical-depth reduction ``R`` in the diffusive regime, raised toward 1
+      across sharp ``e_cr`` fronts by the caller
+      (``cr_grey_transport.cr_monotonicity_guard``).
 
     So neither subsystem inflates the other's dissipation: the gas rows keep
     the gas signal speed (until 2026-10-04 ``v_red`` was folded into a

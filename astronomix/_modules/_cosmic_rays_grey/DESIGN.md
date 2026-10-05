@@ -756,8 +756,8 @@ arXiv:0707.2616), and `astronomix_CR_implementation_plan.md` (this directory).
 
 ### Revised plan
 
-Order: steps 1-3 are cheap and independent of M7 (1 and 2 done 2026-10-05). Step 4 needs
-step 3's convergence order. Step
+Order: steps 1-3 are cheap and independent of M7 (1 and 2 done 2026-10-05, 3 run with a
+decision open in 3d). Step 4 needs step 3's convergence order and the 3d decision. Step
 5a can run any time; 5b needs GPU hours. Step 6 closes the section. Test first, as before: each
 new test is committed failing (or as a measurement), with the before-fix numbers in its
 docstring.
@@ -849,8 +849,9 @@ docstring.
      - Memory: 128^3 in float64 needs about 9.1 GB, so step 4's 2x grid (120 x 120 x 300, about
        2x the cells) does not fit 11 GB in float64. Its float32 / sub-box fallback is needed.
 
-3. **Curved-field ring test** (new `pytests/cosmic_rays_grey/cr_anisotropic_ring.py`).
-   Revised after the literature check: use the published setups and metrics, so the results
+3. **Curved-field ring test** (`pytests/cosmic_rays_grey/cr_anisotropic_ring.py`) -- **run
+   2026-10-05; 3c passes, 3a/3b fail; needs a design decision (3d below).** Revised after the
+   literature check: use the published setups and metrics, so the results
    compare directly with S&H's tables and JO18's analytic solution.
    - **Shared setup.**
      - Box `[-1, 1]^2`, outflow boundaries; fixed circular B, `B = B0 (-y, x) / r` for `r < 1`
@@ -885,6 +886,158 @@ docstring.
      line. This checks the eq.-39 estimate against M7's ratio of 0.01.
    - **Cost.** 3a dominates: 2D float64, up to 400^2 x 115k steps. Measure the per-step cost at
      100^2 first; drop 400^2 if it exceeds about 30 min on one GPU.
+   - **Result (2026-10-05, ~55 min for the file on one RTX 2080 Ti).** The gas stays static in
+     every run (`max |u| <= 5e-9`).
+
+     | N | `kappa_perp,num / kappa_par` (ours) | JO18 isotropic `R` | S&H asym. MC (FLASH-like) | S&H van Leer | ours: `e_min` over all snapshots | L1 |
+     |---|---|---|---|---|---|---|
+     | 50 | 0.0333 | 0.154 | 0.0127 | 0.0238 | 9.956 | 0.045 |
+     | 100 | 0.0183 | 0.063 | 0.0040 | 0.0104 | 9.961 | 0.043 |
+     | 200 | 0.0083 | 0.021 | 0.0015 | 0.0038 | 9.954 | 0.036 |
+     | 400 | 0.0032 | 0.0059 | 0.00068 | 0.0013 | 9.939 | 0.027 |
+
+     - **3c passes:** L1 against JO18 eq. 28 = 1.82e-2 / 1.35e-2 / 1.01e-2 at 64 / 128 / 256
+       (order ~0.4, set by the exact solution's sharp radial edges).
+     - **3a: cross-field numerical diffusion converges** at order 0.9 / 1.1 / 1.4 (T3: ~1).
+       It sits between S&H's van Leer and minmod rows, and is ~5x their asymmetric-MC scheme
+       (Yang et al. 2012's FLASH scheme, used by Girichidis et al. 2016) at every N.
+       - At the M7-like point (200^2, mean free path 1.7 cells) it is 0.0083, i.e. ~0.8 of
+         M7's `kappa_perp / kappa_par` = 0.01. That is consistent with T3's 0.5-0.9.
+     - **3a fails its no-undershoot gate.** `e` drops to 9.94-9.96, i.e. 2-3% of the jump,
+       at the patch's *radial* (cross-field) edges.
+       - Only during the non-diffusive transient, `t <~ 0.3` (`1 / nu = 0.03`). By `t ~ 1` the
+         minimum is back at 10, and at `t = 200` it is exactly 10.
+       - Not reduced by resolution.
+       - The continuum model cannot do this: along each circle it is a 1D telegraph equation
+         with a positive kernel, and nothing moves across. It is numerical.
+     - **3b fails: `e_cr` goes negative**, -0.091 (N = 100, t = 0.13) and -0.126 (N = 200,
+       t = 0.06) for a jump 10 -> 0.1.
+     - **Cause (tested).** The face-normal `R(kappa_n)` (fix step 4, our choice, flagged
+       there as "must be validated"): across faces nearly perpendicular to B, `kappa_n -> 0`
+       and `R -> 0`, so the CR-row flux is central -- S&H's unlimited centered differencing.
+       With JO18's isotropic choice (`R` from `kappa_par` on every face, scratch monkeypatch
+       of `cr_wave_speed_factors`), the minimum stays exactly 10 at all four N, but
+       `kappa_perp,num` is 1.8-4.6x larger (2.5x M7's `kappa_perp` ratio at 200^2). So
+       monotonicity and low cross-field diffusion trade against each other through `R`.
+     - **The `e_cr` floor is off in production.** `CosmicRayGreyParams.minimum_e_cr` is
+       applied only under `positivity_config.per_step_mode = HARD_FLOOR`
+       (`_iteration_level_updates.py`), which defaults to NONE, and M5-M7 do not set it.
+       - The implementation plan (Sec. 2) asks for a "positivity floor on `e_cr`".
+       - The M7 step-5 snapshots show no negative `e_cr` (minimum 0, then 0.5 code units
+         from 50 Myr on: CRs fill the box). They are 10 Myr apart, though, and the
+         undershoots last a few `1 / nu` (~0.1 Myr in M7), so they cannot rule it out.
+
+   **3d. Decision needed: monotonicity / positivity guard.** Options (the plan's Sec. 2 asks
+   for "the S&H-style guard only where needed" with smooth regularization):
+   - (A) Accept and document. Keep the face-normal `R`, add only an `e_cr` floor that is on
+     whenever grey CRs are active. Cheapest; non-conservative where it clips; leaves the 2-3%
+     transient undershoot.
+   - (B) Jump-triggered dissipation. On each face,
+     `R_eff = R_n + (1 - R_n) g(|e_R - e_L| / (e_R + e_L))` with a smooth switch `g`. Full
+     Rusanov dissipation only across strong relative jumps (injection fronts, the ring's
+     edges); smooth regions keep the low cross-field diffusion. Needs a threshold. Gate:
+     3a/3b pass, T2c/T3/3a cross-field numbers barely move, gradient check (ladder item 16)
+     stays clean.
+   - (C) JO18's isotropic `R`. Monotone, literature-standard, simplest. But 1.8-4.6x the
+     cross-field numerical diffusion, i.e. 2-3x M7's physical `kappa_perp` at M7-like
+     resolution.
+   - (D) Positivity-preserving flux scaling (Zhang-Shu-type): limit each cell's outgoing CR
+     energy flux so `e_cr` cannot go negative. Conservative, guarantees positivity, not
+     monotonicity (the 3a undershoot above background stays). Smooth variants exist.
+
+   **3d decided (user, 2026-10-05): B, plus an always-on `e_cr` floor. Implemented as a
+   shape-based, spread guard** (`cr_grey_transport.cr_monotonicity_guard`, called once per
+   RK stage in `_evolve_gas_state_unsplit_inner` and applied to the CR rows' `R` on every
+   axis). Three versions were tried:
+
+   | guard version | ring 3a undershoot (of jump), N = 100 / 200 | 3a `kappa_perp,num/kappa_par`, 100 / 200 | 3b `e_min`, 100 / 200 | smooth tests (T2c aligned / T3 `D_z`, coarse N) |
+   |---|---|---|---|---|
+   | none | 1.9e-2 / 2.3e-2 | 0.0183 / 0.0083 | -0.091 / -0.126 | 1e-4 / 1e-4 |
+   | magnitude sensor `|d| / (e_L + e_R)` on reconstructed states | 4.3e-4 / 2.6e-4 | 0.0201 / 0.0087 | 0.099995 / 0.099998 | **0.26 / 0.71** |
+   | shape sensor, face-local | 1.4e-3 / 2.0e-3 | 0.0192 / 0.0085 | 0.087 / 0.080 | unchanged |
+   | **shape sensor, cell max over all faces, spread over the 3^d neighbourhood (adopted)** | **1.1e-5 / 1.1e-7** | 0.0198 / 0.0086 | 0.09989 / 0.100000 | **unchanged** |
+
+   - **Magnitude sensor: rejected.** It is normalized by `e_cr`, so it fired on every Gaussian
+     tail running into a CR-free background, at any resolution. Aligned T2c `D_perp` went
+     from 1e-4 to 0.26 / 0.028 / 0.0016 kappa at N = 64 / 128 / 256, T3's `D_z` to 0.71 /
+     0.098 at N = 32 / 64, and T2e failed. That is M7's regime (SN bubbles a few cells wide
+     expanding into CR-poor gas). The Jameson-Schmidt-Turkel pressure sensor is normalized
+     this way too, but pressure never goes to 0; `e_cr` does.
+   - **Shape sensor.** `psi = |d_c| / (|d_l| + |d_c| + |d_r|)` per face, `d` the jumps
+     across the face and its two neighbours along the axis. Smooth absolute values, C1
+     smoothstep from `cr_guard_sensor_onset = 0.45` to `cr_guard_sensor_full = 0.75`.
+     - Derived reference values (checked on synthetic profiles): <= 1/3 on any linear or
+       exponential profile, ~0.2 at a smooth extremum, <= 0.38 for a Gaussian with 2.6 cells
+       per sigma, 0.5 for a step smeared over two cells, 1 for a one-cell step. So the guard
+       is exactly 0 on resolved and marginally resolved smooth profiles, including in CR-free
+       regions.
+     - Literature: the flux-limiter blend of a low- and a high-dissipation flux driven by
+       ratios of consecutive gradients (Sweby 1984; LeVeque, *Finite Volume Methods for
+       Hyperbolic Problems*); Harten & Zwas (1972) self-adjusting hybrid schemes; S&H's own
+       monotonicity fix limits with comparisons of neighbouring differences.
+   - **Face-local was not enough.** It switched itself off once the step was smeared over
+       ~2 cells, and the undershoots form in cells next to the patch corners, via the
+       transverse direction, on faces that look smooth along their own axis. An earlier
+       onset (0.40 / 0.55) made it *worse* (2.2e-3 / 2.9e-3; 3b 0.079 / 0.072).
+   - **Spreading fixes it.** Each cell takes the largest face weight on all axes, spread over
+     the 3^d neighbourhood; a face uses the larger value of its two cells. This is Jameson,
+     Schmidt & Turkel's (1981) practice of taking the max of the shock sensor over
+     neighbouring cells.
+   - **Full regression with the adopted guard (2026-10-05):**
+     - Ring 3a passes at all N: undershoot 0 / 1.1e-5 / 0 / 0 of the jump at 50 / 100 / 200 /
+       400. `kappa_perp,num / kappa_par` = 0.0408 / 0.0198 / 0.0086 / 0.0033, +22% / +8% /
+       +4% / +2% over no guard.
+     - Ring 3c passes.
+     - **Ring 3b misses its gate at N = 100 by 1.1e-4** (`e_min` = 0.099890, i.e. 1.1e-3 of
+       the background, 1.1e-5 of the jump); exact at N = 200. Open: keep the gate (known
+       marginal failure) or state it in units of the jump like 3a. The user decides; the
+       gate was already restated once (from 1e-6) when the guard was introduced.
+     - T1a-c, T2a-f, T3: identical to the unguarded numbers to 4-5 digits.
+     - Items 4 and 9 and Phase D pass.
+   - **Phase D baseline corrected:** the recovered-kappa error is 1.282e-2 on an untouched HEAD
+     checkout (50db6ec), identical with the guard and/or the floor switched off. The 9.0e-4
+     in PROGRESS.md was measured after fix step 2; fix step 4 changed it and the new value was
+     never recorded (the gate is 5e-2).
+   - **Floor:** `minimum_e_cr` is now applied every step whenever grey CRs are active
+     (`_iteration_level_updates.py`), not only under `HARD_FLOOR`. With the guard it should
+     rarely act; it is non-conservative where it does.
+   - **Physics check against the literature (2026-10-05).**
+     - Without the guard, the scheme behaves like S&H's unlimited centered schemes: `T_min`
+       9.95-9.99 in their Tables 1-4 (ours 9.94-9.96), and negative values in their 0.1-background
+       variant (ours -0.09 / -0.13).
+     - JO18's isotropic `R` is exactly monotone here, as JO18 state for their scheme.
+     - With the guard, the scheme behaves like S&H's limited schemes: minimum kept, at a higher
+       `chi_perp,num` -- the trade-off S&H document.
+     - The undershoots are numerical, so the gates are fair. Along a field line the continuum
+       two-moment system is a 1D telegraph equation, the density of a persistent random walk
+       (Goldstein 1951; Kac 1974), which stays non-negative from non-negative data with
+       `F = 0`; nothing moves across.
+     - Orders: our `chi_perp,num` converges at 1.0 / 1.2 / 1.4. S&H's limited schemes (from
+       their tables) go 1.2 / 1.5 / 1.6 (van Leer) and 1.7 / 1.4 / 1.1 (asymmetric MC). The
+       magnitude is 1.7-2.5x their van Leer and 3-6x their asymmetric MC (the FLASH scheme of
+       Yang et al. 2012 / Girichidis et al. 2016).
+     - 3c's L1 order of ~0.5 is the expected rate for a discontinuity smeared by a numerical
+       diffusivity converging at order ~1 (L1 ~ sqrt(D_num t) ~ dx^(p/2)).
+     - S&H compare at `t = 200`, much longer than `1 / nu` = 0.03, so 3a tests the diffusive
+       limit of the two-moment system; 3b's undershoots occur in the early, non-diffusive
+       transient.
+   - **Leak into the B = 0 region (found in the physics check, N = 50).** S&H have no
+     conduction outside `r = 1`, so `e` must stay exactly 10 there. By `t = 200` the region
+     `r > 1` holds 2.4 (no guard) / 5.1 (guard) of the initial ring excess of 76, i.e. 3.1% /
+     6.7%; with the guard it reaches the box corners (final box minimum 10.002). At N >= 100
+     the box minimum stays exactly 10.
+     - Mechanism: a face takes the larger `R` of its two cells, so dissipation crosses the
+       field cut at `r = 1`.
+     - The guard adds to it: its shape sensor fires at the leading edge of any front entering
+       an exactly flat region. There it sets `R = 1`, a local numerical diffusivity of about
+       `v_red dx / (2 sqrt(3))` (0.012 at N = 50, about `kappa_par`) in every direction.
+     - Consequence for step 4: M7 has frequent, sharp, few-cell SN injection fronts, so the
+       guard may act often there. The step-4 probe must run with the guard on and off to
+       measure its share of M7's cross-field transport.
+   - **Differentiability.** The guard is C1 in `psi` but uses `clip` and `max` (piecewise
+     smooth). Phase D's AD inference passes, but its smooth Gaussian never activates the
+     guard. AD through an *active* guard is untested: add a sharp-IC case to the gradient
+     check (ladder item 16).
 
 4. **M7 frozen-field probe.** Measures what M7's `kappa_perp` claim needs, in M7's own
    field: is the `kappa_perp = 1e26` effect larger than the transport discretization error at
@@ -910,6 +1063,16 @@ docstring.
      - Physical signal: `S = D_zz(kappa_perp = 1e26) - D_zz(0)` at the M7 grid.
      - Discretization error: `E = D_zz(N) - D_zz(2N)` at `kappa_perp = 0`. This is about 3/4
        of the error at N if the order is 2; take the order from step 3.
+   - **Guard on/off (added after the step-3 physics check):** repeat the `kappa_perp = 0` M7-grid
+     run with the guard switched off (`cr_guard_sensor_onset = 2`), to measure how much of M7's
+     cross-field transport the guard adds near SN injection fronts.
+   - **After step 3 (2026-10-05):** run step 4 only after 3d is decided, because the choice
+     of `R` changes the cross-field numerical diffusion it measures. The measured orders are
+     p ~ 1-1.4 (3a, T3), so the error at N is `E / (1 - 2^-p)`, about 1.6-2 E, not 4/3 E.
+     Compare M7 not only with the physical `kappa_perp` but also with the paper's own scheme:
+     on the ring, S&H's asymmetric MC (FLASH, Yang et al. 2012) has ~5x less cross-field
+     numerical diffusion than ours at equal N, and Girichidis et al. ran at 15.6 pc, half M7's
+     33.3 pc.
    - **Decision.**
      - `|E| < 0.3 |S|`: M7 resolves `kappa_perp`, and its docstring may keep claiming the paper's
        value.
@@ -929,6 +1092,8 @@ docstring.
        0.095 Myr, and transport is capped at 577 km/s. At 3000: 19 pc, 0.011 Myr.
      - Decision: the smallest `v_red` whose error is below the dx error (the `v_red -> inf` limit
        at fixed dx) is converged for transport.
+     - Also record the minimum `e_cr` in the probe at each `v_red`: the 3a/3b undershoots
+       belong to the non-diffusive transient, whose length (`1 / nu`) shrinks with `v_red^2`.
      - **Galilean check beyond the signal speed** (added after the literature check). Rerun the
        audit's 1D moving-gas diffusion test at `u` = 1, 2 and 3 times `v_red sqrt(gamma_cr - 1)`.
        Gate: D/kappa and the centroid drift as at `u = 0`. This tests that our comoving `F_cr`
@@ -952,6 +1117,8 @@ docstring.
      `kappa / (v_red sqrt(gamma_cr - 1))` = 1.9 pc for `kappa = 1e26`, compared with M5's dx;
      the CFL now uses 173 km/s.
    - The T2 docstrings: B is in-plane in every T2 case, which is what made F1 invisible.
+   - Whatever 3d decides about the `e_cr` floor: state in M5-M7 whether `e_cr` can go
+     negative and whether a floor is active.
    - PROGRESS.md entry per step, and close this section and "Open: CR diffusion correctness".
 
 **Out of scope here:** the CWB setups (no diffusion configured, so CR transport there is set by

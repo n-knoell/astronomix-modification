@@ -131,7 +131,7 @@ Run in order; each is a CI gate. Follow group TDD conventions — write the test
 
 ## 6. Open decisions for the team
 
-- Reduced free-streaming speed: pick the largest value that leaves wind/emission properties unchanged (short convergence study).
+- Reduced free-streaming speed: pick the smallest value beyond which wind/emission properties no longer change (short convergence study; cost grows with the speed). Clarified 2026-10-05 (was "largest value").
 - Electron treatment: fixed `K_ep` post-processing vs separately-evolved grey electrons — decide before Phase C emission work.
 - FD open boundaries: implement now (unblocks wind/SNe on FD) or defer and keep FD for periodic turbulence only?
 - Spectral-interface contract with Girichidis: agree the `spectrum` object API early so Phase E is a swap.

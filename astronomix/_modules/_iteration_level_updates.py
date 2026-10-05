@@ -366,6 +366,18 @@ def _iteration_level_continuous_updates(
     # (cr_grey_sources.cr_flux_relaxation_update, with B passed into the
     # gas-only half-steps by _evolve_state_fv).
 
+    # Grey-CR positivity floor, whenever grey CRs are active (until 2026-10-05
+    # only under per_step_mode = HARD_FLOOR, which M5-M7 never set): a safety
+    # net, the CR-row monotonicity guard should keep e_cr positive by itself
+    # (DESIGN.md "Open: CR diffusion follow-up", step 3).
+    if registered_variables.cosmic_ray_e_active:
+        primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(
+            jnp.maximum(
+                primitive_state[registered_variables.cosmic_ray_e_index],
+                params.cosmic_ray_grey_params.minimum_e_cr,
+            )
+        )
+
     # Per-step positivity on the primitive state.
     #   - HARD_FLOOR clamps density (and pressure, for an ideal gas) to its
     #     configured minimum.
@@ -384,15 +396,6 @@ def _iteration_level_continuous_updates(
                 jnp.maximum(
                     primitive_state[registered_variables.pressure_index],
                     params.minimum_pressure,
-                )
-            )
-        if registered_variables.cosmic_ray_e_active:
-            primitive_state = primitive_state.at[
-                registered_variables.cosmic_ray_e_index
-            ].set(
-                jnp.maximum(
-                    primitive_state[registered_variables.cosmic_ray_e_index],
-                    params.cosmic_ray_grey_params.minimum_e_cr,
                 )
             )
     elif config.positivity_config.per_step_mode == POSITIVITY_REDISTRIBUTE:
