@@ -4,6 +4,76 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Done (2026-10-05): CR diffusion fix-plan step 5 (M5/M6/M7 re-runs, RTX 2080 Ti)
+
+Resolutions were chosen so that each run finishes within 8 h on a 2080 Ti:
+- **Probes:** 20% of `T_END` for M5 and M6; 10 Myr for M7.
+- **Full factor-1 runs** for M5 and M6. M5 slows down strongly later on (its full run costs ~14x
+  its first 20%), so factor 1.75 extrapolated to 6-11 h.
+- **A/B probe for M7:** the new code is ~16% slower than 03a1f26 at `--res=1`, likely partly
+  contention and partly hotter, sharper shocks giving smaller dt.
+
+Scripts gained `M5_RESOLUTION_FACTOR` / `M5_T_END_FRACTION`, float `M6_RESOLUTION_FACTOR` /
+`M6_T_END_FRACTION`, and M7 `--kappa-perp-cgs` (default 1e26, the paper's value).
+
+**M5 / M6** (late-time averages; M6 = density-weighted SN placement, M5 = random):
+
+| | factor 1 (32 x 32 x 256) | factor 1.5 (48 x 48 x 384) |
+|---|---|---|
+| wall M5 / M6 | 0.47 / 0.15 h | 1.39 / 1.26 h |
+| eta M5 / M6 | 9.22 / 3.24 | 5.44 / 3.23 |
+| v_out M5 / M6 | 6.75 / 16.6 km/s | 3.89 / 16.8 km/s |
+| H_gas M5 / M6 | 47.2 / 30.0 | undefined / 43.5 |
+| H_cr M5 / M6 | 96.7 / 86.8 | 121.0 (one snapshot) / undefined |
+| clumpiness M5 / M6 | 0.692 / 0.623 | 0.620 / 0.550 |
+| M6 P_cr : P_ram | 38.7 : 30.9 | 53.3 : 14.6 |
+
+- For comparison, attempt 3 (factor 1, old transport) gave eta 6.16, v_out 5.83, H_gas 28.4,
+  H_cr 86.8, clumpiness 0.467.
+- Scale heights (code lengths) are often undefined now: pressure stays above 1/e of the midplane
+  value inside the 300 pc box, as expected with 3x faster CR diffusion.
+- The Simpson et al. (2016) comparison holds at both resolutions: mass loading comparable within
+  ~2-3x, density-weighted placement smoother and CR-pressure-driven with a faster outflow.
+- M6's numbers barely move between the two resolutions; M5's do.
+- M6's `_M5_REFERENCE` now carries the new factor 1 and 1.5 M5 numbers.
+
+**M7** (`both --res=0.9375`, 60 x 60 x 150, 33.3 pc, MHD + self-gravity, kappa_par / kappa_perp
+= 1e28 / 1e26, v_red 1000 km/s, 250 Myr): 3.42 h, NaN-free.
+- Late time: z70 / z90 = 286 / 918 pc (paper ~200 / ~1500), eta(1 kpc) 0.36, v_out 3.5 km/s,
+  H_gas ~300 pc.
+- H_cr undefined after ~140 Myr (`sqrt(2 kappa t_end)` = 4 kpc). max v_A ~900 km/s early.
+- 51% of SNe deposited thermally.
+- Previous runs for comparison (old transport): 26.3 pc hydro 299 / 916 pc, eta ~1.0; 62.5 pc
+  MHD + self-gravity 616 / 1427 pc, eta 0.94.
+- The paper's thin dense layer is still not reproduced.
+- The whole run averaged 49 s/Myr (the 10 Myr probe: 134 s/Myr, compilation plus the hot start),
+  so `--res=1` would also fit (~4.5 h).
+
+**Still open for step 5:** the CWB setups (no diffusion or streaming; CR transport set by
+`v_red`), and a `v_red` = 3000 km/s check for M7, now cheap.
+
+## Done (2026-10-05): item 9 revisited after the Finding-1 fix
+
+`pytests/cosmic_rays_grey/cr_modified_shock_structure.py`:
+
+- **Test B (precursor ODE)** moved from `v_red = 8` to 32. Before the fix, a higher `v_red`
+  smeared the shock away (gone at 16). Now the shock keeps Mach ~1.99 at 8, 16 and 32.
+  - Median ODE errors at 8 / 16 / 32: `du/dx` 35 / 26 / 26%, `dP_cr/dx` 25 / 5.7 / 1.6%,
+    `dF_cr/dx` 25 / 5.3 / 0.8%.
+  - Tolerances tightened from 0.8 / 0.4 / 0.4 to 0.4 / 0.05 / 0.05. `du/dx` levels off from a
+    ratio with cancellation, not from the regime.
+  - Runtime about 95 s -> 209 s for the whole file.
+- **Test A (jump conditions)** stays at `v_red = 1`. Its precursor-free reference needs the
+  undamped CR wave (`v_red / sqrt(3)` relative to the gas) to be slower than the shock-frame
+  inflow (2), i.e. `v_red < 3.5`. Measured:
+  - at 3, CRs pile up ahead of the shock (upstream `P_cr` 22x downstream) and the shock weakens
+    to Mach 1.74;
+  - at 6, a precursor forms and the CR energy-flux jump leaves its bracket.
+
+  So the two tests stay split for a reason independent of Finding 1. Test A's errors are now
+  0.13 / 0.16 / 0.16% (were 0.24 / 0.51 / 0.46%).
+- Both tests now print their measured values.
+
 ## Done (2026-10-05): CR diffusion fix-plan step 4 (separate gas/CR Riemann wave speeds)
 
 DESIGN.md "Open: CR diffusion correctness" is the plan; step 5 (re-runs of items 4/9/Phase D
@@ -100,9 +170,12 @@ T2a-d 2D MHD anisotropic). They measure D from the second-moment growth of a tin
 
 **Step 1.** `diffusion_coefficient` is now the `e_cr` diffusivity, `d(e_cr)/dt =
 div(kappa grad e_cr)` (Girichidis et al. 2016's convention).
-- The new `cr_grey_sources.cr_flux_relaxation_rate` gives `nu = (gamma_cr - 1) v_red^2 / kappa`;
-  the source and `_cfl_time_step` both use it. Before, `nu` had no `(gamma_cr - 1)`, so
-  `D = kappa/3`.
+- The relaxation rate is now `nu = (gamma_cr - 1) v_red^2 / kappa`. Before, it had no
+  `(gamma_cr - 1)`, so `D = kappa/3`.
+  - At step 1 it lived in a new helper, `cr_grey_sources.cr_flux_relaxation_rate`, shared by
+    the source and `_cfl_time_step`.
+  - Steps 2-3 removed both users and the helper. The rate now lives in
+    `cr_flux_relaxation_update`'s kappa form.
 - The item-4, item-9 Test B and Phase D pytests and the item-9 reference ODE
   (`dP_cr/dx = -(gamma_cr - 1) F_cr / kappa`) were converted to the *same* physical runs
   (kappa / 3).

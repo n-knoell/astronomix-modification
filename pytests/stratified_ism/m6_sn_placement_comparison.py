@@ -9,8 +9,19 @@ for the full "and/or" framing).
 **Diffusion convention changed 2026-10-04 (DESIGN.md "Open: CR diffusion correctness",
 fix-plan step 1).** ``diffusion_coefficient`` is now the ``e_cr`` diffusivity, so the kappa
 below now diffuses with ``D = kappa``. Every run made before then had ``D = kappa/3`` and a
-3x faster relaxation rate ``nu``. The numbers quoted below are from those runs and have not been
-redone yet (fix-plan step 5).
+3x faster relaxation rate ``nu``. The numbers quoted below are from those runs.
+
+**Step-5 reruns (2026-10-05, corrected transport, RTX 2080 Ti, ``M6_RESOLUTION_FACTOR``).**
+Both are NaN-free. Late-time averages, M6 (density-weighted) vs. M5 (random) at the same grid:
+
+| factor | wall | eta M6 / M5 | v_out M6 / M5 | H_gas M6 / M5 | clumpiness M6 / M5 | M6 P_cr : P_ram |
+|---|---|---|---|---|---|---|
+| 1 | 0.15 h | 3.24 / 9.22 | 16.6 / 6.75 km/s | 30.0 / 47.2 | 0.623 / 0.692 | 38.7 : 30.9 |
+| 1.5 | 1.26 h | 3.23 / 5.44 | 16.8 / 3.89 km/s | 43.5 / undefined | 0.550 / 0.620 | 53.3 : 14.6 |
+
+At both resolutions this matches Simpson et al. (2016): mass loading within a factor ~2-3,
+density-weighted placement smoother (lower clumpiness), with a faster, CR-pressure-driven
+outflow (P_cr > P_ram). M6's own numbers barely change between factors 1 and 1.5; M5's do.
 
 **Density-weighted ("density peak") SN site selection, instead of M5's
 uniformly-random placement -- everything else held identical to M5 attempt 3**
@@ -167,8 +178,10 @@ L_XY = 0.75 * H_SCALE
 # the original 2026-09-22 comparison against M5 attempt 3). Needs a large-memory
 # GPU at factor 4 (see NUM_SNAPSHOTS); expect ~3x M5's runtime at the same
 # resolution (density-weighted placement is more expensive per step).
-_RESOLUTION_FACTOR = int(os.environ.get("M6_RESOLUTION_FACTOR", 4))
-N_XY, N_Z = 32 * _RESOLUTION_FACTOR, 256 * _RESOLUTION_FACTOR
+# Non-integer factors are fine as long as 32 x factor is an integer.
+_RESOLUTION_FACTOR = float(os.environ.get("M6_RESOLUTION_FACTOR", 4))
+N_XY, N_Z = int(round(32 * _RESOLUTION_FACTOR)), int(round(256 * _RESOLUTION_FACTOR))
+assert abs(32 * _RESOLUTION_FACTOR - N_XY) < 1e-9, "32 x M6_RESOLUTION_FACTOR must be an integer"
 # Output plots are tagged with N_Z (e.g. ``m6_sn_placement_comparison_1024.svg``).
 OUT_SUFFIX = f"_{N_Z}"
 # Number of stored snapshots (override with M6_NUM_SNAPSHOTS); see the
@@ -193,7 +206,8 @@ def _t_eq_fast(n_h):
 
 
 # ---- M4/M5-inherited setup ----
-T_END = 2.0 * T_DYN
+# M6_T_END_FRACTION < 1 shortens the run (for timing probes only).
+T_END = 2.0 * T_DYN * float(os.environ.get("M6_T_END_FRACTION", 1.0))
 
 RHO_MIDPLANE_CODE = float((N_H_MIDPLANE / u.cm ** 3 * MU_H * c.m_p).to(CODE_UNITS.code_density).value)
 
@@ -247,16 +261,23 @@ M5_ATTEMPT3_H_CR = 86.81
 # same attempt-3 resolution. Same late-time-quarter-average convention as
 # the other M5_ATTEMPT3_* constants above.
 M5_ATTEMPT3_CLUMP = 0.467
+# 2026-10-05 (DESIGN.md "Open: CR diffusion correctness", step 5): M5 rerun
+# with the corrected CR diffusion (D = kappa, implicit per-stage relaxation,
+# separate gas/CR Riemann wave speeds). Factors 1 and 1.5 are those reruns;
+# the M5_ATTEMPT3_* constants and factor 4 are from the old transport (D =
+# kappa/3), kept for reference only.
+nan = float("nan")
 _M5_REFERENCE = {
-    1: dict(label="M5-attempt3", eta=M5_ATTEMPT3_ETA, v_out=M5_ATTEMPT3_V_OUT_KMS,
-            h_gas=M5_ATTEMPT3_H_GAS, h_cr=M5_ATTEMPT3_H_CR, clump=M5_ATTEMPT3_CLUMP),
-    4: dict(label="M5-1024", eta=8.624, v_out=10.01, h_gas=18.69, h_cr=96.05, clump=0.586),
+    1: dict(label="M5-256(2026-10-05)", eta=9.217, v_out=6.75, h_gas=47.23, h_cr=96.74, clump=0.692),
+    # H_gas undefined (gas pressure stays above 1/e of its midplane value in
+    # the box) in the whole last quarter; H_cr from its one defined snapshot.
+    1.5: dict(label="M5-384(2026-10-05)", eta=5.439, v_out=3.89, h_gas=nan, h_cr=121.04, clump=0.620),
+    4: dict(label="M5-1024(old transport)", eta=8.624, v_out=10.01, h_gas=18.69, h_cr=96.05, clump=0.586),
 }
 if _RESOLUTION_FACTOR not in _M5_REFERENCE:
     print(f"[warning] no M5 reference numbers recorded for _RESOLUTION_FACTOR={_RESOLUTION_FACTOR}; "
           f"the end-of-run comparison prints nan for M5 (run m5_cr_driven_outflow.py at this "
           f"resolution and add its numbers to _M5_REFERENCE for a like-for-like comparison)")
-nan = float("nan")
 M5_REF = _M5_REFERENCE.get(_RESOLUTION_FACTOR, dict(
     label=f"M5-factor{_RESOLUTION_FACTOR}(missing)", eta=nan, v_out=nan, h_gas=nan, h_cr=nan, clump=nan))
 

@@ -21,9 +21,9 @@ resolution):
    change to shared FV code, out of scope to attempt unprompted. **Finding 1
    was fixed 2026-10-04** (DESIGN.md "Open: CR diffusion correctness", fix
    step 4: the gas rows no longer see ``v_red``; the CR rows get their own
-   flux). Both tests below still pass unchanged; the Finding-1-limited
-   tolerances and the Test A/Test B ``reduced_streaming_speed`` split could
-   now be revisited.
+   flux). Revisited 2026-10-05: Test B now runs at ``v_red = 32`` with
+   tighter tolerances; Test A stays at 1 for a reason independent of
+   Finding 1 (see its paragraph below).
 2. Root mechanism for Finding 2 (found 2026-09-09): a *stationary* shock cell
    never releases the compressive ``-P_cr * div(v)`` term
    (``cr_grey_sources.cr_adiabatic_work_source``) the way a fluid parcel
@@ -66,11 +66,22 @@ resolution):
    split into the two independent tests below, each run at the
    ``reduced_streaming_speed`` its own reference formula actually needs,
    rather than forcing one compromise value onto both -- the same
-   "independent layers" pattern ladder item 8 already used.
+   "independent layers" pattern ladder item 8 already used. The split still
+   stands with Finding 1 fixed, because the two needs are genuinely opposite:
+   Test A's precursor-free reference needs ``v_red < 2 sqrt(3)``, while Test
+   B's quasi-steady precursor needs ``v_red >> v_shock``.
 
 :func:`test_cr_dsa_shock_jump` (**Test A**): ``diffusive_relaxation`` off (DSA
-injection only, no diffusive precursor), ``reduced_streaming_speed`` close to
-the local gas sound speed (Finding-1-safe). Validates the post-shock gas state
+injection only, no diffusive precursor), ``reduced_streaming_speed = 1``. That
+choice was first made to stay clear of Finding 1, but it is also what the
+reference formula needs, which still holds now that Finding 1 is fixed.
+Without relaxation, ``F_cr`` is an undamped wave moving at ``v_red / sqrt(3)``
+relative to the gas, so CRs created behind the shock stay behind it only if
+that is slower than the shock-frame inflow (2 here): ``v_red < 2 sqrt(3) ~
+3.5``. Measured 2026-10-05: at 3 the wave nearly stalls in the shock frame,
+CRs pile up just ahead of it (upstream ``P_cr`` 22x the downstream value) and
+the shock weakens to Mach 1.74; at 6 a CR precursor forms (upstream ``P_cr``
+2.6x downstream) and the CR energy-flux jump leaves its bracket. Validates the post-shock gas state
 against :func:`rankine_hugoniot_with_downstream_crs` and the injected CR energy
 against :func:`cr_energy_flux_jump_bounds`, and is also this module's
 regression guard for Finding 2 (peak ``e_cr`` must plateau, not grow
@@ -84,8 +95,9 @@ checks the fixed formula on its own, without a simulation.
 
 :func:`test_cr_precursor_ode` (**Test B**): ``diffusive_relaxation`` on,
 ``reduced_streaming_speed`` well above the shock velocity (deep quasi-steady,
-per point 3 above -- accepting a weaker, Finding-1-degraded shock as the cost
-of a resolvable precursor). Validates :func:`cr_precursor_ode_rhs` against the
+per point 3 above). Until Finding 1 was fixed this cost a degraded shock and
+capped ``v_red`` at 8; it now runs at 32 with the shock at Mach ~1.99, and its
+CR-gradient tolerances tightened from 40% to 5%. Validates :func:`cr_precursor_ode_rhs` against the
 simulation's own local gradients in the precursor, after confirming the two
 first integrals (``mass_flux``, ``momentum_flux``) the ODE relies on are
 genuinely close to constant across the sampled precursor window.
@@ -309,12 +321,15 @@ def test_cr_dsa_shock_jump(
         density_tol/velocity_tol/pressure_tol: Maximum relative error on the
             predicted vs. actual post-shock (density, velocity, pressure).
             Calibrated (2026-10-03): 0.24% / 0.51% / 0.46% at the default
-            N=1000, 0.3% / 0.6% / 0.5% at N=2000; 2% leaves margin.
+            N=1000, 0.3% / 0.6% / 0.5% at N=2000; since the separate gas/CR
+            Riemann wave speeds (2026-10-04) 0.13% / 0.16% / 0.16% at N=1000.
+            2% leaves margin.
         cr_flux_margin: Allowed overshoot of the CR energy-flux jump beyond
             its bracket, as a fraction of the injected flux (covers the
             shock-finder's own few-percent error on the dissipated flux).
             Calibrated (2026-10-03): the jump lies *inside* the bracket, at
-            -1.11 / -1.03 x the injected flux for N=1000 / 2000, i.e. close to
+            -1.11 / -1.03 x the injected flux for N=1000 / 2000 (-1.10 at
+            N=1000 since 2026-10-04), i.e. close to
             the "CRs appear after compression" end (``<P_cr>`` ~ 0.13 / 0.04
             of the downstream value), as expected when injection is spread
             over the post-shock cells.
@@ -404,6 +419,7 @@ def test_cr_dsa_shock_jump(
     ]
     for name, pred, act, tol in checks:
         rel_err = abs(pred - act) / max(abs(act), 1e-12)
+        print(f"Test A: post-shock {name} rel. err {rel_err:.4f} (tol {tol})")
         assert rel_err < tol, (
             f"Post-shock {name}: predicted {pred:.5f} vs. actual {act:.5f} "
             f"(rel. err {rel_err:.4e} >= tol {tol}) -- the simulation's "
@@ -453,10 +469,10 @@ def test_cr_precursor_ode(
     velocity_fit_tol: float = 0.01,
     mass_flux_tol: float = 0.02,
     momentum_flux_tol: float = 0.02,
-    velocity_ode_tol: float = 0.8,
-    p_cr_ode_tol: float = 0.4,
-    f_cr_ode_tol: float = 0.4,
-    reduced_streaming_speed: float = 8.0,
+    velocity_ode_tol: float = 0.4,
+    p_cr_ode_tol: float = 0.05,
+    f_cr_ode_tol: float = 0.05,
+    reduced_streaming_speed: float = 32.0,
     diffusion_coefficient: float = 0.2 / 3.0,
     precursor_window_cells: int = 150,
     dsa_efficiency: float = 0.01,
@@ -465,8 +481,9 @@ def test_cr_precursor_ode(
 
     ``reduced_streaming_speed`` is set well above the shock velocity here
     (unlike Test A) -- required for the quasi-steady precursor ODE to hold at
-    all (see module docstring point 3), at the cost of a Finding-1-degraded
-    subshock this test does not otherwise rely on.
+    all (see module docstring point 3). Until Finding 1 was fixed
+    (2026-10-04) this cost a degraded subshock, which capped it at 8; now the
+    shock keeps Mach ~1.99 at 8, 16 and 32 alike, so the test runs at 32.
 
     Args:
         velocity_fit_tol: Same purpose as in Test A.
@@ -485,14 +502,15 @@ def test_cr_precursor_ode(
             error between the simulation's own finite-difference derivatives
             (``du/dx``, ``dP_cr/dx``, ``dF_cr/dx``) in the precursor and
             ``cr_precursor_ode_rhs``'s prediction at the same local state.
-            Calibrated observed medians ~41% / 22% / 20% respectively (ad hoc
-            script, not committed) at ``reduced_streaming_speed=8.0`` --
-            looser than a typical formula cross-check in this module because
-            Finding 1 (see module docstring) directly limits how deep into
-            the quasi-steady regime this run can go before the shock itself
-            degrades; ``velocity_ode_tol`` is loosest since ``du/dx`` is the
-            most indirectly-determined of the three (solved from a ratio
-            with cancellation, see ``cr_precursor_ode_rhs``'s derivation).
+            Calibrated (2026-10-05) medians at ``reduced_streaming_speed`` =
+            8 / 16 / 32: ``du/dx`` 35% / 26% / 26%, ``dP_cr/dx`` 25% / 5.7% /
+            1.6%, ``dF_cr/dx`` 25% / 5.3% / 0.8% -- the CR gradients converge
+            as the run goes deeper into the quasi-steady regime
+            (``nu / omega = (gamma_cr - 1) (v_red / v_shock)^2``). ``du/dx``
+            levels off at ~26%: it is the most indirectly-determined of the
+            three (solved from a ratio with cancellation, see
+            ``cr_precursor_ode_rhs``'s derivation). Before Finding 1 was fixed
+            the run was capped at 8 (tolerances 0.8 / 0.4 / 0.4).
         precursor_window_cells: Number of cells upstream of the shock zone to
             include in the sampled precursor window.
         dsa_efficiency: Constant DSA efficiency for this test (default 0.01, not
@@ -521,9 +539,8 @@ def test_cr_precursor_ode(
     )
     assert bool(np.all(mach_list[1:] > DSA_MACH_MIN)), (
         "The shock weakened below dsa_mach_min at this reduced_streaming_speed "
-        "-- Finding 1's wave-speed-inflation dissipation has degraded the "
-        "shock entirely (see module docstring point 3); reduce "
-        "reduced_streaming_speed/diffusion_coefficient."
+        "-- a return of Finding 1 (v_red inflating the gas rows' Riemann "
+        "wave speed, see module docstring point 3)?"
     )
     v_fit, x_fit0 = _fit_shock_velocity(times, shock_positions)
     v_rel_err = abs(v_fit - V_SHOCK) / V_SHOCK
@@ -603,6 +620,7 @@ def test_cr_precursor_ode(
         n, p_ = num[mask], pred[mask]
         rel_err = np.abs(n - p_) / np.maximum(np.abs(p_), 1e-8)
         median_rel_err = float(np.median(rel_err))
+        print(f"Test B: {name} median rel. err {median_rel_err:.4f} (tol {tol})")
         assert median_rel_err < tol, (
             f"{name}: median rel. err {median_rel_err:.4e} >= tol {tol} -- the "
             f"simulation's own precursor gradient does not match "

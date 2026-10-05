@@ -9,9 +9,23 @@ Outflows from the Magnetized Interstellar Medium" (arXiv:1509.07247).
 fix-plan step 1).** ``diffusion_coefficient`` is now the ``e_cr`` diffusivity, so the kappa
 below now diffuses with ``D = kappa``. Every run made before then had ``D = kappa/3`` and a
 3x faster relaxation rate ``nu``. The numbers and diffusion lengths quoted below (e.g.
-``sqrt(kappa*T_end)``) are from those runs and have not been redone yet (fix-plan step 5). Since
-fix-plan step 2 (same day) the relaxation is implicit, so the explicit stability bound the
-``reduced_streaming_speed`` reasoning below relies on no longer exists.
+``sqrt(kappa*T_end)``) are from those runs. Since fix-plan step 2 (same day) the relaxation is
+implicit, so the explicit stability bound the ``reduced_streaming_speed`` reasoning below relies
+on no longer exists.
+
+**Step-5 reruns (2026-10-05, corrected transport, RTX 2080 Ti, ``M5_RESOLUTION_FACTOR``).**
+Both are NaN-free. Late-time (last-quarter) averages:
+
+| factor | grid | wall | eta | v_out | H_gas | H_cr | clumpiness |
+|---|---|---|---|---|---|---|---|
+| 1 (attempt 3, old transport) | 32 x 32 x 256 | -- | 6.16 | 5.83 km/s | 28.4 | 86.8 | 0.467 |
+| 1 | 32 x 32 x 256 | 0.47 h | 9.22 | 6.75 km/s | 47.2 | 96.7 | 0.692 |
+| 1.5 | 48 x 48 x 384 | 1.39 h | 5.44 | 3.89 km/s | undefined | 121.0 | 0.620 |
+
+H_gas/H_cr are code lengths. "Undefined" means the profile stays above 1/e of its midplane value
+inside the box; it is undefined in every late snapshot at factor 1.5 (H_cr in all but one), as
+expected with the 3x faster CR diffusion. The run slows down strongly later on (the full run
+costs ~14x its first 20%), which rules out factors >= 1.75 on a 2080 Ti within 8 h.
 
 **NOT a committed pytest -- an exploratory script**, same status as M4's own
 script (``m4_stratified_column_sn_driving_delayed_cooling.py``): meant to be
@@ -62,7 +76,9 @@ pattern as ``KI_PARAMS``/``FLOOR_TEMPERATURE_CODE`` below:
   (``H_SCALE = 50`` pc), the physically sensible regime for *this* box size
   -- confined enough for a real gradient to survive the run, not so confined
   that nothing moves at all. This is the paper's own quoted value, not a
-  free hand-tune.
+  free hand-tune. (Until 2026-10-04 the code diffused with ``kappa/3``, so
+  attempts 2-5 actually had ``sqrt(kappa_perp*T_end/3) ~= 28.6 pc``; since
+  the convention fix the 49.5 pc above is what the code does.)
 - ``reduced_streaming_speed``: attempt 1 picked 3000 km/s (see the same
   reasoning below); **attempt 2 scales it down to 300 km/s alongside the
   100x-smaller diffusion_coefficient, chosen to hold the relaxation rate
@@ -128,6 +144,7 @@ autocvd(num_gpus=1, interval=10)
 # =======================
 
 # general
+import os
 from pathlib import Path
 
 # jax
@@ -223,8 +240,11 @@ L_XY = 0.75 * H_SCALE
 # lower NUM_SNAPSHOTS if that is tight. Does not fit an 11 GB 2080 Ti.
 # (The "~8288 MiB" previously quoted for attempt 3 was JAX's default
 # preallocation of 75% of the 2080 Ti's memory, not the run's actual usage.)
-_RESOLUTION_FACTOR = 4
-N_XY, N_Z = 32 * _RESOLUTION_FACTOR, 256 * _RESOLUTION_FACTOR
+# Override with the M5_RESOLUTION_FACTOR environment variable; non-integer
+# factors are fine as long as 32 x factor is an integer (e.g. 1.5 -> 48 x 384).
+_RESOLUTION_FACTOR = float(os.environ.get("M5_RESOLUTION_FACTOR", 4))
+N_XY, N_Z = int(round(32 * _RESOLUTION_FACTOR)), int(round(256 * _RESOLUTION_FACTOR))
+assert abs(32 * _RESOLUTION_FACTOR - N_XY) < 1e-9, "32 x M5_RESOLUTION_FACTOR must be an integer"
 # Output plots are tagged with N_Z (e.g. ``m5_cr_driven_outflow_1024.svg``),
 # so runs at different resolutions don't overwrite each other's figures.
 OUT_SUFFIX = f"_{N_Z}"
@@ -248,7 +268,8 @@ def _t_eq_fast(n_h):
 
 
 # ---- M4-inherited setup ----
-T_END = 2.0 * T_DYN
+# M5_T_END_FRACTION < 1 shortens the run (for timing probes only).
+T_END = 2.0 * T_DYN * float(os.environ.get("M5_T_END_FRACTION", 1.0))
 
 RHO_MIDPLANE_CODE = float((N_H_MIDPLANE / u.cm ** 3 * MU_H * c.m_p).to(CODE_UNITS.code_density).value)
 

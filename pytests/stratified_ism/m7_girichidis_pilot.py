@@ -10,9 +10,24 @@ below now diffuses with ``D = kappa``. Every run made before then had ``D = kapp
 3x faster relaxation rate ``nu``. Since fix-plan step 2 (same day) the relaxation is implicit,
 so the dt_relax bound the cost reasoning below relies on (``dt <= C_cfl * kappa / v_red^2``) no
 longer exists, and an isotropic ``kappa_perp = 1e26`` costs no extra steps. Since step 3, the
-MHD "projection onto B" below is a per-stage tensor relaxation, and the paper's
-``kappa_perp = 1e26`` can be set (``CosmicRayGreyParams.perpendicular_diffusion_coefficient``).
-The run has not been redone yet (fix-plan step 5).
+MHD "projection onto B" is a per-stage tensor relaxation, and since 2026-10-05 (step 5) the
+script uses the paper's ``kappa_perp = 1e26`` (``--kappa-perp-cgs``; 0 gives the old pure
+projection). Decisions 2 and 5 below are updated accordingly.
+
+**Step-5 rerun (2026-10-05): ``both --res=0.9375`` (60 x 60 x 150, 33.3 pc), MHD +
+self-gravity, kappa_par / kappa_perp = 1e28 / 1e26, 250 Myr, RTX 2080 Ti: 3.42 h (49 s per
+simulated Myr), NaN-free.** Plots ``pics/m7_pilot_*_both_mhd_sg_150.*``.
+- Late time: z70 / z90 = 286 / 918 pc (paper's CR runs ~200 / ~1500 pc), eta(1 kpc) = 0.36,
+  v_out = 3.5 km/s, H_gas ~300 pc.
+- The disc first puffs up (z90 ~ 800 pc by ~60 Myr), then settles; midplane n_H rises from ~0.35
+  to ~0.9 cm^-3 late.
+- H_cr is undefined after ~140 Myr: the CR pressure is flat within +-2.5 kpc, as expected with
+  ``sqrt(2 kappa t_end)`` = 4 kpc.
+- max v_A reached ~900 km/s early (in the CFL via ``fv_mhd_alfven_cfl``).
+- 60423 SNe; 51% deposited thermally (63% in the last quarter).
+- Still no thin dense layer like the paper's.
+- Cost: the first 10 Myr ran at ~134 s/Myr (compilation plus the hot start), the whole run at
+  49 s/Myr. ``--res=1`` (31.25 pc) would have taken ~4.5 h at the same rate.
 
 **NOT a committed pytest -- an exploratory script, not yet run.** M5's box
 (37.5 x 37.5 x 300 pc) is narrower than one scale height and 26x over-driven,
@@ -31,7 +46,7 @@ the code allows it, at half the paper's resolution:
 | SN energy | 1e51 erg thermal and/or 1e50 erg CR | same, three modes (CLI argument) |
 | unresolved SNe | SILCC scheme (Gatto et al. 2015) | Kim & Ostriker (2015) momentum where unresolved (new ``momentum_injection_hybrid``) |
 | magnetic field | B_x = 3 muG sqrt(rho / rho_0) (SILCC, Walch et al. 2015) | same (``--no-mhd``: hydro) |
-| CR transport | kappa_par = 1e28, kappa_perp = 1e26 cm^2/s along B (MHD) | kappa_par = 1e28 along B, kappa_perp = 0 (F_cr projected onto B; isotropic 1e28 with ``--no-mhd``) |
+| CR transport | kappa_par = 1e28, kappa_perp = 1e26 cm^2/s along B (MHD) | same (``--kappa-perp-cgs``; isotropic 1e28 with ``--no-mhd``) |
 | chemistry | H+/H/H2/C+/CO network with shielding | Koyama & Inutsuka (2002) cooling |
 | self-gravity | yes (tree) | yes: FFT, periodic x/y, isolated z, + Jeans pressure floor (N_J = 4) (``--no-self-gravity``, ``--no-jeans-floor``) |
 | t_end | 250 Myr | 250 Myr |
@@ -40,7 +55,7 @@ Usage::
 
     python m7_girichidis_pilot.py [both|thermal|cr] [--setup-only] [--res=F] [--t-end-myr=T] [--snapshots=N] [--sn-radius-pc=R] [--out-dir=DIR]
         [--no-mhd] [--no-self-gravity] [--no-jeans-floor] [--mhd-tolerance=double|single]
-        [--half-height-kpc=H]
+        [--half-height-kpc=H] [--kappa-perp-cgs=K]
 
 ``both`` (default) is their "thermal + CR" run (1e51 erg thermal + 1e50 erg CR
 per SN), ``thermal`` their thermal-only run (no CR transport at all, as in the
@@ -75,16 +90,21 @@ PROGRESS.md):
    integer (e.g. 1.1875 = 26.3 pc, 1.25 = 25 pc). There is no checkpointing
    (all snapshots come back at the end), so a run killed at a wall-time limit
    loses everything: measure first with ``--t-end-myr=10``.
-2. **CR transport: isotropic kappa = 1e28 cm^2/s, reduced streaming speed
-   1000 km/s.** The explicit F_cr relaxation bounds
-   ``dt <= C_cfl * kappa / v_red^2``; with v_red = 1000 km/s this is ~13 kyr,
-   matching the hydro CFL at 31.25 pc. v_red = 3000 km/s (safely above the
-   hottest gas) would cost ~9x more steps *and* worsen DESIGN.md's open
-   Finding 1 (v_red inflates the shared HLL wave-speed bound and smears
-   shocks/phase boundaries -- exactly the thin cold layer this run is
-   looking for). Accepted trade-off: the hottest remnants briefly exceed
-   v_red. kappa_perp = 1e26 isotropically (M5's choice) would make dt_relax
-   100x smaller and is unaffordable here.
+2. **CR transport: kappa = 1e28 cm^2/s (along B with MHD, kappa_perp =
+   1e26), reduced streaming speed 1000 km/s.** Rewritten 2026-10-05 (DESIGN.md
+   "Open: CR diffusion correctness", step 5). Both original reasons against
+   a higher v_red are gone:
+   - The F_cr relaxation is implicit, so there is no ``dt <= C_cfl kappa /
+     v_red^2`` bound any more, at any kappa.
+   - v_red no longer enters the gas rows' Riemann wave speed (Finding 1
+     fixed), so it does not smear shocks or phase boundaries.
+   - The CFL now uses the CR signal speed ``v_red / sqrt(3)``, below the
+     hottest gas (~2600 km/s), which sets dt once remnants exist.
+
+   v_red = 1000 km/s is kept for this re-run, so that the diffusion fixes are
+   not mixed with a change of a numerical parameter. The hottest remnants
+   still exceed it; a v_red = 3000 km/s convergence check is now cheap and is
+   the natural next run.
 3. **Several SNe per step** (new ``SNDrivingConfig.max_sn_per_step``): at
    240 SNe/Myr and dt ~ 12 kyr, ~3 SNe go off per step; the original
    one-trial-per-step driver would silently cap the rate at 1/dt.
@@ -110,9 +130,10 @@ PROGRESS.md):
    - MHD: SILCC's initial field B_x = 3 muG sqrt(rho / rho_0) (Walch et al.
      2015; Girichidis et al. 2016 only say "ordered"), FV MHD (Strang-split
      gas half-steps around the implicit Pang & Wu B/v update). CR transport
-     becomes anisotropic: F_cr is projected onto B once per step, i.e.
-     kappa_par = 1e28 and kappa_perp = 0 (paper: 1e26). Unlike an isotropic
-     kappa_perp = 1e26 this costs no extra steps (dt_relax uses kappa_par).
+     becomes anisotropic: an implicit per-RK-stage tensor relaxation with
+     kappa_par = 1e28 and kappa_perp = 1e26 (the paper's values; until
+     2026-10-05 F_cr was projected onto B, i.e. kappa_perp = 0). It costs no
+     extra steps.
      The CFL estimate includes the Alfven speed (new opt-in
      ``SimulationConfig.fv_mhd_alfven_cfl``; v_A reached ~400 km/s in the
      31 pc pilot, and in ``thermal`` mode no v_red bounds dt); the
@@ -309,6 +330,9 @@ SFR_CODE = SN_RATE_CODE * M_STAR_PER_SN  # Msun per code time
 
 # ---- cosmic rays ----
 KAPPA_CODE = _code(1e28 * u.cm**2 / u.s, CODE_UNITS.code_length**2 / CODE_TIME)
+# Across B (MHD only; Girichidis et al. 2016). 0 confines F_cr to B.
+KAPPA_PERP_CGS = float(_OPTS.get("kappa-perp-cgs", 1e26))
+KAPPA_PERP_CODE = _code(KAPPA_PERP_CGS * u.cm**2 / u.s, CODE_UNITS.code_length**2 / CODE_TIME)
 V_RED_CODE = 1000.0  # km/s = code velocity
 
 # ---- magnetic field and self-gravity ----
@@ -685,7 +709,9 @@ def run_m7():
               f"injection below n_H ~ {n_resolved:.3g} cm^-3, momentum above")
     if CR_ACTIVE:
         print(f"kappa = 1e28 cm^2/s = {KAPPA_CODE:.4g} code, v_red = {V_RED_CODE:.0f} km/s, "
-              f"diffusion length over t_end = {np.sqrt(KAPPA_CODE * T_END) / 1000.0:.2f} kpc")
+              f"diffusion length sqrt(2 kappa t_end) = {np.sqrt(2 * KAPPA_CODE * T_END) / 1000.0:.2f} kpc"
+              + (f"; kappa_perp = {KAPPA_PERP_CGS:.3g} cm^2/s -> "
+                 f"{np.sqrt(2 * KAPPA_PERP_CODE * T_END):.0f} pc" if MHD else ""))
     _cost_estimate()
     if SETUP_ONLY:
         return None
@@ -720,6 +746,7 @@ def run_m7():
         cosmic_ray_grey_params=CosmicRayGreyParams(
             gamma_cr=GAMMA_CR,
             diffusion_coefficient=KAPPA_CODE,
+            perpendicular_diffusion_coefficient=KAPPA_PERP_CODE,
             reduced_streaming_speed=V_RED_CODE,
         ),
     )

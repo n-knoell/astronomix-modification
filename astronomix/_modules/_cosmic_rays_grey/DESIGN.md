@@ -439,8 +439,10 @@ each land separately, each with step 0's tests as the gate.
      - Report the Riemann part of `D_perp` against `kappa_perp` per angle, and gate it on
        decreasing with N. Do not gate it on an absolute value -- see step 4 for why the oblique
        case may stay above `kappa_perp` at M7 resolution.
-1. **Convention -- done 2026-10-04.** `cr_grey_sources.cr_flux_relaxation_rate` (new, shared
-   by the source and `_cfl_time_step`) gives `nu = (gamma_cr - 1) v_red^2 / kappa`.
+1. **Convention -- done 2026-10-04.** `nu = (gamma_cr - 1) v_red^2 / kappa`. At step 1 this was
+   a new helper, `cr_grey_sources.cr_flux_relaxation_rate`, shared by the source and
+   `_cfl_time_step`. Steps 2-3 removed both users and folded the rate into
+   `cr_flux_relaxation_update`, as `a = kappa / (kappa + (gamma_cr - 1) v_red^2 dt)`.
    - Item 4, item 9 Test B and Phase D were converted to the same physical runs
      (`kappa_new = kappa_old / 3`: 0.06 -> 0.02, 0.2 -> 0.2/3, 0.06 -> 0.02). Each was compared
      against a HEAD worktree baseline: all pass, and the states agree to float32 rounding
@@ -604,9 +606,20 @@ each land separately, each with step 0's tests as the gate.
        15.6-31 pc. The remaining levers are resolution (second order, ~4x per doubling) or a
        smaller `v_red`. If T2 confirms this, document `D_perp,num` as M7's effective
        cross-field diffusivity rather than claiming `kappa_perp`.
-5. **Re-run** item 4, item 9, Phase D, M5, M6 and M7, and redo the diffusion-length reasoning in
-   their docstrings. Redo M7's cost argument: there is no dt_relax after step 2, and the CFL is
-   set by `v_red/sqrt(3)` after step 4.
+5. **Re-runs -- done 2026-10-05, except the CWB setups.**
+   - Items 4 and 9 and Phase D were re-run and recalibrated with steps 1-4 (item 9 Test B now at
+     `v_red = 32`).
+   - M5 and M6 ran at factors 1 and 1.5, M7 at `--res=0.9375` (33.3 pc, MHD + self-gravity, the
+     paper's `kappa_perp = 1e26`). Each fits under 8 h on an RTX 2080 Ti (0.15-3.4 h); the
+     results are in PROGRESS.md and the scripts' docstrings.
+   - Diffusion-length and cost reasoning was redone in the docstrings. M7 is no longer bounded
+     by dt_relax, and its dt is set by the hottest gas, not `v_red/sqrt(3)`.
+   - Still open: the CWB setups (CR transport there is set by `v_red` alone), and an M7 `v_red`
+     = 3000 km/s check.
+
+   Original spec: **Re-run** item 4, item 9, Phase D, M5, M6 and M7, and redo the diffusion-length
+   reasoning in their docstrings. Redo M7's cost argument: there is no dt_relax after step 2, and
+   the CFL is set by `v_red/sqrt(3)` after step 4.
 
 ## Resolved: streaming transport and streaming heating (ladder item 5)
 
