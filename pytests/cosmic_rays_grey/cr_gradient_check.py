@@ -91,6 +91,16 @@ pre-shock state).
    silently kill the adjoint, and this test is what establishes that
    rather than assuming it.
 
+5. ``test_cr_gradient_check_guard`` (added 2026-10-05, DESIGN.md "Open: CR
+   diffusion follow-up", step 3d): AD vs. FD through an *active* CR
+   monotonicity guard (``cr_grey_transport.cr_monotonicity_guard``). The
+   guard is piecewise smooth (C1 smoothstep, but ``clip``/``max``); Phase D's
+   AD inference passes, but its smooth Gaussian never switches the guard on.
+   Here a top-hat ``e_cr`` patch, with diffusive relaxation in the optically
+   thick regime (``R ~ 0.1``), keeps the guard active at the patch edges, and
+   the gradient is taken w.r.t. ``diffusion_coefficient`` (the parameter
+   Phase D infers).
+
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md's differentiability plan.
 """
 
@@ -132,6 +142,10 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     DSA_EFFICIENCY_KANG_RYU_2013,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import inject_crs_at_shocks
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_monotonicity_guard,
+    cr_wave_speed_reduction,
+)
 from astronomix._modules._cosmic_rays_grey.cr_grey_emission import (
     proton_spectrum_normalized_to_energy,
     pion_decay_photon_spectrum,
@@ -546,8 +560,98 @@ def test_cr_gradient_check_rollout_stability(tol: float = 0.1):
     )
 
 
+
+def test_cr_gradient_check_guard(tol: float = 1e-2, guard_effect_min: float = 1e-6):
+    """AD vs. FD gradient through an active CR monotonicity guard.
+
+    1D, N = 64, ``v_red = 8``, ``kappa = 0.005``: the cell optical depth
+    makes ``R = cr_wave_speed_reduction`` ~0.1, so the guard (which raises
+    ``R`` toward 1) changes the flux substantially. A top-hat ``e_cr`` (1.0 on
+    a 0.01 background, ``F_cr = 0``) keeps the guard at ~1 at the patch edges
+    (checked on the initial state). The cost ``sum(e_cr_final^2)`` must also
+    differ between guard on and guard off by more than ``guard_effect_min``
+    (relative), so the guard is really on the gradient path.
+
+    Args:
+        tol: Maximum relative AD-vs-FD error.
+        guard_effect_min: Minimum relative change of the cost when the guard
+            is switched off.
+    """
+    num_cells = 64
+    gamma_cr = 4.0 / 3.0
+    v_red = 8.0
+    kappa_0 = 0.005
+    t_end = 0.05
+
+    config = SimulationConfig(
+        solver_mode=FINITE_VOLUME,
+        dimensionality=1,
+        num_cells=num_cells,
+        box_size=1.0,
+        boundary_settings=BoundarySettings1D(
+            left_boundary=PERIODIC_BOUNDARY, right_boundary=PERIODIC_BOUNDARY
+        ),
+        cosmic_ray_grey_config=CosmicRayGreyConfig(
+            grey_cosmic_rays=True, diffusive_relaxation=True
+        ),
+        differentiation_mode=BACKWARDS,
+    )
+    registered_variables = get_registered_variables(config)
+    helper_data = get_helper_data(config)
+    x = helper_data.geometric_centers
+    e_cr0 = jnp.where(jnp.abs(x - 0.5) < 0.15, 1.0, 0.01)
+
+    primitive_state = jnp.zeros((registered_variables.num_vars, num_cells))
+    primitive_state = primitive_state.at[registered_variables.density_index].set(1.0)
+    primitive_state = primitive_state.at[registered_variables.pressure_index].set(1.0)
+    primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(e_cr0)
+    config = finalize_config(config, primitive_state.shape)
+
+    def params_for(kappa, guard_on=True):
+        guard = {} if guard_on else dict(cr_guard_sensor_onset=2.0, cr_guard_sensor_full=3.0)
+        return SimulationParams(
+            t_end=t_end,
+            cosmic_ray_grey_params=CosmicRayGreyParams(
+                gamma_cr=gamma_cr, reduced_streaming_speed=v_red,
+                diffusion_coefficient=kappa, **guard,
+            ),
+        )
+
+    r_factor = float(cr_wave_speed_reduction(
+        jnp.asarray(kappa_0), params_for(kappa_0), config.grid_spacing
+    ))
+    guard_initial = float(cr_monotonicity_guard(e_cr0, params_for(kappa_0)).max())
+
+    def cost_fn(kappa, guard_on=True):
+        final_state = time_integration(
+            primitive_state, config, params_for(kappa, guard_on), registered_variables
+        )
+        return jnp.sum(final_state[registered_variables.cosmic_ray_e_index] ** 2)
+
+    ad_grad = float(jax.grad(cost_fn)(kappa_0))
+    h = 1e-4 * kappa_0
+    fd_grad = float((cost_fn(kappa_0 + h) - cost_fn(kappa_0 - h)) / (2 * h))
+    rel_err = abs(ad_grad - fd_grad) / abs(fd_grad)
+    cost_on, cost_off = float(cost_fn(kappa_0)), float(cost_fn(kappa_0, guard_on=False))
+    guard_effect = abs(cost_on - cost_off) / abs(cost_off)
+    print(f"guard: R = {r_factor:.3f}, initial guard max = {guard_initial:.3f}, "
+          f"cost change guard on/off = {guard_effect:.3e}; AD grad = {ad_grad:.6e}, "
+          f"FD grad = {fd_grad:.6e}, rel. err = {rel_err:.3e}")
+
+    assert r_factor < 0.3, f"R = {r_factor:.3f}: not optically thick, the guard would not matter."
+    assert guard_initial > 0.9, f"The guard is not active at the patch edges ({guard_initial:.3f})."
+    assert guard_effect > guard_effect_min, (
+        f"The guard barely changes the cost ({guard_effect:.2e}); it is not on the gradient path."
+    )
+    assert ad_grad == ad_grad, "AD gradient is NaN."
+    assert rel_err < tol, (
+        f"AD vs FD gradient mismatch through the active guard: rel. err {rel_err:.3e} >= tol "
+        f"{tol} (AD={ad_grad:.6e}, FD={fd_grad:.6e})."
+    )
+
 if __name__ == "__main__":
     test_cr_gradient_check()
     test_cr_gradient_check_injection()
     test_cr_gradient_check_emission()
     test_cr_gradient_check_rollout_stability()
+    test_cr_gradient_check_guard()

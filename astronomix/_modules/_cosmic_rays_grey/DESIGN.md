@@ -988,10 +988,9 @@ docstring.
        400. `kappa_perp,num / kappa_par` = 0.0408 / 0.0198 / 0.0086 / 0.0033, +22% / +8% /
        +4% / +2% over no guard.
      - Ring 3c passes.
-     - **Ring 3b misses its gate at N = 100 by 1.1e-4** (`e_min` = 0.099890, i.e. 1.1e-3 of
-       the background, 1.1e-5 of the jump); exact at N = 200. Open: keep the gate (known
-       marginal failure) or state it in units of the jump like 3a. The user decides; the
-       gate was already restated once (from 1e-6) when the guard was introduced.
+     - Ring 3b: `e_min` = 0.099890 at N = 100 (1.1e-5 of the jump, 1.1e-3 of the background),
+       exact at N = 200. Its gate missed 1e-3 of the background, so the user decided
+       (2026-10-05) to state it in units of the jump like 3a (`<= 1e-3`): passes.
      - T1a-c, T2a-f, T3: identical to the unguarded numbers to 4-5 digits.
      - Items 4 and 9 and Phase D pass.
    - **Phase D baseline corrected:** the recovered-kappa error is 1.282e-2 on an untouched HEAD
@@ -1036,10 +1035,15 @@ docstring.
        measure its share of M7's cross-field transport.
    - **Differentiability.** The guard is C1 in `psi` but uses `clip` and `max` (piecewise
      smooth). Phase D's AD inference passes, but its smooth Gaussian never activates the
-     guard. AD through an *active* guard is untested: add a sharp-IC case to the gradient
-     check (ladder item 16).
+     guard. AD through an *active* guard was untested, so a sharp-IC case was added to the
+     gradient check (ladder item 16). **Done 2026-10-05:**
+     `cr_gradient_check.py::test_cr_gradient_check_guard` (1D, top-hat on a 0.01 background,
+     `kappa = 0.005`, `v_red = 8`, so `R = 0.12`). The guard is 1.0 at the patch edges and
+     switching it off changes the cost by 0.5%. AD vs. FD w.r.t. `diffusion_coefficient`:
+     rel. err 6.3e-6. Passes.
 
-4. **M7 frozen-field probe.** Measures what M7's `kappa_perp` claim needs, in M7's own
+4. **M7 frozen-field probe -- run 2026-10-05** (`pytests/stratified_ism/m7_frozen_field_probe.py`;
+   results below the original spec). Measures what M7's `kappa_perp` claim needs, in M7's own
    field: is the `kappa_perp = 1e26` effect larger than the transport discretization error at
    33.3 pc?
    - **Setup.**
@@ -1079,6 +1083,191 @@ docstring.
      - Otherwise: the docstring states that M7's cross-field transport is set by resolution, with
        the measured `E / S` per snapshot.
    - **Cost:** under an hour of GPU time.
+   - **Result (2026-10-05).** Setup as specified, with two changes:
+     - float32 throughout, and the 2x grid on the full box (no sub-box needed);
+     - CR deposits at peak 1e-3 with the `e_cr` floor at 1e-20. The always-on floor (1e-10)
+       would otherwise fill the CR-free box with ~10x the deposits' energy (first smoke run).
+
+     Each M7-grid variant takes about 1 min, each 2x one about 4 min, on a 2080 Ti. Gas
+     static (max|u| <= 5e-6 km/s), CR energy conserved. All values in cm^2/s:
+
+     | M7 field at | `D_zz(A)`, `kappa_perp = 0` | S (`kappa_perp = 1e26`) | G (guard) | E (A - 2x grid) | `\|E\|/(1-2^-1.2) / \|S\|` |
+     |---|---|---|---|---|---|
+     | 0 Myr (B = B_x) | 1.46e26 | 7.8e25 | **1.46e26** | 1.5e25 | 0.33 |
+     | 48 Myr | 2.16e27 | 1.54e26 | 7.0e25 | 6.8e26 | 7.8 |
+     | 144 Myr | 2.35e27 | 1.64e26 | -1.07e26 | -2.0e26 | 2.2 |
+     | 250 Myr | 2.34e27 | 1.57e26 | -1.23e26 | -1.3e26 | 1.4 |
+
+     - **Initial field (horizontal): all numerical vertical transport comes from the guard.**
+       With the guard off, nothing moves vertically (`f(|z| > 300 pc)` stays at 5.6e-7). With
+       it on, `D_zz` = 1.46e26, about 1.9x the physical `kappa_perp` effect, from the guard
+       firing at the sharp, 1.2-cell SN deposits (the leak found in the step-3 physics check).
+       It barely shrinks on the 2x grid (1.31e26), because it is set by the sensor thresholds,
+       not by asymptotic convergence. Richardson's 0.33 understates it.
+     - **S in the initial field is 0.78 of the expected `kappa_perp`.** That is a fair sanity
+       check of the moment method with a compact deposit (T2d gives 0.94-1.04 in a clean setup).
+     - **Evolved fields (48-250 Myr, median `|b_z|` ~0.7): vertical transport is parallel.**
+       `D_zz` ~2.2-2.35e27, about `kappa_par <b_z^2>`. `kappa_perp` adds only ~7%, and the guard
+       changes it by -5% to +3%.
+     - **Resolution matters more than `kappa_perp`.** The 2x grid changes `D_zz` by +31% (48
+       Myr), -8% and -5%, i.e. 1.4-7.8x S. The sign varies, so this is not a clean asymptotic
+       error. It mixes discretization error with the finer representation of the trilinearly
+       interpolated field, which a real 2x M7 run would have too.
+     - **Decision (rule above): M7's cross-field transport is set by resolution and the guard,
+       not by `kappa_perp`, at every snapshot.** M7 does not resolve `kappa_perp = 1e26`. But
+       once the field is mostly vertical (from ~50 Myr), `kappa_perp` hardly matters for
+       vertical CR transport. What matters is parallel transport, whose resolution sensitivity
+       (up to 31% in `D_zz`) is the larger uncertainty.
+     - **Follow-up checks (2026-10-05, user request: `sn_smooth_cells = 2`, literature re-read,
+       intermediate tests).**
+
+       | deposit | G, initial field | G, 48 Myr | calibration: `D_zz(E) - D_zz(C)` (exact: 1e26) |
+       |---|---|---|---|
+       | M7 (r = 40 pc, 1-cell tanh edge) | 1.46e26 | 7.0e25 | 1.28e26 |
+       | `sn_smooth_cells = 2` | **2.39e26** | 6.2e25 | 1.21e26 |
+       | SILCC-like, r = 4 cells (Girichidis+2018 Sec. 2.1) | 1.37e26 | 6.3e25 | 1.23e26 |
+
+       - **`sn_smooth_cells = 2` does not help; it makes it worse.** The guard's vertical
+         transport in the initial field is mostly not caused by the deposit's sharpness. It comes
+         from CR fronts advancing along B into CR-free gas. In the non-diffusive transient the
+         two-moment fronts are sharp, and the shape sensor fires at the leading edge of any front
+         entering a flat region (the leak found in the step-3 physics check). A SILCC-like 4-cell
+         deposit gives about the same as M7's.
+       - **Calibration (new variant E: `kappa_perp = 1e26`, guard off, horizontal field, exact
+         answer `kappa_perp`):** the probe measures 1.21-1.28 `kappa_perp`. So the scheme adds
+         ~+25% numerical cross-field diffusion even with the guard off, from the optically thick
+         (`R` ~0.03) Rusanov term at non-smooth points, where it is O(kappa) by construction.
+         With `kappa_perp = 0` and the guard off nothing moves vertically, because that term
+         scales with `kappa_n`. With the guard on, S is only 0.78, because the guard's own
+         transport saturates and overlaps it.
+       - **Realizability (new intermediate test, `scratchpad step4/ring_realizability.py`):** in
+         ring 3b without the guard, every undershoot cell sits within one cell of cells with
+         `|F_cr| > v_red e_cr`. They appear at every time from t = 0.03, with ratios up to 850.
+         With the guard there are none (max 0.40). Rosdahl et al. (2025, RAMSES two-moment CRs)
+         enforce exactly this two-moment realizability bound, `|F_c| <= c_tilde e_c`, at every
+         interface interpolation and after the source step, as M1 radiation schemes do. Their
+         two-moment ring test stays non-negative and has much less perpendicular numerical
+         diffusion than their one-moment solver. Our scheme has no such bound; the guard keeps
+         `F` realizable only indirectly, by adding dissipation, which is what leaks across B at
+         fronts.
+     - **Where the guard fires (diagnostic, `scratchpad step4/guard_where.py`, initial field,
+       guard evaluated after every 0.25 Myr).**
+       - Almost never at the SN deposits: 0 of 4,000-47,000 active cells lie within 80 pc of a
+         deposit for 0.5-2.5 Myr. The median distance of active cells is 450-580 pc.
+       - The guard fires in the CR "tubes" spreading along B. With `kappa_perp` ~ 0 these keep
+         the deposit's sharp cross-field (here vertical) profile. That is the physically correct
+         solution, but the shape sensor reads it as a front.
+       - By 3 Myr the active cells hold 52% (M7 deposit) / 64% (`sn_smooth_cells = 2`) of all CR
+         energy.
+       - So the guard's cross-field transport is not an SN-injection effect. The guard smears
+         cross-field structure that anisotropic transport should keep sharp, wherever CRs are.
+         The ring tests (no SNe) show the same mechanism.
+     - **Answer to "is it the SN driving?" (user, 2026-10-05): no.**
+       - The undershoots arise without SNe (ring tests).
+       - The deposit shape barely changes the guard's effect (1.4-2.4e26).
+       - With the guard off, M7's sharp deposits move nothing across B.
+       - The guard fires far from the deposits.
+       - The cause is in the CR transport scheme. The face-normal `R` makes the cross-field flux
+         central; the flux is not kept realizable (`|F| <= v_red e`); and the guard's
+         workaround cannot tell a physically sharp cross-field profile from a numerical
+         front.
+       - The SN formalism needs no change for this. It differs from SILCC in deposit size (1.2
+         cells vs a 4-cell or 800-Msun sphere), which matters for the thermal / momentum
+         feedback, not for this CR transport problem.
+     - **Literature re-read (Girichidis et al. 2016 Letter and 2018 MNRAS 479, 3042;
+       Rosdahl et al. 2025; Yang et al. 2012; Dubois & Commercon 2016).**
+       - What M7 reproduces: K = 1e28 / 1e26, the initial `B_x(z) ~ sqrt(rho)` field, SN rates
+         and scale heights, gamma = 5/3 and gamma_cr = 4/3.
+       - What M7 changes: box height +-2.5 vs +-20 kpc, cell size 33.3 vs 15.6 pc, deposit
+         size 1.2 cells vs a sphere of 800 Msun or of radius 4 cells.
+       - No hadronic losses: that matches the 2016 Letter. The 2018 paper adds them and loses
+         5-25% of the CR energy to them.
+       - The late-time vertical field M7 develops is the outcome Girichidis+2018 describe for
+         SN-driven boxes (citing Hanasz+2009: the vertical random field dominates when SNe
+         generate it faster than diffusivity removes it).
+       - The reference code solves one-moment diffusion with an explicit FLASH scheme (Yang et al.
+         2012: asymmetric MC-limited fluxes), which has numerical perpendicular diffusion of its
+         own (S&H's asymmetric-MC row).
+     - **Realizability cap implemented and tested (user request, 2026-10-05).**
+       `CosmicRayGreyConfig.flux_realizability_cap` (opt-in, default off): Rosdahl et al. (2025)
+       Sec. 2.3. `F_cr` is rescaled to `|F_cr| <= v_red e_cr` on the reconstructed interface
+       states before every Riemann solve and on the cell states at the end of every RK stage
+       (`cr_grey_transport.cr_flux_realizability_cap`). The RK2 average of capped states stays
+       capped (convex constraint).
+       - New test `cr_anisotropic_ring.py::test_cr_ring_flux_cap_alone` (cap on, guard off)
+         **fails**.
+       - 3a is identical to six digits to the run with neither cap nor guard: `e_min` 9.961 /
+         9.954 at N = 100 / 200, `kappa_perp,num / kappa_par` 0.0183 / 0.0083. On a background
+         of 10 the cap never activates.
+       - 3b: `e_min` -0.0027 / -0.0041, against -0.0104 with neither.
+       - **Conclusion: the realizability violations were a symptom near empty cells, not the
+         cause.** The non-monotonicity is the central cross-field flux (face-normal `R -> 0`),
+         S&H's unlimited centered differencing, which the cap does not touch. The guard alone
+         passes both gates. The cap only reduces the negatives near `e_cr -> 0`.
+     - **Decided (user, 2026-10-05): option 1 -- keep the guard and add the cap.**
+       - `flux_realizability_cap` defaults to True. It acts only with `diffusive_relaxation` or
+         `anisotropic_transport`, so the pure-wave CR runs (items 1-3, 6-11, 15) are unchanged.
+       - Production scheme for diffusive runs: face-normal `R`, spread shape guard, cap,
+         always-on `e_cr` floor.
+       - Regression of guard + cap: see PROGRESS.md.
+       - Option 2 is recorded as a known limitation below.
+
+**Cap in M7 (2026-10-06, user request "which setting is physically better?").** With
+deterministic GPU ops and the same seed, cap on and cap off diverge at the 161st SN (t = 0.66 Myr);
+a deterministic cap-on repeat reproduces itself exactly. So the cap acts in M7, at the early CR
+fronts into CR-free gas. The outcome is the same within the seed scatter on every literature
+observable (mass heights, eta at 1 kpc, outflow temperature, density, speed and hot fraction;
+table in PROGRESS.md, 2026-10-06). Neither setting matches Girichidis et al. better, so the cap
+stays on, on first principles (two-moment realizability, Rosdahl et al. 2025).
+
+### Known limitation: cross-field transport at sharp CR structure (recorded 2026-10-05)
+
+**Update 2026-10-06 (step 5a):** the guard's extra dissipation is Rusanov at the full CR signal
+speed, so it scales linearly with `v_red`. At the `v_red` ~ 10^4 km/s that M7 needs for converged
+transport, it adds +20-40% vertical transport and up to ~8x `kappa_perp` across horizontal B.
+That makes the guard incompatible with a converged `v_red` as built.
+
+**Decision (user, 2026-10-06): guard OFF for the M7 production run, for now.** M7 defaults to
+guard off (`--guard` switches it back on; off-guard outputs carry `_noguard`). The library
+default stays on (the ring tests rely on it). Production run: `v_red` = 10^4 km/s, guard off,
+cap and floor on (PROGRESS.md, 2026-10-06). Positivity then rests on the cap and the floor. The
+probe's guard-off undershoots are ~1e-6 of the peak; the ring tests' 2-3% undershoots at sharp,
+resolved cross-field edges remain a known limitation.
+
+**Future test (option "2" of 2026-10-06): make the guard independent of `v_red`.** Limit the
+guard's extra dissipation to a physical speed instead of the CR signal speed. For example,
+raise R only up to `R_guard = min(1, kappa_n / (dx v_red sqrt(gamma_cr - 1)) * c)` with an
+O(1) factor `c`, i.e. a dissipation speed ~`kappa_n / dx` per face, set by the physical
+diffusivity, not by `v_red`. Gates to re-check:
+- ring 3a / 3b / 3c (monotonicity, positivity, analytic accuracy);
+- the frozen-field probe `v_red` scan with the guard on (must converge like guard-off, and stay
+  `v_red`-independent in the horizontal field);
+- T1-T3 unchanged;
+- the active-guard gradient check.
+If that works, it can go back on in production. Otherwise option 2 of the known limitation
+(limited cross-field fluxes) is the root-cause fix.
+
+The CR-row flux across faces nearly perpendicular to B is central (face-normal `R -> 0`). That is
+S&H's unlimited centered differencing, which is not monotone at sharp cross-field structure
+(ring tests: 2-3% undershoots, negative `e_cr` near empty cells). The adopted fix, the shape
+guard, restores monotonicity but cannot tell a numerical front from a physically sharp
+cross-field profile, which anisotropic transport keeps (`kappa_perp` ~ 0).
+
+- **Where it acts:** in the M7 probe's initial (horizontal) field, the guard is active in the CR
+  tubes along B (52-64% of the CR energy by 3 Myr). There it adds vertical transport of ~1.5e26
+  cm^2/s, comparable to and above the physical `kappa_perp = 1e26`. In evolved, mostly vertical
+  fields it changes `D_zz` by -5% to +3%.
+- **What does not fix it:**
+  - The realizability cap (no effect on 3a).
+  - Smoother SN deposits (`sn_smooth_cells = 2`: worse).
+  - JO18's isotropic `R` (monotone, but 1.8-4.6x more cross-field numerical diffusion on the
+    ring).
+- **Root-cause fix for later (option 2):** limit the cross-field flux like S&H's limited
+  anisotropic fluxes -- e.g. limit the transverse components of the field-aligned `F_cr` at
+  faces, or use a limited face-centered `b . grad` for the closure flux. That would keep
+  monotonicity without dissipating physically sharp cross-field profiles. The ring tests (3a/3b,
+  guard off) and the M7 probe (variant C vs. A) are ready as gates. Until then, M7's
+  cross-field transport is set by resolution and the guard, not by `kappa_perp`.
 
 5. **`v_red` convergence for M7.**
    - **5a, deterministic** (do first). The step-4 probe at `v_red` = 1000 / 3000 / 10000 (dt
@@ -1098,6 +1287,17 @@ docstring.
        audit's 1D moving-gas diffusion test at `u` = 1, 2 and 3 times `v_red sqrt(gamma_cr - 1)`.
        Gate: D/kappa and the centroid drift as at `u = 0`. This tests that our comoving `F_cr`
        relaxes JO18's `V_m >> |u|` requirement, which M7's hottest gas violates.
+   - **5a result (2026-10-06):** frozen-field probe at `v_red` = 1000 / 3000 / 10000 / 30000.
+     **With the guard off, transport converges by 10^4 km/s** (1-2% to 3e4; horizontal field
+     exactly `v_red`-independent). **With the guard on it never converges**: its dissipation
+     scales with `v_red` (+40% in `D_zz` at 3e4, 7.7x `kappa_perp` in the horizontal field). M7
+     at 1000 km/s has ~half the converged vertical transport. Details in PROGRESS.md
+     (2026-10-06, step 5a). Open (user): the guard vs. `v_red` decision, then M7 at ~10^4 km/s.
+   - **5b result (2026-10-06, run before 5a at the user's request):** `v_red` = 3000 vs. 1000
+     km/s (seed 42; seed scatter from seeds 42 / 43 at 1000): late z70 182 vs. 288 pc, z90 643
+     vs. 917 pc, H_gas 134 vs. ~305 pc, v_out 12 vs. 6-7 km/s, all 10-30x the seed scatter
+     (eta unchanged, 0.38). **M7 is not converged in `v_red` at 1000 km/s.** See PROGRESS.md,
+     2026-10-06. 5a is now needed to find a converged `v_red`.
    - **5b, full M7** (only if 5a shows a non-negligible `v_red` effect, or for the report).
      - Add `--seed` to `m7_girichidis_pilot.py` (`config.random_seed`, default 42).
      - Run `v_red` = 1000 with seed 43, about 3.4 h at `--res=0.9375`. The seed 42 / seed 43

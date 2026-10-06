@@ -48,8 +48,8 @@ Status (2026-10-05, RTX 2080 Ti, ~55 min for the file).
   unlimited centered differencing. JO18's isotropic choice (``R`` from ``kappa_par`` on every
   face) keeps the minimum exactly but has 1.8-4.6x more cross-field numerical diffusion.
 - **With the monotonicity guard** (``cr_grey_transport.cr_monotonicity_guard``, chosen by the
-  user as option B): 3a and 3c pass; 3b misses its gate at N = 100 by 1.1e-4 (``e_min`` =
-  0.099890, i.e. 1.1e-5 of the jump), exact at N = 200.
+  user as option B): 3a, 3b and 3c pass. 3b's gate is in units of the jump like 3a's (user
+  decision 2026-10-05); its worst case is 1.1e-5 of the jump at N = 100.
 
 Numbers in each test's docstring; the design history is in DESIGN.md "Open: CR diffusion
 follow-up", step 3.
@@ -130,6 +130,10 @@ SH_TABLE = {
     "symmetric van Leer": (0.0238, 0.0104, 0.0038, 0.0013),
 }
 
+# Monotonicity guard switched off (cr_grey_transport.cr_monotonicity_guard).
+GUARD_OFF = dict(cr_guard_sensor_onset=2.0, cr_guard_sensor_full=3.0)
+CAP_RESOLUTIONS = (100, 200)
+
 # 3c: Jiang & Oh (2018), Sec. 4.1.5.
 JO_KAPPA = 1.0 / 3.0
 JO_V_RED = 50.0
@@ -147,10 +151,15 @@ def _ring_run(
     patch: float,
     patch_center: float,
     timepoints: tuple,
+    flux_cap: bool = True,
+    guard: bool = True,
 ):
     """Run one ring problem. Returns ``(times, e, x, y, max_speed, num_iterations)``
     with ``e`` the ``e_cr`` snapshots in published units (divided by ``E_SCALE``) and
-    ``x``, ``y`` the cell centers relative to the origin."""
+    ``x``, ``y`` the cell centers relative to the origin. ``flux_cap`` switches on the
+    realizability cap (``CosmicRayGreyConfig.flux_realizability_cap``); ``guard=False``
+    switches the monotonicity guard off. The defaults are the production scheme since
+    2026-10-05 (guard and cap on)."""
     periodic = BoundarySettings1D(
         left_boundary=PERIODIC_BOUNDARY, right_boundary=PERIODIC_BOUNDARY
     )
@@ -167,7 +176,8 @@ def _ring_run(
         use_specific_snapshot_timepoints=True,
         snapshot_settings=SnapshotSettings(return_states=True),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
-            grey_cosmic_rays=True, diffusive_relaxation=True, anisotropic_transport=True
+            grey_cosmic_rays=True, diffusive_relaxation=True, anisotropic_transport=True,
+            flux_realizability_cap=flux_cap,
         ),
     )
     registered_variables = get_registered_variables(config)
@@ -196,7 +206,8 @@ def _ring_run(
         C_cfl=C_CFL,
         snapshot_timepoints=jnp.array(timepoints),
         cosmic_ray_grey_params=CosmicRayGreyParams(
-            gamma_cr=GAMMA_CR, reduced_streaming_speed=v_red, diffusion_coefficient=kappa
+            gamma_cr=GAMMA_CR, reduced_streaming_speed=v_red, diffusion_coefficient=kappa,
+            **({} if guard else GUARD_OFF),
         ),
     )
     snapshots = time_integration(state, config, params, registered_variables)
@@ -355,25 +366,29 @@ def test_cr_ring_sharma_hammett(
 
 def test_cr_ring_positivity(
     resolutions: tuple = SH_POSITIVITY_RESOLUTIONS,
-    min_tol: float = 1e-3,
+    undershoot_tol: float = 1e-3,
 ):
     """3b: S&H (2007) Fig. 7 variant, patch 10 on background 0.1.
 
-    Gate: ``e_min >= 0.1 (1 - min_tol)`` over all snapshots (centered schemes
-    go negative here, S&H Fig. 7). ``min_tol`` was 1e-6 before the guard and
-    was restated with it (see :func:`test_cr_ring_sharma_hammett`). The scaled background (``1e-8``) sits two
-    orders above the ``minimum_e_cr = 1e-10`` clamp, so the clamp cannot hide
-    an undershoot.
+    Gate: over all snapshots, ``e_cr > 0`` and the undershoot below the
+    initial minimum 0.1 is at most ``undershoot_tol`` of the jump (9.9), the
+    same form as 3a's gate (centered schemes go negative here, S&H Fig. 7).
+    History: 1e-6 of the background before the guard; 1e-3 of the background
+    when the guard came in; in units of the jump since 2026-10-05 (user
+    decision), because the guard's residual undershoot scales with the jump,
+    not with the background. The scaled background (``1e-8``) sits two orders
+    above the ``minimum_e_cr = 1e-10`` clamp, so the clamp cannot hide an
+    undershoot.
 
     Measured (2026-10-05), with the guard: ``e_min`` = 0.099890 at N = 100
-    (t = 0.098; 1.1e-5 of the jump, but 1.1e-3 of the background: FAILS the
-    gate by 1.1e-4) and 0.100000 at N = 200. Without the guard: -0.091 and
+    (t = 0.098; 1.1e-5 of the jump, 1.1e-3 of the background) and 0.100000 at
+    N = 200: passes. Without the guard: -0.091 and
     -0.126 (``e_cr`` negative; the ``minimum_e_cr`` floor was then applied only
     under ``positivity_config.per_step_mode = HARD_FLOOR``, now always).
 
     Args:
         resolutions: The grid sizes.
-        min_tol: Allowed relative undershoot below the background 0.1.
+        undershoot_tol: Allowed undershoot below 0.1, as a fraction of the jump.
     """
     mins = []
     for num_cells in resolutions:
@@ -397,10 +412,70 @@ def test_cr_ring_positivity(
     _save(fig, "cr_ring_positivity_test.svg")
 
     for num_cells, m in zip(resolutions, mins):
-        assert m.min() >= 0.1 * (1.0 - min_tol), (
-            f"e_cr fell below the initial minimum 0.1 at N = {num_cells}: {m.min():.6f}."
+        undershoot = (0.1 - m.min()) / (10.0 - 0.1)
+        assert m.min() > 0.0 and undershoot <= undershoot_tol, (
+            f"e_cr fell below the initial minimum 0.1 at N = {num_cells}: {m.min():.6f} "
+            f"({undershoot:.2e} of the jump > {undershoot_tol})."
         )
 
+
+
+def test_cr_ring_flux_cap_alone(
+    resolutions: tuple = CAP_RESOLUTIONS,
+    undershoot_tol: float = 1e-3,
+):
+    """3a and 3b with the realizability cap ``|F_cr| <= v_red e_cr`` (Rosdahl et
+    al. 2025) and the monotonicity guard switched off.
+
+    Question (DESIGN.md "Open: CR diffusion follow-up", step 4): does the cap
+    alone keep the ring test monotone and positive? Without the guard, every
+    undershoot sat next to cells violating the cap. Same gates as 3a / 3b:
+    undershoot below the initial minimum at most ``undershoot_tol`` of the
+    jump, over all snapshots, and ``e_cr > 0``. ``kappa_perp,num / kappa_par``
+    (S&H eq. 39) is printed for comparison with the guard (0.0198 / 0.0086 at
+    N = 100 / 200) and with neither (0.0183 / 0.0083).
+
+    Measured (2026-10-05): **FAILS -- the cap alone is not enough.**
+    - 3a: ``e_min`` = 9.961462 / 9.954316 at N = 100 / 200 and
+      ``kappa_perp,num / kappa_par`` = 0.0183 / 0.0083, identical to six digits
+      to the run with neither cap nor guard. On a background of 10 the cap
+      never activates (``|F| << v_red e``), so the 3a undershoot is not a
+      realizability violation but the central cross-field flux itself (S&H's
+      unlimited centered differencing).
+    - 3b: ``e_min`` = -0.0027 / -0.0041 (1.0e-2 of the jump); with neither
+      cap nor guard -0.0104. The cap reduces the negatives near ``e_cr -> 0``
+      but does not remove them.
+    - The guard alone passes both (see 3a / 3b), so the realizability
+      violations were a symptom near empty cells, not the cause.
+
+    Args:
+        resolutions: The grid sizes.
+        undershoot_tol: Allowed undershoot as a fraction of the jump.
+    """
+    failures = []
+    for num_cells in resolutions:
+        times, e, x, y, max_speed, _ = _ring_run(
+            num_cells, SH_KAPPA, SH_V_RED, SH_T_END, 10.0, 12.0, np.pi, SH_TIMEPOINTS,
+            True, False,
+        )
+        _check_static_gas(max_speed, SH_T_END, num_cells)
+        m = _sharma_hammett_metrics(times, e, x, y, num_cells)
+        undershoot_3a = (10.0 - m["e_min_all"]) / 2.0
+        times_b, e_b, _, _, max_speed_b, _ = _ring_run(
+            num_cells, SH_KAPPA, SH_V_RED, SH_T_END, 0.1, 10.0, np.pi, SH_TIMEPOINTS,
+            True, False,
+        )
+        _check_static_gas(max_speed_b, SH_T_END, num_cells)
+        undershoot_3b = (0.1 - e_b.min()) / (10.0 - 0.1)
+        print(f"cap alone: N = {num_cells}: 3a e_min {m['e_min_all']:.6f} (undershoot "
+              f"{undershoot_3a:.2e} of the jump), kappa_perp,num/kappa_par "
+              f"{m['kappa_perp_ratio']:.4f}, L1 {m['l1']:.4f}; 3b e_min {e_b.min():.6f} "
+              f"(undershoot {undershoot_3b:.2e} of the jump)")
+        if undershoot_3a > undershoot_tol:
+            failures.append(f"3a undershoot {undershoot_3a:.2e} at N = {num_cells}")
+        if e_b.min() <= 0.0 or undershoot_3b > undershoot_tol:
+            failures.append(f"3b e_min {e_b.min():.6f} at N = {num_cells}")
+    assert not failures, "The cap alone does not keep the ring monotone/positive: " + "; ".join(failures)
 
 def _jiang_oh_analytic(x, y, t):
     """JO18 eq. 28 (Pakmor et al. 2016): exact for pure parallel diffusion on circles."""
@@ -462,7 +537,10 @@ def test_cr_ring_jiang_oh(resolutions: tuple = JO_RESOLUTIONS):
 
 
 if __name__ == "__main__":
-    tests = (test_cr_ring_jiang_oh, test_cr_ring_positivity, test_cr_ring_sharma_hammett)
+    tests = (
+        test_cr_ring_jiang_oh, test_cr_ring_positivity, test_cr_ring_sharma_hammett,
+        test_cr_ring_flux_cap_alone,
+    )
     failed = []
     for test in tests:
         try:

@@ -1039,7 +1039,7 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
         raise ValueError(
             "cosmic_ray_grey_config.diffusive_relaxation and anisotropic_transport "
             "require solver_mode == FINITE_VOLUME, split == UNSPLIT and "
-            "time_integrator == RK2_SSP."
+            "time_integrator == RK2_SSP (flux_realizability_cap acts only with them)."
         )
     if cr_grey_config.anisotropic_transport and not config.mhd:
         raise ValueError(

@@ -298,6 +298,46 @@ def cr_wave_speed_reduction(
     return jnp.sqrt(x2 * -jnp.expm1(-1.0 / x2))
 
 
+def cr_flux_realizability_cap(
+    primitive_state: STATE_TYPE,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+) -> STATE_TYPE:
+    """Two-moment realizability cap ``|F_cr| <= v_red e_cr`` (Rosdahl et al.
+    2025, Sec. 2.3).
+
+    The CR energy cannot flow faster than the (reduced) speed of light, so a
+    realizable state has ``|F_cr| <= v_red e_cr``. The isotropic (P1) closure
+    does not enforce this by itself. Rosdahl et al. check it "each time an
+    interpolation is needed ... or after the source step" and, where it is
+    violated, "reduce the magnitude of the flux vector so that
+    ``F_c = c_tilde e_c``", as M1 radiation schemes do. Here
+    ``F_cr <- F_cr min(1, v_red max(e_cr, 0) / |F_cr|)`` on all ``F_cr`` rows.
+    It is local and adds no dissipation.
+
+    Found as the coincidence of undershoots and ``|F_cr| > v_red e_cr`` in
+    the ring tests without the monotonicity guard (DESIGN.md "Open: CR
+    diffusion follow-up", step 4). ``min`` makes it piecewise smooth (a kink
+    at the cap only); the ``1e-30`` keeps ``|F| = 0`` finite.
+
+    Args:
+        primitive_state: A (cell or interface) primitive state with the CR rows.
+        params: The simulation parameters.
+        registered_variables: The registered variables.
+
+    Returns:
+        The state with ``F_cr`` capped.
+    """
+    rows = cr_flux_rows(registered_variables)
+    e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
+    flux_magnitude = jnp.sqrt(sum(primitive_state[row] ** 2 for row in rows) + 1e-30)
+    cap = params.cosmic_ray_grey_params.reduced_streaming_speed * jnp.maximum(e_cr, 0.0)
+    scale = jnp.minimum(1.0, cap / flux_magnitude)
+    for row in rows:
+        primitive_state = primitive_state.at[row].multiply(scale)
+    return primitive_state
+
+
 def cr_monotonicity_guard(
     e_cr: Float[Array, "..."],
     params: SimulationParams,

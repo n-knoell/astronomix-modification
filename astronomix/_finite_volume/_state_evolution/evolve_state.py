@@ -45,6 +45,7 @@ from astronomix._integrators._explicit_rk import rk2_ssp
 from astronomix._modules._time_integrator_sources import _time_integrator_sources
 from astronomix._modules._cosmic_rays_grey.cr_grey_sources import cr_flux_relaxation_update
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_flux_realizability_cap,
     cr_monotonicity_guard,
     cr_wave_speed_factors,
 )
@@ -763,6 +764,23 @@ def _evolve_gas_state_unsplit_inner(
                 )
             )
 
+        # Grey-CR realizability cap on the reconstructed interface states
+        # (Rosdahl et al. 2025: "each time an interpolation is needed").
+        if (
+            registered_variables.cosmic_ray_e_active
+            and config.cosmic_ray_grey_config.flux_realizability_cap
+            and (
+                config.cosmic_ray_grey_config.diffusive_relaxation
+                or config.cosmic_ray_grey_config.anisotropic_transport
+            )
+        ):
+            primitives_left_interface = cr_flux_realizability_cap(
+                primitives_left_interface, params, registered_variables
+            )
+            primitives_right_interface = cr_flux_realizability_cap(
+                primitives_right_interface, params, registered_variables
+            )
+
         # Interface i lies between cells i - 1 (left state) and i (right
         # state); take the larger, i.e. more dissipative, of the two cells'
         # CR wave-speed factors, then raise it across sharp e_cr fronts
@@ -951,6 +969,19 @@ def _evolve_gas_state_unsplit(
                 p_stepped = cr_flux_relaxation_update(
                     p_stepped, dt_step, config, registered_variables, params,
                     magnetic_field,
+                )
+            # Realizability cap on the cell states after the stage's source
+            # step (Rosdahl et al. 2025).
+            if (
+                registered_variables.cosmic_ray_e_active
+                and config.cosmic_ray_grey_config.flux_realizability_cap
+                and (
+                    config.cosmic_ray_grey_config.diffusive_relaxation
+                    or config.cosmic_ray_grey_config.anisotropic_transport
+                )
+            ):
+                p_stepped = cr_flux_realizability_cap(
+                    p_stepped, params, registered_variables
                 )
             du = (
                 conserved_state_from_primitive(

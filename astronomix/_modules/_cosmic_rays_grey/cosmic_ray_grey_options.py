@@ -46,6 +46,20 @@ class CosmicRayGreyConfig(NamedTuple):
     #: Requires config.mhd (2D/3D) and the unsplit FV RK2 scheme.
     anisotropic_transport: bool = False
 
+    #: two-moment realizability cap |F_cr| <= reduced_streaming_speed * e_cr
+    #: (Rosdahl et al. 2025, Sec. 2.3, as in M1 radiation transport): the
+    #: F_cr vector is rescaled wherever it exceeds the cap, on the
+    #: reconstructed interface states before every Riemann solve and on the
+    #: cell states at the end of every RK stage
+    #: (cr_grey_transport.cr_flux_realizability_cap). Applied only together
+    #: with diffusive_relaxation or anisotropic_transport (which already
+    #: require the unsplit FV RK2 scheme); the pure-wave mode of ladder items
+    #: 1-3, 6-11 and 15 is unchanged. On by default since 2026-10-05 (user
+    #: decision, with the monotonicity guard; DESIGN.md "Open: CR diffusion
+    #: follow-up", step 4): on its own it does not keep the ring tests
+    #: monotone, but it reduces negatives near e_cr -> 0 at no cost.
+    flux_realizability_cap: bool = True
+
     #: turn on CR streaming (with tanh-regularized sign) and the associated
     #: streaming heating of the gas.
     streaming: bool = False

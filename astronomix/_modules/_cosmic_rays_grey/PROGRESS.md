@@ -4,6 +4,254 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Running (2026-10-06 ~13:00): M7 production run -- guard off, `v_red` = 10^4 km/s
+
+User decision: guard off for production, for now. `m7_girichidis_pilot.py` now defaults to
+guard off (`--guard` re-enables it; suffix `_noguard`). Run:
+`both --res=0.9375 --seed=42 --v-red-kms=10000` (cap and floor on), on one RTX 2080 Ti (pinned
+by UUID). The time step is set by `v_red / sqrt 3` = 5770 km/s, ~2.3x the steps of the 1000 km/s
+run: ~8-10 h (M7's own printed cost estimate ignores `v_red` and says 2.6-4.7 h). Outputs:
+`pytests/stratified_ism/pics/m7_pilot_*_both_mhd_sg_vred10000_seed42_noguard_150.{svg,gif}`,
+`/export/scratch/nknoell/m7_pilot_data_both_mhd_sg_vred10000_seed42_noguard_150.npz`.
+Option 2 (a `v_red`-independent guard) is recorded as a future test in DESIGN.md (known
+limitation).
+
+## Results (2026-10-06 ~12:30): step 5a -- frozen-field `v_red` scan; the guard prevents convergence
+
+`m7_frozen_field_probe.py --v-red-kms=V` (new option; finer early checkpoints 0.05-3 Myr; new
+`--summarize-vred`, figure `pics/m7_frozen_field_probe_vred_scan.svg`). M7's field, grid and
+`kappa_par / kappa_perp` = 1e28 / 1e26, cap on. Values at `v_red` = 1000 / 3000 / 10000 / 30000
+km/s. Each run takes 1 / 1.6 / 3.3 / 8 min on a 2080 Ti.
+
+| M7 field | guard | CR rms height at 1 Myr (pc) | D_zz (cm^2/s) |
+|---|---|---|---|
+| 48 Myr | on | 124 / 166 / 201 / 220 | 2.3e27 / 4.1e27 / 5.8e27 / 7.1e27 |
+| 144 Myr | on | 125 / 171 / 208 / 228 | 2.5e27 / 4.6e27 / 6.3e27 / 7.4e27 |
+| 250 Myr | on | 125 / 173 / 210 / 230 | 2.5e27 / 4.5e27 / 6.2e27 / 7.3e27 |
+| 0 Myr (B = B_x) | on | 60 / 61 / 67 / 74 | 2.2e26 / 2.6e26 / 4.0e26 / **7.7e26** |
+| 144 Myr | **off** | 125 / 165 / **180 / 181** | 2.6e27 / 4.5e27 / **5.24e27 / 5.33e27** |
+| 0 Myr (B = B_x) | **off** | 50.0 at all four | **1.275e26 at all four** |
+
+- **With the guard on, transport never converges in `v_red`.** Each factor 3 still changes it by
+  9-25%. In the horizontal field (exact answer: `kappa_perp` = 1e26) it *grows* to 7.7x
+  `kappa_perp`.
+  - Cause: where the guard fires it switches on Rusanov dissipation at the full CR signal speed,
+    a numerical diffusivity ~`v_red dx / (2 sqrt 3)`, linear in `v_red`.
+  - Size: guard on vs. off at 144 Myr is -4% / +2% / +20% / +40% in `D_zz` at 1000 / 3000 /
+    10000 / 30000.
+- **With the guard off, transport converges.** The horizontal field is exactly
+  `v_red`-independent (`kappa_perp` plus the known ~25% numerical excess). The evolved field
+  converges by 10000 km/s (1-2% to 30000; 3000 is -9%, 1000 is -31% in rms height).
+- **Converged vertical transport (144 Myr field): `D_zz` ~ 5.3e27 cm^2/s.** M7 at 1000 km/s has
+  ~2.5e27, i.e. ~half of it. That is consistent with the full-M7 `v_red` = 3000 run being much
+  thinner than the 1000 runs.
+- Positivity with the guard off: the minimum `e_cr` is -1.7e-9 for a peak of 1e-3 (~1e-6
+  relative) at 3000-30000. The ring tests' 2-3% undershoots come from their sharp, resolved
+  cross-field edges, which the probe's smooth deposits do not have to the same degree.
+- **Consequences:**
+  1. A `v_red`-converged M7 needs `v_red` ~ 10^4 km/s.
+  2. The monotonicity guard as built is incompatible with that, because its numerical diffusion
+     scales with `v_red`.
+  - Either drop the guard for production (cap + floor only; small undershoots), or make the
+    guard's dissipation `v_red`-independent (e.g. cap the guarded signal speed at a physical
+    scale such as `kappa_n / dx`), or do option 2 (limited cross-field fluxes).
+  - Cost of M7 at 10^4 km/s: the CFL is then set by `v_red / sqrt 3` = 5770 km/s instead of the
+    hot gas (~2600 km/s): ~2x the steps of the 3000 run (5.8 h), ~10-13 h on a 2080 Ti.
+
+## Results (2026-10-06 ~04:00): M7 at `v_red` = 3000 km/s (step 5b) -- M7 is NOT converged in `v_red`
+
+`m7_girichidis_pilot.py both --res=0.9375 --seed=42 --v-red-kms=3000` (current scheme, cap on;
+~5.8 h). Outputs: `pics/m7_pilot_*_both_mhd_sg_vred3000_seed42_150.{svg,gif}`, raw data
+`/export/scratch/nknoell/m7_pilot_data_both_mhd_sg_vred3000_seed42_150.npz`. Analysed with
+`m7_compare_runs.py` like the other runs:
+
+| | `v_red` = 1000, seed 42 / 43 | `v_red` = 3000, seed 42 | seed scatter (1000) |
+|---|---|---|---|
+| z70 early / late (pc) | 203 / 288, 203 / 290 | **177 / 182** | < 1% / 1% |
+| z90 early / late (pc) | 478 / 917, 473 / 943 | **430 / 643** | 1% / 3% |
+| H_gas late (pc) | 312 / 300 | **134** | 4% |
+| eta(1 kpc) early / late | 2.51 / 0.363, 2.47 / 0.394 | 2.17 / 0.379 | 2% / 8% |
+| v_out late (km/s) | 6.0 / 7.2 | **12.0** | 17% |
+| T_out late (K) | 8.7e3 | 9.0e3 | -- |
+
+- **Tripling `v_red` thins the disc: z70 -37%, z90 -30%, H_gas -57% late, and the late outflow is
+  twice as fast.** All of these are 10-30x the seed scatter; only eta stays within it. A single
+  run with a different SN realization, but the realization scatter is measured small (two seeds).
+- **Interpretation (to be confirmed by step 5a):** at `v_red` = 1000 km/s, CR transport is capped
+  at `v_red / sqrt(3)` = 577 km/s and is wave-like below the ~56 pc mean free path (~1.7 cells).
+  CRs are held near their sources longer, so the CR pressure supports the gas more and the disc
+  is thicker. At 3000 km/s transport is closer to true diffusion (Girichidis et al. use
+  one-moment diffusion, i.e. effectively infinite speed), CRs escape faster, and the disc is
+  thinner.
+- **Literature:** z70 at `v_red` = 3000 (182 pc) is just below Girichidis' >~200 pc; z90 (643 pc)
+  moves further from their >~1.5 kpc. M7's agreement with the paper's heights therefore partly
+  relied on the non-converged `v_red`.
+- **Consequence:** every M7 (and probably M5/M6) result quoted so far is `v_red`-dependent. JO18
+  require `V_m` >> flow speeds and a convergence check, and M7 does not satisfy them at 1000 km/s.
+- **Next (step 5 plan):** 5a, the deterministic frozen-field transport probe at `v_red` = 1000 /
+  3000 / 10000 (cheap, isolates transport from SN noise); then a full M7 at 10000 km/s if 5a shows
+  3000 is not converged either (CFL then set by `v_red / sqrt(3)` = 5770 km/s instead of the hot
+  gas, ~2x the steps, ~10 h on a 2080 Ti).
+
+## Results (2026-10-06): M7 cap on vs. cap off -- which is physically better?
+
+User request: compare the M7 runs with the realizability cap on and off, against the literature.
+Runs (`--res=0.9375`, 250 Myr, ~3.5 h each on a 2080 Ti): cap on seed 42 and cap off seed 42
+(both with `XLA_FLAGS=--xla_gpu_deterministic_ops=true`), cap on seed 43 (realization scatter),
+and this morning's step-5 run (old scheme, seed 42). Analysis: new
+`pytests/stratified_ism/m7_compare_runs.py`, the same code for every run (M7's temperature
+conversion and outflow planes), figure `pytests/stratified_ism/pics/m7_compare_runs.svg`. Cap-off
+outputs: `pics/m7_pilot_*_both_mhd_sg_seed42_nocap_150.{svg,gif}`, raw data
+`/export/scratch/nknoell/m7_pilot_data_both_mhd_sg_seed42_nocap_150.npz`.
+
+**Does the cap act in M7? Yes, from the first Myr.**
+- The cap-on and cap-off runs are bitwise identical for the first 160 SNe and diverge at the
+  161st (t = 0.656 Myr).
+- A 2 Myr repeat of the deterministic cap-on run (`--tag=detcheck`) reproduces all 483 SNe of
+  the original exactly. So the runs are reproducible, and the divergence comes from the cap.
+- That fits the ring diagnostic: M7 starts CR-free, so the first SN deposits make CR fronts into
+  empty cells, where `|F_cr| > v_red e_cr` occurs.
+
+**Does it change the physics? No, nothing measurable.** Flux-weighted outflow quantities are
+taken at |z| = 1 kpc; "early" is 0 < t <= 50 Myr, "late" the last quarter.
+
+| | cap on s42 | cap off s42 | cap on s43 | old scheme s42 | Girichidis+16 / +18 |
+|---|---|---|---|---|---|
+| z70 early / late (pc) | 203 / 288 | 203 / 286 | 203 / 290 | 229 / 286 | >~200 (250 Myr) |
+| z90 late (pc) | 917 | 917 | 943 | 918 | >~1500 (+-20 kpc box) |
+| eta(1 kpc) early / late | 2.51 / 0.363 | 2.50 / 0.361 | 2.47 / 0.394 | 2.35 / 0.356 | order unity; <eta> = 0.7-1.4 |
+| T_out early / late (K) | 1.35e4 / 8.7e3 | 1.35e4 / 8.7e3 | 1.34e4 / 8.7e3 | 1.44e4 / 8.7e3 | warm, ~1e4 |
+| rho_out early / late (g/cm^3) | 1.1e-26 / 4.5e-26 | 1.1e-26 / 4.5e-26 | 1.1e-26 / 4.5e-26 | 9.8e-27 / 4.4e-26 | ~1e-26 - 1e-24 |
+| v_out early / late (km/s) | 51.8 / 6.0 | 51.7 / 6.4 | 54.4 / 7.2 | 56.6 / 5.7 | 30-40 (+18); <~100 (+16) |
+| hot (> 3e5 K) outflow fraction early | 5.1% | 5.1% | 5.0% | 5.6% | ~3% (+18) |
+| v_out volume-weighted early / late (km/s) | 57.8 / 3.7 | 57.8 / 3.8 | 63.1 / 4.1 | 63.0 / 3.6 | 30-40 (+18, volume-weighted) |
+
+(`v_out` above is mass-flux-weighted. Girichidis+18 average over the outflowing cells by volume,
+so the volume-weighted row is the like-for-like comparison: M7 is above their range early,
+~1.5x, and ~10x below it late. The `v_red` = 3000 run gives 56 / 5.5 km/s.)
+
+- Cap on vs. off differs by 0-1% early and <= 6% late (v_out 6.0 vs. 6.4 km/s). That is within
+  the seed scatter (seed 43: v_out 7.2 km/s, eta 0.394, z90 943 pc). The z70 time series of the
+  two settings agree to < 0.5 pc through 58 Myr.
+- **Verdict: neither setting is physically better by the literature observables.** On first
+  principles the cap is the better-founded one: it enforces the two-moment realizability
+  condition `|F_cr| <= v_red e_cr` (the CR flux cannot exceed the energy density times the
+  maximum propagation speed; Rosdahl et al. 2025, as in M1 radiation transport). Without it, M7
+  violates that condition at early CR fronts. It costs nothing measurable, so **keep the cap on**
+  (the default since 2026-10-05).
+- **The scheme change (guard + floor + cap) vs. the old scheme:** early z70 is 11% lower (203 vs.
+  229 pc averaged over 0-50 Myr; up to 22% at single snapshots). Both new seeds and both cap
+  settings agree to <= 1% there, so it is systematic. The cap does not cause it; the guard
+  and/or the floor do. Late-time results are unchanged within the scatter.
+- **How M7 compares with Girichidis et al. (any of these settings):**
+  - **Agrees:** z70; the warm (~1e4 K), dense (~1e-26 - 5e-26 g/cm^3), mostly non-hot outflow; and
+    early mass loading of order unity and above.
+  - **Disagrees:** late mass loading is 2-4x lower (0.36-0.39 vs. 0.7-1.4) with slow late outflow
+    (6-7 km/s); z90 is ~0.92 vs. >~1.5 kpc. Partly the +-2.5 kpc box (gas above 2.5 kpc leaves),
+    partly instantaneous-snapshot eta vs. their averaged eta, partly resolution (33.3 vs. 15.6 /
+    3.9 pc). None of it is related to the cap.
+
+## Results (2026-10-05 22:10): M7 rerun with the current scheme (guard + cap + floor), seeds 42 / 43
+
+Both runs finished (~3.5 h each on a 2080 Ti; seed 42 with deterministic GPU ops). Figures and
+GIF: `pytests/stratified_ism/pics/m7_pilot_*_both_mhd_sg_seed4{2,3}_150.{svg,gif}`; raw data
+`/export/scratch/nknoell/m7_pilot_data_both_mhd_sg_seed4{2,3}_150.npz`.
+
+Late-time averages (last quarter):
+
+| run | z70 / z90 | eta(1 kpc) | v_out | H_gas |
+|---|---|---|---|---|
+| step 5, this morning (old scheme, seed 42) | 286 / 918 pc | 0.36 | 3.5 km/s | ~300 pc |
+| new scheme, seed 42 | 288 / 917 | 0.363 | 3.5 | 312 |
+| new scheme, seed 43 | 290 / 943 | 0.394 | 3.9 | 300 |
+
+- **Late times:** the seed scatter is ~1% (z70), 3% (z90; grid-quantized at 33.3 pc), 8% (eta),
+  11% (v_out) and 4% (H_gas). The scheme change is below it on every metric. The old and new
+  seed-42 runs have different SN histories from the second SN on (60423 vs 60036 SNe), with
+  ~20% median local density differences, yet the same global late-time state.
+- **Early times: a systematic effect of the scheme change.** z70 at 9.6 / 19 / 29 / 38 / 48 Myr
+  is 81 / 150 / 250 / 317 / 350 pc (old) vs. 68 / 117 / 217 / 285 / 329 pc (new, seed 42).
+  Seed 43 agrees with seed 42 to ~1% (69 / 117 / 217 / 284 / 328). The disc thickens 10-22%
+  more slowly in the first ~50 Myr with the new scheme; the difference is gone by ~60-100 Myr.
+  z90 differs by <= 5%.
+  - Changes since the old run that affect M7: the monotonicity guard, the always-on `e_cr` floor
+    and the realizability cap. (The 2D `F_z` fix does not apply to 3D.) The cap's share comes
+    from the cap A/B below. Separating the guard from the floor would need a guard-off M7 run;
+    M7 has no option for that yet.
+
+Still running: seed 42 cap off, deterministic (A/B partner, from 21:57, ~01:30) and `v_red` =
+3000 km/s, seed 42 (from 22:09, ~5.7 h). Both launched from the unchanged working tree.
+
+## Launched (2026-10-05 ~18:25): M7 rerun with the current scheme (guard + cap + floor), two seeds
+
+User request. `m7_girichidis_pilot.py both --res=0.9375` with the new `--seed` option
+(`config.random_seed`; an explicit seed goes into the output suffix, so this morning's step-5
+data and figures stay untouched):
+- seed 42 and seed 43, in parallel, on two RTX 2080 Ti (pinned by GPU UUID), ~3.4 h each;
+- `--v-red-kms=3000 --seed=42` (step 5b), started by a watcher as soon as a third GPU is free
+  (another user occupies 7 of 9).
+- **Cap A/B (user: "see if there is an effect on the M7 run"):** new M7 option `--no-flux-cap`
+  (suffix `_nocap`). Seed 42 was restarted (~18:27) with `XLA_FLAGS=--xla_gpu_deterministic_ops=true`,
+  and the cap-off seed-42 run is queued first in the watcher with the same flag. Same seed and
+  deterministic ops mean the runs are bitwise identical if the cap never acts in M7; a divergence
+  dates its first effect. If they diverge, a short deterministic cap-on duplicate is needed to
+  rule out residual non-determinism before attributing it to the cap. Seed 43 runs without the
+  flag (realization scatter only).
+
+Purpose: figures and GIF from the current code; the seed scatter needed to interpret any
+difference to this morning's run (SN events are per-step random trials, so any dt change gives
+a different SN history); the full-M7 `v_red` comparison. Outputs:
+`pytests/stratified_ism/pics/m7_pilot_*_both_mhd_sg[_vred3000]_seed4{2,3}_150.{svg,gif}`, raw
+data `/export/scratch/nknoell/m7_pilot_data_both_mhd_sg[_vred3000]_seed4{2,3}_150.npz`.
+The guard + cap regression was stopped early (user): every completed test was identical to the
+guard-only numbers (T1a-c, T2a, T3 N = 32, ring 3c, ring 3b N = 100), because the cap never acts
+while the guard is on.
+
+## Run (2026-10-05): CR diffusion follow-up step 4 -- M7 frozen-field probe
+
+`pytests/stratified_ism/m7_frozen_field_probe.py`. M7's grid, solver and CR parameters, a
+frozen and scaled M7 B field (0 / 48 / 144 / 250 Myr), static gas, 4 small SN-profile CR deposits
+at the midplane, 3 Myr. Raw npz in `/export/scratch/nknoell/m7_probe/`; figure
+`pytests/stratified_ism/pics/m7_frozen_field_probe.svg`. Full table in DESIGN.md step 4.
+
+- **Initial (horizontal) field:** vertical CR transport with `kappa_perp = 0` is all from the
+  monotonicity guard (`D_zz` 1.46e26, zero with the guard off), ~1.9x the effect of the physical
+  `kappa_perp = 1e26`. It comes from the sharp 1.2-cell SN deposits and does not converge away
+  on the 2x grid.
+- **Evolved fields (48-250 Myr):** the field is mostly vertical (median `|b_z|` ~0.7), so
+  vertical transport is parallel (`D_zz` ~2.3e27). `kappa_perp` adds ~7%, the guard -5..+3%,
+  and the 2x grid changes `D_zz` by +31 / -8 / -5%.
+- **Decision:** M7 does not resolve `kappa_perp`; its cross-field transport is set by resolution
+  and the guard. After ~50 Myr that matters little for vertical transport, but the resolution
+  sensitivity of parallel transport does.
+- **Follow-ups (same day):**
+  - `sn_smooth_cells = 2` makes the guard's vertical transport *larger* in the initial field
+    (2.39e26 vs 1.46e26). A SILCC-like 4-cell deposit gives about the same (1.37e26). The guard
+    fires mostly at CR fronts advancing into CR-free gas, not at the deposits.
+  - Calibration with a known answer (`kappa_perp = 1e26`, guard off, horizontal field): the probe
+    measures 1.21-1.28 `kappa_perp`, i.e. ~25% numerical excess.
+  - Ring 3b without the guard: every undershoot sits next to cells with `|F_cr| > v_red e_cr`
+    (ratio up to 850); with the guard there are none. Rosdahl et al. (2025) enforce this
+    realizability bound directly.
+  - Where the guard fires (initial field): almost never at the deposits (0 active cells within
+    80 pc for 0.5-2.5 Myr; median distance 450-580 pc). It fires in the CR tubes spreading along
+    B, whose cross-field profile stays physically sharp with `kappa_perp` ~ 0. By 3 Myr those
+    cells hold 52-64% of the CR energy. **Not an SN-injection problem:** the transport scheme is
+    the cause, and the guard cannot tell physically sharp cross-field structure from a numerical
+    front.
+- **Realizability cap (Rosdahl et al. 2025) implemented, opt-in**
+  (`CosmicRayGreyConfig.flux_realizability_cap`). Test `test_cr_ring_flux_cap_alone` (cap on,
+  guard off) **fails**:
+  - 3a is identical to the run with neither cap nor guard (`e_min` 9.961 / 9.954; the cap never
+    activates on a background of 10).
+  - 3b improves from -0.0104 to -0.0027 / -0.0041 but stays negative.
+  - So the realizability violations were a symptom near empty cells. The non-monotonicity comes
+    from the central cross-field flux, which only the guard (or a limited transverse flux) fixes.
+- **Decided (user): guard + cap.** `flux_realizability_cap` defaults to True and acts only with
+  diffusive relaxation / anisotropic transport. A limited-transverse-flux scheme (option 2) is
+  recorded as a known limitation in DESIGN.md. Regression of guard + cap: running.
+  - Active-guard gradient check with the cap: passes, unchanged (6.3e-6).
+
 ## Done (2026-10-05): step 3d -- CR monotonicity guard (option B) + always-on e_cr floor
 
 - **Guard:** `cr_grey_transport.cr_monotonicity_guard`, a shape-based (magnitude-independent),
@@ -14,13 +262,16 @@ file is what's actually done against it.
 - **Floor:** `minimum_e_cr` is now applied every step whenever grey CRs are active.
 - **Ring 3a passes:** undershoot <= 1.1e-5 of the jump; cross-field numerical diffusion +2-22%.
   **Ring 3c passes.**
-- **Ring 3b misses its gate at N = 100 by 1.1e-4** (`e_min` 0.099890, 1.1e-5 of the jump);
-  exact at N = 200. The user decides whether to keep the gate.
+- **Ring 3b passes** with its gate stated in units of the jump like 3a (user decision): worst
+  1.1e-5 of the jump (`e_min` 0.099890 at N = 100), exact at N = 200.
 - **Regression:** T1/T2/T3 identical to the unguarded numbers; items 4 and 9 and Phase D pass.
 - **Phase D:** its recovered-kappa error is 1.282e-2 at HEAD too. The 9.0e-4 recorded below was
   from fix step 2; fix step 4 changed it unrecorded.
-- **Not yet re-run:** M5-M7 (step 4 and later); `cr_gradient_check.py` does not use
-  `diffusive_relaxation`, so it does not test the guard -- Phase D's AD inference does.
+- **Gradient through an active guard:** new `cr_gradient_check.py::test_cr_gradient_check_guard`.
+  AD vs. FD rel. err 6.3e-6, with the guard at 1.0 at the patch edges and changing the cost by
+  0.5%. Passes.
+- **3b re-run with the jump-unit gate: passes** (365 s).
+- **Not yet re-run:** M5-M7 (step 4 and later).
 
 ## Run (2026-10-05): CR diffusion follow-up step 3 (ring tests) -- 1/3 pass without a guard (see 3d above)
 
