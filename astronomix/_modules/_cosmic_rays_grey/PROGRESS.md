@@ -4,7 +4,57 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
-## Running (2026-10-06 ~13:00): M7 production run -- guard off, `v_red` = 10^4 km/s
+## Results (2026-10-07 02:09): M7 production run -- guard off, `v_red` = 10^4 km/s
+
+Finished after ~13 h (RTX 2080 Ti). Outputs:
+`pytests/stratified_ism/pics/m7_pilot_{timeseries,structure_girichidis_fig1,sn_modes}_both_mhd_sg_vred10000_seed42_noguard_150.svg`,
+`..._edge_on_density_..._noguard_150.gif`, raw data
+`/export/scratch/nknoell/m7_pilot_data_both_mhd_sg_vred10000_seed42_noguard_150.npz`.
+
+- **Transient at 250 Myr, not a crash.** The final snapshot has a near-vacuum superbubble at the
+  midplane: density at the floor (1.48e-6 code), |B| 33 code, v_A up to 15350 km/s, |v_z| up
+  to 7970 km/s, T ~ 1e10 K. Everything is finite.
+  - Density-floor bubbles occur in every M7 run (14-21 of 25 snapshots). Such extreme v_A
+    appeared only in the higher-`v_red` runs (3000: 1e4 km/s in one snapshot).
+  - The transient skews the last-quarter mean of eta (0.64 vs. 0.10 without that snapshot), so
+    the robust late values below are medians.
+- **Comparison** (`m7_compare_runs.py`; robust late = median of the last quarter):
+
+  | | v1000 guard (s42) | v3000 guard (s42) | **v1e4 no guard (production)** | Girichidis+16 / +18 |
+  |---|---|---|---|---|
+  | z70 early / late (pc) | 203 / 288 | 177 / 182 | **204 / 172** | >~200 |
+  | z90 early / late (pc) | 478 / 917 | 430 / 643 | **445 / 583** | >~1500 (+-20 kpc box) |
+  | eta(1 kpc) early / late | 2.51 / ~0.36 | 2.17 / ~0.38 | **2.02 / ~0.10** | order unity; 0.7-1.4 |
+  | v_out vol.-weighted early / late (km/s) | 58 / 3.7 | 56 / 5.5 | **70 / 2.2** | 30-40 |
+  | T_out early / late (K) | 1.35e4 / 8.7e3 | 1.29e4 / 9.0e3 | **1.43e4 / 9.0e3** | ~1e4 |
+
+  **With converged transport the late disc is thinner and the outflow much weaker.** A late eta
+  of ~0.1 is Girichidis' value for their run *without* CRs. M7's earlier, closer agreement came
+  from CRs being held back by the unconverged `v_red` = 1000.
+- **Why (diagnosis so far):**
+  - Not CR escape. The box holds *more* CR energy at higher `v_red` (6.8e11 vs. 4.5e11 code at
+    250 Myr), with the same ~18% above |z| = 2 kpc.
+  - The CR profile is flatter: e_cr(1 kpc) / e_cr(0) = 0.81 vs. 0.66, and e_cr(2.4 kpc) / e_cr(0)
+    = 0.76 vs. 0.54 (averaged 183-231 Myr). The CR pressure drop from the midplane to 1 kpc, the
+    vertical support, is 37% smaller (1.9 vs. 3.0 code). The +-2.5 kpc box with open boundaries
+    fills almost uniformly. In Girichidis' +-20 kpc box the 4 kpc diffusion length fits.
+- **Open: the CR energy budget.** The CR energy in the box exceeds the cumulative injection
+  (60000 x 1e50 erg = 3.0e11 code) by 1.49x (v1000) and 2.27x (production) at 250 Myr. Early on
+  it tracks injection (9.6 Myr: 1.18e10 vs. 1.16e10; 48 Myr: -20% from work on the gas). A net gain
+  needs either strong net adiabatic compression of CRs (`-P_cr div u`) or a numerical source.
+  Candidates to check:
+  - the operator-split `-P_cr div u` at shocks (centered differences);
+  - the open z boundary (zero-gradient CR state, whether CR flux leaves);
+  - the floor and the cap.
+  An instrumented CR energy budget (injection, adiabatic term, boundary flux, floor/cap) is needed
+  before the production result can be interpreted.
+- **Suggested next steps:**
+  1. CR energy budget diagnostic (short M7 runs, tens of Myr).
+  2. A taller box (`--half-height-kpc` 5-10), to test the box-filling explanation. Costly at
+     `v_red` = 1e4: ~2-4x the cells.
+  3. A second seed for the production setting.
+
+## Launched (2026-10-06 ~13:00): M7 production run -- guard off, `v_red` = 10^4 km/s
 
 User decision: guard off for production, for now. `m7_girichidis_pilot.py` now defaults to
 guard off (`--guard` re-enables it; suffix `_noguard`). Run:
