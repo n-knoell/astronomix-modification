@@ -334,9 +334,14 @@ def test_cr_snr_clumpy_medium(
     # Control runs' DSA code path is live but dsa_efficiency=0 should inject
     # exactly zero CR energy in both media.
     for name, run in (("uniform control", uni_ctrl), ("clumpy control", clumpy_ctrl)):
-        assert run["E_cr"] == 0.0, (
-            f"{name} run (dsa_efficiency=0) injected nonzero CR energy: "
-            f"E_cr={run['E_cr']:.6e}."
+        # Since c740cc3 the e_cr floor (CosmicRayGreyParams.minimum_e_cr) is applied
+        # every step, so a run without injection holds floor-level e_cr (up to ~10x
+        # the floor where the shock compresses it) instead of exactly 0. Real
+        # injection is ~1e9x larger.
+        max_e_cr = float(jnp.max(run["e_cr"]))
+        assert max_e_cr <= 100.0 * CosmicRayGreyParams().minimum_e_cr, (
+            f"{name} run (dsa_efficiency=0) injected CR energy: max e_cr "
+            f"{max_e_cr:.3e} is above floor level (E_cr={run['E_cr']:.6e})."
         )
 
     # Each run's own total-energy conservation. Ambient pressure (not

@@ -424,9 +424,14 @@ def test_cr_dsa_mach_dependence(
             f"open boundary for the checks below to be meaningful."
         )
 
-        assert run["E_cr"] == 0.0, (
-            f"{name} control run (dsa_efficiency=0) injected nonzero CR "
-            f"energy: E_cr={run['E_cr']:.6e}."
+        # Since c740cc3 the e_cr floor (CosmicRayGreyParams.minimum_e_cr) is applied
+        # every step, so a run without injection holds floor-level e_cr (up to ~10x
+        # the floor where the shock compresses it) instead of exactly 0. Real
+        # injection is ~1e9x larger.
+        max_e_cr = float(jnp.max(run["e_cr"]))
+        assert max_e_cr <= 100.0 * CosmicRayGreyParams().minimum_e_cr, (
+            f"{name} control run (dsa_efficiency=0) injected CR energy: max "
+            f"e_cr {max_e_cr:.3e} is above floor level (E_cr={run['E_cr']:.6e})."
         )
 
     total_volume = 1.0**3
