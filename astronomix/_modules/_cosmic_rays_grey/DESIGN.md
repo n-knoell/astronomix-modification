@@ -625,6 +625,62 @@ each land separately, each with step 0's tests as the gate.
    reasoning in their docstrings. Redo M7's cost argument: there is no dt_relax after step 2, and
    the CFL is set by `v_red/sqrt(3)` after step 4.
 
+## Open: CR-row advection undershoots, the non-conservative `e_cr` floor, and DSA finder false positives (2026-10-07)
+
+Found while regenerating the item 7/8/9 figures after fix step 4; data and numbers are in
+PROGRESS.md's 2026-10-07 entry.
+
+- **Update 2026-10-08: both points below were mostly a consequence of the DSA false positives.**
+  With the finder fix, the 224^3 KR13 blast has min `e_cr` -8e-7 (was -1.46), only a few hundred
+  floor cells near the centre, and energy conservation at the control level (9.6e-5). Still
+  open: the floor remains non-conservative in principle, and the tests' exact `E_cr == 0` checks
+  fail because of it.
+- **Undershoots at strong density contrasts.** In the 224^3 KR13 Sedov blast (pure wave mode,
+  `v_red` = 1, no `diffusive_relaxation`), the CR rows end with negative `e_cr` in a thin shell
+  at r = 0.19-0.24, down to -1.46 against positive values of ~1. That shell is the contact
+  between the hot core (rho ~0.013) and the dense shell (rho ~0.19), where `e_cr / rho` jumps
+  ~15x. There are none at 96^3. Suspects, in order:
+  1. the advective part of `hll._grey_cr_hll_rows` (gas mass flux x upwind `q / rho`) at a contact
+     where the mass flux changes sign or is noisy: a small spurious mass flux carries the core's
+     large `e_cr / rho` into the shell;
+  2. the central closure flux, whose Rusanov term at `v_red sqrt(gamma_cr - 1)` = 0.58 is weak
+     next to the blast's speeds;
+  3. `-P_cr div u` acting on the undershoot.
+
+  The monotonicity guard does not cover this case: it runs only with `diffusive_relaxation`.
+- **The floor is not conservative.** Since c740cc3 `minimum_e_cr` is applied every step; it
+  clips the undershoots above and adds their energy (+1.3e-3 of E0, i.e. ~0.7% of E_cr). That
+  fails the 1e-3 energy check of `cr_dsa_mach_dependence` at 224^3, while the floor-off run
+  conserves to 1.05e-4, the same as the CR-free control. Options:
+  1. take the clipped energy from the gas thermal energy (conservative, keeps positivity);
+  2. extend the guard (or a positivity-preserving limiter on `e_cr / rho`) to the pure wave mode,
+     so the floor stops acting;
+  3. at least book-keep the floor's energy in the M7 CR budget diagnostic (PROGRESS.md 2026-10-07
+     M7 entry, open budget question).
+- **Shock-finder false positives in gas at rest (cause of the 3x CR energy after fix step 4).**
+  **Fixed 2026-10-07/08** with a local Rankine-Hugoniot velocity check
+  (`CosmicRayGreyConfig.dsa_velocity_consistency`, finder `mach_velocity_consistency`; see
+  PROGRESS.md). Old and new schemes now agree to ~1.5%. Kept below for the record:
+  An old-vs-new 48^3 comparison (PROGRESS.md 2026-10-07) traced the extra DSA CR energy to
+  injection at cells that are not shocks.
+  - The Sedov IC's tanh taper leaves a far pressure halo several times above p_amb = 1e-4.
+    Cells in it are essentially at rest (|v| ~ 1e-6 to 1e-3).
+  - The finder flags thousands of such cells (r ~ 17 cells at step 1, while the blast is at ~5)
+    with Mach ~970 and a large dissipated flux. Presumably the extended adaptive walk
+    (`mach_sampling_extend`, up to 15 steps) reaches the hot blast and pairs its pressure with
+    the ambient's.
+  - Which cells pass is ill-conditioned: a 1e-4 change in the state (fix step 4's gas scheme
+    vs. the old v_red-inflated one) moves the count from ~1000 to ~2600 at step 1.
+  - In the new scheme the false positives persist until t ~ 0.03 and carry 3-5x the real
+    injection; the old dissipation suppressed them by accident.
+  - Fix belongs in the finder or its DSA use:
+    1. RH consistency between the sampled velocity jump and the pressure-derived Mach;
+    2. a minimum compression |div u| dx / c_pre;
+    3. limit the extended walk;
+    4. the Sedov test IC could also cut the tanh tail.
+
+  Affects every DSA user (items 7, 8, 10, 11, 15, Phase D injection, CWB); M5-M7 do not use DSA.
+
 ## Open: CR diffusion follow-up (audit 2026-10-05)
 
 An audit of fix steps 0-5 against the code, plus two new CPU runs (float64, `JAX_PLATFORMS=cpu`;

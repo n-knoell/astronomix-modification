@@ -57,6 +57,7 @@ def dsa_shock_finder_kwargs(cr_config) -> dict:
             mach_sampling_adaptive=True,
             mach_sampling_extend=True,
             mach_sampling_steps=cr_config.dsa_shock_sampling_max_steps,
+            mach_velocity_consistency=cr_config.dsa_velocity_consistency,
         )
     return dict()
 

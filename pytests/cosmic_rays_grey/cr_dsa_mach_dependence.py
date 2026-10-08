@@ -376,11 +376,10 @@ def test_cr_dsa_mach_dependence(
             (~1.9% with the old fixed 1-cell sampling) -- not
             near-machine-precision, since these are two independent full time
             integrations with a genuine (if small) dynamical feedback between
-            them (see module docstring). Since the separate gas/CR Riemann
-            wave speeds (2026-10-04, DESIGN.md "Open: CR diffusion
-            correctness" fix step 4) the CR fraction, and with it the
-            feedback, is ~3x larger: 5.7% observed; 0.08 leaves a ~1.4x
-            margin.
+            them (see module docstring). With the DSA velocity check
+            (``dsa_velocity_consistency``, 2026-10-07): 4.3% at 48, 5.9% at
+            96 (5.7% / 4.2% before it, when spurious injection tripled the
+            CR fraction); 0.08 leaves a ~1.4x margin.
         cross_check_tol: Maximum allowed relative error on the exact
             formula cross-check (layer 2's main check) -- both sides use the
             same deterministic computation, so any mismatch beyond float32
@@ -445,13 +444,15 @@ def test_cr_dsa_mach_dependence(
     # energy budget. Calibrated at NUM_CELLS=48 with the adaptive shock
     # sampling (2026-10-02): KR13 ~12.4%, CS14-like ~6.4% (the old fixed
     # 1-cell sampling gave ~4.8% / ~2.4%, from Mach numbers 6-60x too low).
-    # Since the separate gas/CR Riemann wave speeds (2026-10-04, DESIGN.md
-    # "Open: CR diffusion correctness" fix step 4) the gas rows are no longer
-    # dissipated at v_red, so the early, strongest shock is sharper: KR13
-    # 37.4%, CS14-like 19.8%. Not over-injection but discretization error
-    # from the other side -- a resolution study converges both schemes toward
-    # each other (KR13 at N = 48 / 64 / 96: old 0.124 / 0.145 / 0.150, new
-    # 0.374 / 0.311 / 0.273). Band widened from 0.3 to 0.5 accordingly.
+    # After fix step 4 (2026-10-04) this read KR13 37.4%, CS14-like 19.8%.
+    # That was spurious injection, not physics (PROGRESS.md 2026-10-07): the
+    # finder flagged gas at rest in the IC's far pressure tail, whose extended
+    # walk re-counted the blast's flux. The old scheme's extra dissipation had
+    # mostly hidden it. With the DSA velocity check (CosmicRayGreyConfig.
+    # dsa_velocity_consistency) old and new schemes agree to ~1.5%: KR13
+    # 8.8% / 12.0%, CS14-like 4.6% / 6.4% at N = 48 / 96. The fraction rises
+    # with N because the finder's Mach number does (PROGRESS.md "Known
+    # limitation (2026-10-02)"). The band stays [0.001, 0.5].
     # The blast's shock is genuinely strong at t=0.07 (exact Sedov Ms~176;
     # the finder's surface cells read ~120-150 -- see the diagnostic plot), so
     # every cell sits on KR13's plateau; the total is a time-integrated quantity over the

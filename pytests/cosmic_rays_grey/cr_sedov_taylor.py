@@ -240,10 +240,9 @@ def test_cr_sedov_taylor(
 
     # E_cr should be a clearly nonzero but bounded fraction of the total
     # energy budget at dsa_efficiency=0.1, dsa_mach_min=1.3 (calibrated
-    # ~6.1% -- see module docstring; 18.7% since the separate gas/CR Riemann
-    # wave speeds of 2026-10-04 sharpened the early shock, converging toward
-    # the old value with resolution: 0.187 / 0.149 / 0.135 at N = 48 / 64 /
-    # 96, old 0.061 / 0.070 / 0.075 -- see cr_dsa_mach_dependence.py).
+    # ~6.1% -- see module docstring; 18.7% after fix step 4 of 2026-10-04,
+    # which was spurious injection; 4.3% at N = 48 with the DSA velocity
+    # check of 2026-10-07 -- see cr_dsa_mach_dependence.py).
     cr_fraction = dsa["E_cr"] / E_total_initial
     assert 0.01 < cr_fraction < 0.3, (
         f"DSA run's CR energy fraction ({cr_fraction:.4f}) is outside the "

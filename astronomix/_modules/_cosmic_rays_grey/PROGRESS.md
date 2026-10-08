@@ -4,6 +4,229 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+## Fixed (2026-10-07/08): DSA finder false positives -- local Rankine-Hugoniot velocity check
+
+User picked the RH velocity-consistency option. Uncommitted.
+
+- **Change.** `find_shocks_pfrommer(..., mach_velocity_consistency=f)` (opt-in, adaptive
+  sampling only), via the new `CosmicRayGreyConfig.dsa_velocity_consistency = 0.5` (default on,
+  passed by `dsa_shock_finder_kwargs`).
+  - A surface cell is kept only if its *local* normal-velocity jump (immediate neighbours, as
+    zone criterion 3) gives `M_u - 1 >= f (M_p - 1)`, where M_p comes from the local pressure
+    jump. New helper `_shock_mach.mach_from_velocity_jump`.
+  - The reported Mach number and flux are unchanged; the finder's default behaviour (option
+    off) is identical.
+- **Why local, not at the extended walk's samples.** Tried first:
+  - The extended-sample version rejects the not-yet-formed blast of the first steps, where
+    M_u/M_p is ~0.05.
+  - Later (t ~ 0.002-0.03) the halo cells' walk reaches the moving blast. Their sampled
+    velocity jump is then the blast's own RH-consistent one, so 2000-3500 duplicates per
+    snapshot passed. That variant only cut the spurious E_cr by about a third.
+  - Locally, M_u/M_p is 0.43-0.75 for halo cells (no velocity jump; (M_u - 1)/(M_p - 1) ~ 0.01)
+    and >= 0.97 (1st percentile) for resolved shocks, Mach 2-9 locally.
+- **Effect on saved states:** all step-1 false positives are rejected (1207 / 2781 cells -> 0).
+  Every resolved shock at t = 0.07 (48^3 and 96^3, Mach 2.5-152) is kept bit-identically: same
+  cells, Mach numbers and fluxes.
+- **Old vs. new scheme now agree** (48^3, fix applied to both, `trees/{old_rh,head_rh}`):
+
+  | E_cr / E_tot | old (06cec02^) | new (HEAD) |
+  |---|---|---|
+  | eta = 0.1 | 0.0428 | 0.0434 |
+  | KR13 | 0.0865 | 0.0877 |
+
+  Spurious cells are 0 at every snapshot, and the real injection rate is identical in both. So
+  the whole 06cec02 "CR energy jump" was finder false positives. Remaining gap to the analytic
+  self-similar rate: rate*t ~ 0.4x, the known 48^3 finder Mach bias.
+- **Regression, all against the working tree:**
+
+  | Test | Result | Key numbers |
+  |---|---|---|
+  | Item 7 (48^3, `cr_sedov_taylor`) | pass | E_cr/E_tot 4.3% (18.7% before the fix) |
+  | Item 7 (96^3) | pass | -- |
+  | Item 8 (48^3, `cr_dsa_mach_dependence`) | pass | KR13 8.8%, CS14 4.6%, ratio err 4.3%, cross-check 1.3e-7, energy 1.7e-5 |
+  | Item 8 (96^3) | pass except the pre-existing weak-Mach coverage check (2.67 > 2.6, unchanged) | KR13 12.0%, CS14 6.4%, ratio err 5.9% |
+  | Item 9 (`cr_modified_shock_structure`) | 3/3 pass | Test A 0.13/0.15/0.15%, Test B 26 / 1.6 / 0.8%, unchanged |
+  | Item 11 (128^3, floor = 0) | pass | -- |
+  | Item 15 (128^3) | pass | -- |
+  | `cr_gradient_check` | 5/5 pass | -- |
+  | Phase D injection inference | pass | AD-vs-FD 9.0e-4; recovers mach_scale 1.064 (true 1.0; 1.061 before) |
+  | Item 10 (`cr_wind_bubble`, floor = 0) | pass | -- |
+
+  - Items 7/8 ran through cached runs with floor-only E_cr set to 0.
+  - "floor = 0": the tests' exact `control E_cr == 0` checks fail since c740cc3 (always-on
+    floor), so these runs used `minimum_e_cr = 0`, which keeps a zero-injection run exactly at
+    0. Without it, item 11 and item 10 fail only that check.
+  - The DSA resolution trend now rises with N (KR13 8.8% -> 12.0%), as the finder's Mach bias
+    predicts. Comments in `cr_dsa_mach_dependence.py` / `cr_sedov_taylor.py` updated.
+- **Figures (2026-10-08), with the fix:** `pics/cr_dsa_mach_dependence_test{,_48,_96,_224}.svg`
+  and `pics/cr_sedov_taylor_test{,_224}.svg` were replaced (the suffix-less ones are the tests'
+  default 48^3 outputs). The item-9 resolution figure is unaffected by the fix.
+- **224^3 with the fix** (data `/export/scratch/nknoell/cr_regen_20261007/data_rh/`):
+  - Item 7: pass, E_cr/E_tot 7.9% (9.9% pre-fix, 8.2% pre-06cec02). The interior `P_cr` bump
+    at r ~0.16 and the scatter at r ~0.2 of the pre-fix profile are gone: they came from the
+    spurious injection.
+  - Item 8: KR13 15.3%, CS14-like 8.25%. Fails only the 48^3-calibrated weak-Mach coverage check
+    (2.81 > 2.6), as before.
+    - KR13 / CS14 ratio error 7.9%, just inside the 8% tolerance. It grows with N (4.3 / 5.9 /
+      7.9% at 48 / 96 / 224^3); retune it before relying on it at 224^3.
+  - **Energy conservation at 224^3 is back to the control level:** KR13 9.6e-5, CS14-like
+    1.1e-4, item-7 DSA 1.1e-4, control 1.0e-4 (KR13 was 1.5e-3 pre-fix).
+  - **The floor is negligible here.** Min `e_cr` is -8e-7 (KR13) / -4e-5 (item 7), against
+    -1.46 pre-fix. Only 290-3400 cells sit at the floor, at r = 0.04-0.08 where `e_cr` ~ 0. The
+    large undershoots at the core/shell contact were a consequence of the spurious core
+    injection; the floor itself is still non-conservative in principle.
+  - **Resolution trend now monotone and rising:**
+
+    | | 48^3 | 96^3 | 224^3 |
+    |---|---|---|---|
+    | KR13 | 8.8% | 12.0% | 15.3% |
+    | item 7 (eta = 0.1) | 4.3% | -- | 7.9% |
+
+    This follows the finder's Mach bias (0.80 / 0.87 / 0.92 x true).
+
+## Results (2026-10-07): items 7/8/9 figures regenerated after 06cec02 -- verdict
+
+Regenerated (uncommitted) with the current code (06cec02 separate gas/CR wave speeds + c740cc3
+always-on `e_cr` floor): `pics/cr_dsa_mach_dependence_test_{48,96,224}.svg`,
+`pics/cr_sedov_taylor_test_224.svg`, `pics/cr_modified_shock_structure_resolution.svg`. 3D runs
+were split one blast per GPU and fed back into the unchanged test functions (cached final
+states). Scripts, states and logs: `/export/scratch/nknoell/cr_regen_20261007/` (not committed;
+`scripts/plot_shock_resolution.py` rebuilds the item-9 resolution figure, whose original script
+was lost).
+
+**Verdict: keep 06cec02.** It is clearly better for item 9. The 3x higher DSA CR energy
+(items 7/8) is **spurious injection from shock-finder false positives in gas at rest**, early in
+the blast. The new gas scheme exposes it; the old one masked it by accident (old-vs-new
+comparison below). So the higher values are not more physical; the finder needs a fix. Separately,
+the always-on floor is what breaks energy conservation at 224^3. Both are in DESIGN.md "Open:
+CR-row advection undershoots, the non-conservative `e_cr` floor, and DSA finder false positives".
+
+- **Item 9 (`cr_modified_shock_structure_resolution.svg`), better.** The old figure's Test B used
+  pre-fix data at `v_red` = 8. Now it runs at 32 with eta = 0.01 (the test defaults).
+  - Test B precursor ODE, N = 1000 / 2000 / 4000: `dP_cr/dx` 1.6 / 1.4 / 1.3%, `dF_cr/dx`
+    0.8 / 1.4 / 1.6% (old figure ~20-23%). Mass-flux spread <= 0.05%. Mach 1.97-1.99 at every N.
+  - Test B `du/dx` 26 / 31 / 42%: the growth is float32 round-off. At N = 4000 the per-cell
+    change of u in the precursor is ~1.5 ulp. Over a fixed physical stride (4 cells at N = 1000)
+    it is 21 / 22 / 23% at every N. The ~22% floor is the known cancellation in
+    `cr_precursor_ode_rhs`.
+  - Test A jump errors (rho/u/P) with the test's 3-cell sampling: 0.14-0.16% (1000), 0.37-0.64%
+    (2000), 0.38-0.67% (4000). The rise is a sampling artefact: 3 cells behind the shock zone
+    is inside the post-shock injection ramp at high N. At a fixed |xi| = 0.02 they converge:
+    0.07-0.18% -> 0.02-0.05% -> 0.01-0.04%. CR flux jump 1.10 / 1.03 / 1.04 x inj, inside the
+    bracket at all N. The figure shows both samplings.
+- **Items 7/8 (Sedov, DSA), CR energy converges toward the old values from above.**
+
+  | E_cr / E_tot | 48^3 | 64^3 | 96^3 | 224^3 |
+  |---|---|---|---|---|
+  | KR13, old (pre-06cec02) | 0.124 | 0.145 | 0.150 | 0.159 |
+  | KR13, new | 0.374 | 0.311 | 0.273 | **0.198** |
+  | constant eta = 0.1 (item 7), old | 0.061 | 0.070 | 0.075 | 0.082 |
+  | constant eta = 0.1 (item 7), new | 0.187 | 0.149 | 0.135 | **0.099** |
+
+  - Both series are monotone and approach each other. Read at first as discretization error
+    from both sides, but the old-vs-new comparison below shows the new values are mostly
+    spurious early injection. The 224^3 gap is therefore no bound on the converged value.
+  - Analytic reference (gamma = 5/3 self-similar Sedov): the shock dissipation rate is
+    ~0.46 E / t, so ~2.4 E is dissipated cumulatively between R = R_explosion and t = 0.07. The
+    no-loss ceilings are 0.24 (eta = 0.1) and ~0.5 (KR13 plateau 0.21). The *real* injection
+    rate (spurious cells excluded) is 0.2-0.4x analytic in both versions at 48^3.
+  - **The 06cec02 entry's mechanism ("gas rows no longer smear shocks at v_red") is wrong.** The
+    CR-free control runs are unchanged to <= 0.2%. Finder medians before / after:
+    - 48^3: 140.2 / 140.0 (strong), 8.16 / 8.14, 5.07 / 5.07, 3.67 / 3.67, 2.47 / 2.47.
+    - 96^3: 152.5 / 152.2, 10.83 / 10.82, 8.86 / 8.86, 5.51 / 5.51, 3.98 / 3.98, 2.67 / 2.67.
+    - 224^3 strong blast: 161.3 = 0.92 x exact.
+
+    With `v_red` = 1 far below the blast's signal speeds, the old inflation barely touched the
+    gas at t = 0.07. **Cause found by the old-vs-new comparison below: spurious DSA injection
+    from shock-finder false positives in gas at rest, not the CR-row flux and not better
+    physics.**
+  - Formula cross-check 1.3-2.6e-7 at all N. KR13/CS14 ratio error 5.7 / 4.2 / 5.1% (tol 8%).
+  - Sedov 224^3 profile: `P_cr` no longer dips below zero in the core (old: ~-0.02 at r < 0.1),
+    and the interior `P_cr` bump at r ~ 0.16 sits on a matching `P_gas` dip (pressure balance).
+    r_shock 0.414 (old 0.413).
+- **New finding: energy conservation fails at 224^3, caused by the floor.**
+  - Errors: KR13 1.5e-3 (> the 1e-3 tolerance, so `test_cr_dsa_mach_dependence` fails at
+    224^3); CS14 8.8e-4; item-7 DSA run 8.3e-4 (item-7 partition error 0.75%, tol 1%; was 4e-5
+    before 06cec02). CR-free control 1.0e-4; 48^3 / 96^3 runs 1-4e-5.
+  - Diagnostic: 224^3 KR13 with the floor off (`minimum_e_cr` = -1e30) conserves to 1.05e-4,
+    same as the control, but 45,657 cells end with negative `e_cr` (min -1.46, total -1.3e-3 of
+    E0). The always-on floor clips them and adds exactly that energy. 96^3 floor-off has no
+    negative cells and the same result as with the floor.
+  - Location: a thin shell at r = 0.19-0.24, not at the shock (r 0.41). It is the contact
+    between the hot core (rho ~0.013) and the denser shell (rho ~0.19), where `e_cr/rho` jumps
+    ~15x. The monotonicity guard does not act there (it runs only with `diffusive_relaxation`).
+    Relevant for M7's open CR budget (energy 2.3x injected), where the floor is already a
+    candidate.
+- **Tests as committed no longer pass at their own checks (code unchanged here, proposals only):**
+  - `control["E_cr"] == 0.0` (`cr_sedov_taylor.py`, `cr_dsa_mach_dependence.py`) fails since
+    c740cc3: the floor leaves 1e-10 per cell, adiabatically compressed to <= 1e-9. Proposal:
+    `max(e_cr) <= 10 * minimum_e_cr`. The figures were made with floor-only E_cr set to 0.
+  - `cr_dsa_mach_dependence` at 96^3 fails only the weak-blast coverage check (weakest median
+    2.67 > 2.6, also 2.67 before the fix); 224^3 gives 2.81. The bound was calibrated at 48^3.
+  - Item 9 Test A: sample at a fixed physical distance instead of `margin_cells = 3` (see above).
+- **Artefact size:** a vector SVG of the 224^3 per-cell profile is 2.4 GB. The regeneration
+  rasterizes artists with > 1e6 points (as the old 224^3 Sedov figure did); the 224^3 DSA
+  figure (510k shock-cell markers) stays vector, 54 MB as before.
+- **Old-vs-new comparison at 48^3 (where the extra CR energy comes from).**
+  - Setup: the 48^3 strong blast (KR13 and constant eta = 0.1) at 06cec02^, 06cec02 and HEAD,
+    with a host callback logging the energy injected each step, plus 36 snapshots.
+    - Scripts: `/export/scratch/nknoell/cr_regen_20261007/scripts/cmp_{run,step1,cross,halo}.py`.
+    - The code trees come from `git archive` (`trees/{old,fix,head}`), selected via `PYTHONPATH`.
+    - 06cec02 and HEAD are bit-identical at 48^3: guard and floor play no role here.
+  - **Budget:** E_cr = cumulative injection - ~31% (`-P_cr div u` work), in both versions. All
+    of the 3x comes from injection.
+
+    | t = 0.07 | injected | rest | E_cr |
+    |---|---|---|---|
+    | eta 0.1, old / new | 0.088 / 0.273 | -0.027 / -0.086 | 0.061 / 0.187 |
+    | KR13, old / new | 0.180 / 0.547 | -0.056 / -0.173 | 0.124 / 0.374 |
+
+    The difference builds up before t ~ 0.03. After that both inject at the same rate,
+    rate*t ~ 0.015-0.019 for eta = 0.1. That is 0.35-0.4x the analytic self-similar
+    eta*0.456 E (the known finder Mach bias at 48^3).
+  - **Divergence starts at step 1, with no CRs present yet.** The first injection is 3.7e-3
+    (old) vs. 8.5e-3 (new). After one pure-hydro step the gas states differ by only <= 1e-4
+    (rho) and 1.6e-7 (p), yet the finder flags 1207 vs. 2781 surface cells.
+    - Cross-check: each tree's finder gives the same answer on the same state, so the finder and
+      injection are identical; the result is a state-sensitivity.
+  - **The extra cells are not at the blast.**
+    - Real blast (r = 4.5-6.5 cells): the same 216 cells and the same flux (1.77e5) in both.
+    - The rest sit at r ~ 17 cells, in gas at rest (|v| ~ 1e-6 to 1e-3, p ~ 3e-4 to 0.2).
+      The test IC's tanh taper leaves a pressure halo there of several times p_amb = 1e-4.
+    - The finder assigns those cells Mach ~970 and a huge dissipated flux, presumably because
+      the extended adaptive sampling (`mach_sampling_extend`, up to 15 steps) walks into the
+      hot blast and measures its pressure jump against the 1e-4 ambient.
+    - Halo flux vs. real flux at step 1: 3.3x (old), 9x (new).
+  - **Over the run** (flagged cells with |v| < 0.05 counted as spurious):
+    - New: 2800-4500 spurious cells from t ~ 0 to ~0.03, gone by t ~ 0.04. Spurious injection
+      (t >= 0.002) is 0.17 (eta 0.1) and 0.31 (KR13), against real 0.045 / 0.065.
+    - Old: <= ~200 spurious cells, gone after a few steps; spurious 0.007 / 0.016, against
+      real 0.056 / 0.109.
+    - Most likely the old scheme's `v_red`-inflated gas dissipation (wave speed >= 1 in the
+      c = 0.013 ambient) damped the ambient's tiny velocity ripples, which suppressed the false
+      positives by accident.
+  - **Consequences:**
+    - Both versions over-inject at early times; the new code much more. Only the old code's
+      early under-injection happened to look plausible.
+    - The integrated E_cr in items 7/8 (and the 224^3 values above) mixes real and spurious
+      injection. The table's "bracketing" is therefore not a convergence argument; the spurious
+      share presumably shrinks with N, as the halo narrows in physical units.
+    - DSA users that may be affected: items 7, 8, 10 (wind bubble), 11, 15, Phase D injection
+      inference, `cr_gradient_check`, CWB (`_cwb_setup.py`). M5-M7 do not use DSA, so the M7
+      CR budget question is unrelated.
+    - Fix candidates (finder, a design decision; DESIGN.md "Open: CR-row advection undershoots, the non-conservative `e_cr` floor, and DSA finder false positives"):
+      1. require the sampled velocity jump to match the pressure-derived Mach (RH consistency);
+      2. a minimum compression, |div u| dx > a fraction of the pre-shock sound speed;
+      3. limit the extended walk;
+      4. a test IC without a far tail (cut the tanh at a few widths).
+- **Settings to keep:**
+  - 06cec02's split gas/CR wave speeds. The gas scheme is not at fault: it only exposed a
+    finder false-positive problem that the old dissipation was masking.
+  - Item 9 at Test A `v_red` = 1 / Test B `v_red` = 32 with eta = 0.01.
+  - The floor stays as a safety net (negative `e_cr` is unphysical), but it is not
+    conservative. Either take the clipped energy from the gas, or remove the undershoot it
+    hides; at minimum, book-keep it in the M7 budget diagnostic.
+
 ## Results (2026-10-07 02:09): M7 production run -- guard off, `v_red` = 10^4 km/s
 
 Finished after ~13 h (RTX 2080 Ti). Outputs:
@@ -495,7 +718,8 @@ bound).
   - Item 4: order >= 1.3 over N = 128-512 plus N = 1024 error < 2e-4; errors are now
     1.7e-3 -> 1.3e-4.
   - Item 8: CR-fraction band 0.3 -> 0.5 and CS14/KR13 ratio tolerance 5% -> 8%.
-- **Why item 8 moved:** the gas rows no longer smear shocks at `v_red`, so the Sedov CR fraction
+- **Why item 8 moved** (mechanism below disproved 2026-10-07: the CR-free controls are
+  unchanged, see the top entry): the gas rows no longer smear shocks at `v_red`, so the Sedov CR fraction
   rose (KR13 0.124 -> 0.374, constant 0.061 -> 0.187 at 48^3). The resolution study converges old
   and new toward each other (KR13 at 48 / 64 / 96: 0.124 / 0.145 / 0.150 old, 0.374 / 0.311 /
   0.273 new), so it is discretization error from the other side, not over-injection. Item 8's

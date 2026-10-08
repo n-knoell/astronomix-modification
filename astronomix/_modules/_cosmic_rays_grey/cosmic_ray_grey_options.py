@@ -103,6 +103,19 @@ class CosmicRayGreyConfig(NamedTuple):
     #: dsa_adaptive_shock_sampling).
     dsa_shock_sampling_max_steps: int = 15
 
+    #: Rankine-Hugoniot velocity check of DSA shock cells (only with
+    #: dsa_adaptive_shock_sampling): a surface cell only injects if its local
+    #: (immediate-neighbour) normal-velocity jump carries at least this
+    #: fraction of the Mach excess its local pressure jump implies,
+    #: M_u - 1 >= f (M_p - 1) (find_shocks_pfrommer's
+    #: mach_velocity_consistency; 0 switches it off). Without it the finder
+    #: flags gas at rest with a steep pressure tail (the smoothed Sedov IC in
+    #: cold ambient gas) as shock cells whose extended walk re-counts the real
+    #: blast's dissipated flux; that injected 3-5x the real DSA energy in the
+    #: 48^3 blasts (PROGRESS.md 2026-10-07). Measured ratio: ~0.01-0.03 for
+    #: those cells, >= 1 for resolved shocks.
+    dsa_velocity_consistency: float = 0.5
+
 
 class CosmicRayGreyParams(NamedTuple):
 

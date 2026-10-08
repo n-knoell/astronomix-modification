@@ -26,6 +26,18 @@ def mach_from_pressure_samples(p_post, p_pre, gamma_gas=5 / 3):
     return jnp.sqrt((p_ratio * (gamma_gas + 1) + (gamma_gas - 1)) / (2 * gamma_gas))
 
 
+def mach_from_velocity_jump(du, p_pre, rho_pre, gamma_gas=5 / 3):
+    """Rankine-Hugoniot Mach number from the normal velocity jump across a shock.
+
+    u_post - u_pre = 2 c_pre (M^2 - 1) / ((gamma + 1) M) (frame-independent),
+    solved for M >= 1: with x = (gamma + 1) du / (2 c_pre),
+    M = (x + sqrt(x^2 + 4)) / 2. ``du <= 0`` (no compression) gives M <= 1.
+    """
+    c_pre = jnp.sqrt(gamma_gas * jnp.maximum(p_pre, 1e-30) / jnp.maximum(rho_pre, 1e-30))
+    x = (gamma_gas + 1) * du / (2 * c_pre)
+    return 0.5 * (x + jnp.sqrt(x**2 + 4.0))
+
+
 """
 Calculate Mach number for all cells,
 but only keep it at the shock surface (where shock_surface is True) via filter

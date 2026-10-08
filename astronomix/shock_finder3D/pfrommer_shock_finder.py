@@ -17,6 +17,7 @@ from astronomix.shock_finder3D._gradients import (
     _calculate_velocity_divergence,
 )
 from astronomix.shock_finder3D._shock_zones import (
+    get_post_pre_shock_values,
     get_post_pre_shock_values_adaptive,
     identify_shock_zones,
 )
@@ -24,11 +25,34 @@ from astronomix.shock_finder3D._shock_surface import identify_shock_surface
 from astronomix.shock_finder3D._shock_mach import (
     _calculate_mach_at_surface,
     mach_from_pressure_samples,
+    mach_from_velocity_jump,
 )
 from astronomix.shock_finder3D._energy_dissipation import (
     calculate_thermal_energy_flux,
     thermal_energy_flux_from_pre_state,
 )
+
+def _velocity_consistent(primitive_state, config, registered_variables, shock_direction, fraction):
+    """Local Rankine-Hugoniot check, see find_shocks_pfrommer's
+    ``mach_velocity_consistency``: True where the immediate-neighbour
+    normal-velocity jump carries at least ``fraction`` of the Mach excess the
+    immediate-neighbour pressure jump implies."""
+    gamma_gas = 5 / 3
+    pressure = primitive_state[registered_variables.pressure_index]
+    density = primitive_state[registered_variables.density_index]
+    vel_idx = registered_variables.velocity_index
+    velocity = (
+        [primitive_state[vel_idx]] if isinstance(vel_idx, int)
+        else [primitive_state[i] for i in (vel_idx.x, vel_idx.y, vel_idx.z)[:config.dimensionality]]
+    )
+    normal_velocity = sum(v * d for v, d in zip(velocity, shock_direction))
+    p_post, p_pre, u_post, u_pre = get_post_pre_shock_values(shock_direction, pressure, normal_velocity)
+    _, _, _, rho_pre = get_post_pre_shock_values(shock_direction, pressure, density)
+    mach_pressure = mach_from_pressure_samples(p_post, p_pre, gamma_gas)
+    # +d_s points to the pre-shock side: a compression has u_n(post) > u_n(pre)
+    mach_velocity = mach_from_velocity_jump(u_post - u_pre, p_pre, rho_pre, gamma_gas)
+    return mach_velocity - 1.0 >= fraction * (mach_pressure - 1.0)
+
 
 @partial(
     jax.jit,
@@ -38,6 +62,7 @@ from astronomix.shock_finder3D._energy_dissipation import (
         "mach_sampling_steps",
         "mach_sampling_adaptive",
         "mach_sampling_extend",
+        "mach_velocity_consistency",
     ],
 )
 def find_shocks_pfrommer(
@@ -49,6 +74,7 @@ def find_shocks_pfrommer(
     mach_sampling_steps: int = 1,
     mach_sampling_adaptive: bool = False,
     mach_sampling_extend: bool = False,
+    mach_velocity_consistency: float = 0.0,
 ) -> ShockFinderResult:
     """
     Main entry point: Identify shocks using Pfrommer et al. 2017 methodology.
@@ -104,12 +130,32 @@ def find_shocks_pfrommer(
             zone ends inside a numerically smeared strong shock (see
             ``get_post_pre_shock_values_adaptive`` and FIXES_TODO.md round 23).
             Applies to both the Mach number and the thermal-energy flux.
+        mach_velocity_consistency: opt-in (default 0, off), only with
+            ``mach_sampling_adaptive=True``: Rankine-Hugoniot check of each
+            shock-surface cell's *local* velocity jump. With the immediate
+            neighbours along the shock direction (criterion 3's sampling),
+            the pressure ratio gives M_p and the normal-velocity jump gives
+            M_u (``mach_from_velocity_jump``); the cell is rejected unless
+            ``M_u - 1 >= mach_velocity_consistency * (M_p - 1)``. A pressure
+            jump without the matching velocity jump is not a shock: e.g. the
+            far pressure tail of a smoothed Sedov IC in cold gas at rest
+            passes all three zone criteria and, through the extended walk,
+            re-counts the real blast's dissipated flux as its own
+            (PROGRESS.md 2026-10-07). The check has to be local: sampled at
+            the extended walk's end points, such a cell sees the real
+            blast's own, RH-consistent jump. Measured on 48^3 Sedov blasts:
+            (M_u - 1) / (M_p - 1) ~ 0.01-0.03 for those cells and for the
+            not-yet-formed blast of the first steps, >= 1 for resolved
+            shocks (M_u / M_p >= 0.97 at the 1st percentile, Mach 2-9 locally).
+            The reported Mach number is unchanged.
 
     Returns:
         ShockFinderResult
     """
     if mach_sampling_extend and not mach_sampling_adaptive:
         raise ValueError("mach_sampling_extend requires mach_sampling_adaptive=True.")
+    if mach_velocity_consistency > 0 and not mach_sampling_adaptive:
+        raise ValueError("mach_velocity_consistency requires mach_sampling_adaptive=True.")
 
     pressure = primitive_state[registered_variables.pressure_index]
     density  = primitive_state[registered_variables.density_index]
@@ -154,9 +200,13 @@ def find_shocks_pfrommer(
         )
         pre_shock_pressure = p_pre
         valid = shock_surface & exited_post & exited_pre
-        mach_numbers = jnp.where(
-            valid, mach_from_pressure_samples(p_post, p_pre, gamma_gas), 0.0
-        )
+        mach_pressure = mach_from_pressure_samples(p_post, p_pre, gamma_gas)
+        if mach_velocity_consistency > 0:
+            valid = valid & _velocity_consistent(
+                primitive_state, config, registered_variables, shock_direction,
+                mach_velocity_consistency,
+            )
+        mach_numbers = jnp.where(valid, mach_pressure, 0.0)
         thermal_energy_flux = jnp.where(
             valid,
             thermal_energy_flux_from_pre_state(mach_numbers, p_pre, rho_pre, gamma_gas),
