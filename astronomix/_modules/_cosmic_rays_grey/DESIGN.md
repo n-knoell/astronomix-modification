@@ -426,7 +426,8 @@ each land separately, each with step 0's tests as the gate.
 0. **Tests first -- written 2026-10-04:** `pytests/cosmic_rays_grey/cr_diffusion_rate.py`, 7
    tests (T1a-c, T2a-d). All 7 fail on the current code, each for the reason its docstring names;
    the measured before-fix values are in the docstrings, and the plots are
-   `pics/cr_diffusion_rate_{1d,2d}_test.svg`. Targets use the new convention
+   `pics/04_isotropic_diffusion/cr_diffusion_rate_1d_test.svg` and
+   `pics/03_anisotropic_diffusion/cr_diffusion_rate_2d_test.svg`. Targets use the new convention
    (`D = diffusion_coefficient`). Expected to pass after: T1a step 2; T1b step 1; T1c steps
    1, 2, 4; T2a step 3; T2b step 1; T2c steps 3-4; T2d step 3. After step 1: T1b and T2b pass
    (2/7); after step 2: T1a, T1b, T2b (3/7); after step 3: also T2a, T2d (5/7); after step 4:
@@ -1490,7 +1491,7 @@ Each point was checked numerically on CPU (`jax 0.6.2`, `jax_enable_x64`), using
    (the residual is just the intra-step drift) and the heating to the implementation's own
    formula; `e_cr` itself is never measured. Minor: the test calls `streaming_flux_target` on the
    unpadded final state, so `_stencil_add`'s periodic roll flips the sign in the two edge cells
-   (visible as the `+0.5`/`+1.5` spikes in `pics/cr_streaming_1d_test.svg`).
+   (visible as the `+0.5`/`+1.5` spikes in `pics/05_streaming/cr_streaming_1d_test.svg`).
 
 ### Design
 
@@ -1670,6 +1671,125 @@ minmod numerical-diffusion errors at similar resolution) -- no separate
 literature table was reproduced (only the method was validated, via the
 degenerate-limit checks above), so this is a genuine, independently-checked
 comparison rather than a tuned-to-pass one.
+
+## Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08)
+
+Not implemented. The user picked option a of `astronomix_CR_phaseA_test_plan.md` A6.7 on
+2026-10-08; this note is for review before any code changes.
+
+### Problem (measured, `PROGRESS_PHASEA.md` A6.1-A6.3)
+
+`e_cr` is evolved with conservative fluxes plus the non-conservative `-P_cr div u` source (Gupta
+et al. 2021's "Eg+Ecr pdv" class). Inside a numerically smeared shock that source cannot know
+which part of `div u` is adiabatic compression and which is dissipation, so the CRs pick up some
+of the dissipated energy. The post-shock CR entropy `K_cr = P_cr / rho^gamma_cr` comes out too
+high by an amount that does not converge with N and changes with CFL by about +-15%:
+0.4% (M = 1.4), 6% (M = 3), saturating at 11% (M >= 30). At M = 2-3 the extra CR energy is 4%
+of the post-shock thermal energy, and 19% for a CR-dominated upstream (Gupta tube A). That is
+CR energy at weak shocks where KR13 DSA would inject none.
+
+### Idea (Ryu et al. 1993; Kudoh & Hanawa 2016; Semenov, Kravtsov & Diemer 2021/22)
+
+The CR entropy density `s_cr = P_cr rho^(1 - gamma_cr) = rho K_cr` obeys, for adiabatic flow,
+the conservative law `d s_cr/dt + div(s_cr u) = 0` (Semenov et al. eq. 8; Kudoh & Hanawa use the
+equivalent `P_cr^(1/gamma_cr)`). With a conservative scheme for it, `K_cr` is carried across a
+shock unchanged to round-off, so the CRs pass through the shock adiabatically by construction.
+That is the Pfrommer et al. (2006) reference, and it leaves DSA as the only source of
+non-adiabatic CR energy at shocks. Semenov et al. follow CRs with this equation always (their
+Sec. 2.2: "to enforce the adiabatic behavior of nonthermal energy components, their evolution is
+always followed by Equation (8)"). To keep total energy conserved they suggest, after Kudoh &
+Hanawa and Gupta et al.'s "Et+Scr", to take the gas thermal energy as total minus CR energy.
+No shock detection is needed for the CRs.
+
+### Design: an advected CR entropy row, synchronized into `e_cr` every RK stage
+
+This mirrors the existing gas dual-energy formalism (`evolve_state._dual_energy_*`,
+`registered_variables.entropy_index`), which already advects `s = p rho^(1 - gamma)` as a
+generic density-like passive row.
+
+1. **New row** `registered_variables.cosmic_ray_entropy_index`, allocated only when
+   `CosmicRayGreyConfig.cr_entropy = True` (new flag, default off until the acceptance tests
+   pass). FV, `UNSPLIT` + `RK2_SSP` only (the same restriction as `diffusive_relaxation`).
+2. **Step start:** set `s_cr = (gamma_cr - 1) e_cr rho^(1 - gamma_cr)` from the current
+   state, in the same place as `_dual_energy_sync`. Everything that changed `e_cr` since the
+   last hydro step is then included automatically: SN/DSA/wind injection, the floor and the
+   continuous updates. None of those call sites needs to change.
+3. **Fluxes:** `s_cr` gets the generic passive-row flux (mass flux x upwind `s_cr/rho`), the
+   same treatment as the advective part of `hll._grey_cr_hll_rows`. No closure flux, no
+   `-P div u` source.
+4. **Non-adiabatic CR transport as a cell-centred source on `s_cr`.** The closure part of the
+   `e_cr` interface flux (`F_cr` + Rusanov term, already computed separately in
+   `_grey_cr_hll_rows`) moves CR energy relative to the gas. Its cell divergence `Delta e_clos`
+   is added to `s_cr` as `Delta s_cr = (gamma_cr - 1) rho^(1 - gamma_cr) Delta e_clos`, with the
+   stage-start `rho`. This is not conservative in `s_cr`, and it should not be: diffusion and
+   streaming are non-adiabatic. For static gas it reproduces the `e_cr` change cell by cell, so
+   the pure-transport tests (items 1, 3, 4) are unaffected up to `O(dt d rho/dt)`. The same
+   weighting applies to the streaming loss in `_time_integrator_sources`
+   (`cr_streaming_heating_source`). Implementation choice: return the closure flux alongside
+   the fluxes, or recompute it in the flux-differencing step as `e_cr` flux minus mass flux x
+   upwind `e_cr/rho`.
+5. **Stage end (after the conserved update, before `cr_flux_relaxation_update`):**
+   `e_s = s_cr rho^(gamma_cr - 1) / (gamma_cr - 1)`, `delta = e_cr - e_s`; set `e_cr := e_s`
+   and give `delta` to the gas thermal energy (in the primitive state: pressure row
+   `+= (gamma - 1) delta`). The existing scheme conserves `E_gas + e_cr` exactly:
+   the `-v.grad P_cr` / `-P_cr div u` pair telescopes (see "Resolved: transport flux and
+   feedback-source formulas"). The transfer therefore keeps total energy exact while the
+   partition follows `s_cr`. In smooth flow `delta` is truncation-sized; at shocks it is the
+   spurious CR gain measured above, and it returns to the gas. `F_cr`, the relaxation, the cap
+   and the guard are untouched. The guard acts through the closure Rusanov speed, so it enters
+   via item 4.
+6. **Gas positivity safeguard.** If `delta < 0` would push the gas thermal energy below
+   `max(minimum_pressure, eps * P_th)` / (gamma - 1) (expected only in cold, CR-dominated,
+   strongly expanding cells, where `e_s` can exceed the `e_cr` energy value by truncation
+   error), clip `delta` there and keep the rest in `e_cr`. Count the clipped cells as a
+   diagnostic; they should be ~0 in the tests.
+7. **Interplay with gas `dual_energy`:** `delta` changes the gas internal energy, so the gas
+   entropy row must be re-synced after step 5 (`_dual_energy_sync`) in cells where the
+   total-energy pressure is used, and `delta` added through the entropy pressure where it is
+   not. To work out during implementation; CWB is the only dual-energy user.
+
+What stays as it is: the `e_cr` row (the variable every consumer reads: momentum coupling,
+emission, injection, diagnostics, `F_cr` closure), the conservative `e_cr` fluxes (still needed
+for the exact energy bookkeeping in step 5), DSA injection (still finder-based; Semenov et al.'s
+Sec. 2.3 alternative of partitioning `e_tot - e_kin - e_th - e_cr` needs an adiabatic thermal
+entropy too and is not proposed), and the FD path (no CR transport yet).
+
+Smooth, positive `rho` and `s_cr` keep everything differentiable (`jnp.power`, no new branches
+except the safeguard's `jnp.where`, which is inactive in the tests). Cost: one extra passive
+row and two `pow` evaluations per cell per stage.
+
+### Alternatives considered
+
+- **Synchronize only in shocked cells** (Bryan et al. 1995-style dual energy). This needs a
+  shock mask, and the DSA finder has a history of false positives at rest (DESIGN.md
+  2026-10-07). Semenov et al. synchronize CRs everywhere. Rejected.
+- **Full "Et+Scr" rewrite** (gas row = total energy including CRs, `e_cr` row removed). This is
+  algebraically the same as step 5, but it changes the gas Riemann solver's energy flux, the
+  conversions and every `e_cr` consumer. Rejected as too invasive for the same result.
+- **Kudoh & Hanawa variable `P_cr^(1/gamma_cr)`.** Equivalent for advection. `s_cr` (alpha = 1)
+  was chosen to match the existing gas entropy row and Semenov et al.'s tests.
+
+### Acceptance tests (Phase A plan)
+
+- **A6.1-A6.3** with `cr_entropy=True`: `|dK_cr,2|` converges to 0 (target < 1e-3 at N = 1600
+  on the shock-side window, for all M up to 100 and both Gupta tubes), and its CFL dependence
+  disappears. Gates then become hard and the energy-scheme runs stay as tracked controls.
+- **A6.5:** total energy (gas + CR) conserved to round-off with the flag on.
+- **Unchanged within current gates:** items 1, 2 (should improve: `K_cr` is now exact along the
+  flow), 3, 4, 18 (energy budget), 16/17 (gradient check, AD vs FD through the new pow
+  conversions).
+- **Expected to change, then re-baseline:** items 7/8 (less CR energy at the Sedov shock;
+  KR13/CS14 fractions move), 9 (Test A jump prediction already assumes adiabatic CRs, so it
+  should agree better), 10/11/15, and the M7 CR budget (the `-P_cr div u` term, PROGRESS.md
+  2026-10-08).
+
+### Steps
+
+1. Row + flag + steps 2, 3 and 5 (advection only, no closure source): check A6.1 with
+   `v_red = 0` and A6.5. Smallest change that tests the idea.
+2. Step 4 (closure and streaming sources): items 1, 3, 4 unchanged; A6.6 (finite kappa).
+3. Step 6 safeguard + step 7 dual-energy interplay; full regression list above.
+4. Decide the default (proposal: on, once 1-3 pass), then re-baseline items 7-11/15.
 
 ## Resolved: DSA shock injection (ladder item 7, Phase B)
 
@@ -2803,7 +2923,7 @@ mechanisms are genuinely active, not no-ops: `E_cr(t_end)` is a clearly nonzero,
 of the initial budget (`~0.035`, inside the `[0.005, 0.3]` sanity band, cf. item 7's identical
 band), and disabling streaming heating changes the final state by many orders of magnitude more
 than the round-off floor, visibly shifting the thermal/kinetic/CR partition in the diagnostic
-plot (`pytests/cosmic_rays_grey/pics/cr_energy_budget_test.svg`).
+plot (`pytests/cosmic_rays_grey/pics/18_energy_budget/cr_energy_budget_test.svg`).
 
 
 ## Resolved: ladder item 18 (MHD extension) (2026-09-23)
@@ -2850,7 +2970,7 @@ error on thermal + kinetic + magnetic + CR:
 (48^3/400 steps gave 1.4e-13 / 1.5e-8.) Mass `5e-15`. Channels active: `E_mag` 0.0200 -> 0.0243,
 `E_cr/E_tot = 0.028`; anisotropic-vs-isotropic states differ well above round-off. Asserts `tol=1e-9` on every
 double-precision configuration and that the single-precision tolerance run is `>10x` worse (keeps
-the explanation above pinned). Plots: `pytests/cosmic_rays_grey/pics/cr_mhd_energy_budget_test.svg` (budget) and
+the explanation above pinned). Plots: `pytests/cosmic_rays_grey/pics/18_energy_budget/cr_mhd_energy_budget_test.svg` (budget) and
 `cr_mhd_energy_budget_fields.png` (midplane density, |B|^2 + field lines, plasma beta, e_cr for
 anisotropic vs. isotropic transport, centre cuts along/across B). Central CR cavity width (e_cr below 1% of
 peak, through the centre): anisotropic 0.195 along B vs. 0.320 across B; isotropic 0.102 both ways
@@ -2913,7 +3033,7 @@ the diagnostic that fills it (`_compute_magnetic_divergence`,
 stale docstring, not a bug (arguably max is the more appropriate choice regardless, since a mean
 could mask a spatially localized violation). Flagged, not changed.
 
-Full numbers and the diagnostic plot (`pytests/cosmic_rays_grey/pics/
+Full numbers and the diagnostic plot (`pytests/cosmic_rays_grey/pics/19_divergence_b/
 cr_divergence_b_preservation_test.svg`): PROGRESS.md's 2026-09-18 entry.
 
 ## Resolved: Phase D -- gradient-based inference demo (2026-09-22)
@@ -2990,8 +3110,8 @@ each subsequent step then fast (seconds) -- `~52` min total for the whole D2 run
 **Caveats shared with item 16's own emission gradient check, not new here:** the GeV conversion
 (`GEV_SCALE`) and assumed proton spectral shape (`alpha=2.0`, `e_cutoff=1e5` GeV) are illustrative,
 not a physically calibrated `CodeUnits` conversion -- this is a differentiability/inference demo,
-not a science prediction. Full numbers, plots (`pics/cr_phase_d_kappa_inference_test.svg`,
-`pics/cr_phase_d_injection_efficiency_inference_test.svg`): PROGRESS.md's 2026-09-22 Phase D entry.
+not a science prediction. Full numbers, plots (`pics/phase_d_inference/cr_phase_d_kappa_inference_test.svg`,
+`pics/phase_d_inference/cr_phase_d_injection_efficiency_inference_test.svg`): PROGRESS.md's 2026-09-22 Phase D entry.
 
 ## BC handling per scheme
 

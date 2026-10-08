@@ -4,6 +4,69 @@ Status tracker for `pytests/shock_finder3D/astronomix_CR_implementation_plan.md`
 first when picking the work back up; `DESIGN.md` in this directory is the target design, this
 file is what's actually done against it.
 
+Phase A test-plan work (`astronomix_CR_phaseA_test_plan.md`) is tracked in `PROGRESS_PHASEA.md`;
+scheme changes that come out of it are still logged here.
+
+## Proposed (2026-10-08): conservative CR entropy row (Phase A D2, option a) -- design only
+
+A6.1-A6.3 (`PROGRESS_PHASEA.md`) showed that the `-P_cr div u` energy scheme gives CRs part of
+the shock dissipation. The post-shock `K_cr` is 0.4-11% too high (M 1.4-100), does not
+converge, and depends on CFL; at M 2-3 the extra CR energy is 4-19% of e_th. The user chose
+the CR entropy formulation. Design note: DESIGN.md "Open: conservative CR entropy at shocks".
+Not implemented; awaiting review.
+
+## Results (2026-10-08): M7 CR energy budget -- the excess comes in through the open z boundaries
+
+Answers the open question of the 2026-10-07 M7 entry (CR energy 1.49x / 2.27x the cumulative
+injection at 250 Myr).
+
+- **Setup.** `/export/scratch/nknoell/cr_regen_20261007/scripts/m7_budget.py` runs the unchanged
+  `m7_girichidis_pilot.py` (`both --res=0.5 --seed=42`, guard off, 62.5 pc, 250 Myr) with the
+  three phases of `time_integration._step` wrapped.
+  - Logged every step: total E_cr after SN injection, after the continuous updates (the
+    floor), and after the FV evolve.
+  - On the state entering the evolve: the `-P_cr div u` work (the code's central differences),
+    plus the CR energy flux (advective `u_z e_cr` and closure `F_z`) and gas mass flux through
+    the open z faces.
+  - The budget closes to ~1e-5 of E_cr.
+  - Runs: v_red = 1000 km/s (13 min, 21k steps) and 1e4 km/s (~95 min, 180k steps).
+  - Data: `.../m7_budget/m7_budget_*_budget_80.npz`; analysis `scripts/m7_budget_analyze.py`.
+
+  | 250 Myr | v_red 1000 | v_red 1e4 |
+  |---|---|---|
+  | E_cr / injected | 1.41 | 1.75 |
+  | excess over injection | +1.24e11 | +2.24e11 |
+  | advection in through the z faces (gross inflow) | **+0.99e11** (+1.13e11) | **+1.70e11** (+1.85e11) |
+  | `-P_cr div u` (net) | +0.28e11 | +0.57e11 |
+  | diffusive `F_z` through the z faces | -0.035e11 | -0.03e11 |
+  | floor | +1.5 | +1.9 |
+
+- **Mechanism.**
+  - From ~75-100 Myr on, gas falls back into the box through the open top/bottom: net gas
+    mass inflow 1.2e6 Msun by 250 Myr (v_red 1000), ~3% of the box mass.
+  - The zero-gradient ghost cells give that gas the interior's `e_cr`. By then the box is
+    nearly uniformly filled with CRs (`e_cr(top)/e_cr(mid)` 0.6-0.8), so tenuous inflowing gas
+    carries a lot of CR energy per unit mass.
+  - The infall then compresses the CRs: `-P_cr div u` turns from a net loss (-1.1e10 at
+    100 Myr) into a net gain after ~150 Myr.
+  - Late rates (100-250 Myr): dE_cr/dt = 2.1e9 / 2.7e9 per Myr against injection 1.2e9.
+    Boundary advection gives +0.66e9 / +1.10e9, `-P_cr div u` +0.26e9 / +0.43e9.
+  - Stronger at higher v_red because the box fills faster and more uniformly. The CR energy
+    that diffuses out (`F_z`) is small, because the zero-gradient state has nearly no gradient
+    at the face.
+- **Not the cause:** the floor (adds < 2 code units; production snapshots have min `e_cr`
+  0.1-27, i.e. >1e9x the floor), the realizability cap (acts on F only), and numerical
+  non-conservation (residual ~1e-5).
+- **Implication:** the M7 excess, and the box-filling CR profile, are a boundary artefact of
+  the +-2.5 kpc box with open, inflow-permitting z boundaries; Girichidis' box is +-20 kpc. Options:
+  1. An outflow-only (diode) z boundary: zero-gradient, but ghost `u_z` clipped so it cannot
+     point into the box (gas and CRs), or only the CR rows set to zero inflow.
+  2. A taller box (`--half-height-kpc`), already suggested.
+  3. At least book-keep the boundary term when comparing to the paper.
+
+  Option 1 is a small change in the boundary handler and testable cheaply at `--res=0.5`
+  (13-95 min per run). A user decision.
+
 ## Fixed (2026-10-07/08): DSA finder false positives -- local Rankine-Hugoniot velocity check
 
 User picked the RH velocity-consistency option. Uncommitted.
@@ -58,8 +121,8 @@ User picked the RH velocity-consistency option. Uncommitted.
     0. Without it, item 11 and item 10 fail only that check.
   - The DSA resolution trend now rises with N (KR13 8.8% -> 12.0%), as the finder's Mach bias
     predicts. Comments in `cr_dsa_mach_dependence.py` / `cr_sedov_taylor.py` updated.
-- **Figures (2026-10-08), with the fix:** `pics/cr_dsa_mach_dependence_test{,_48,_96,_224}.svg`
-  and `pics/cr_sedov_taylor_test{,_224}.svg` were replaced (the suffix-less ones are the tests'
+- **Figures (2026-10-08), with the fix:** `pics/08_dsa_mach_dependence/cr_dsa_mach_dependence_test{,_48,_96,_224}.svg`
+  and `pics/07_sedov_taylor/cr_sedov_taylor_test{,_224}.svg` were replaced (the suffix-less ones are the tests'
   default 48^3 outputs). The item-9 resolution figure is unaffected by the fix.
 - **224^3 with the fix** (data `/export/scratch/nknoell/cr_regen_20261007/data_rh/`):
   - Item 7: pass, E_cr/E_tot 7.9% (9.9% pre-fix, 8.2% pre-06cec02). The interior `P_cr` bump
@@ -87,8 +150,8 @@ User picked the RH velocity-consistency option. Uncommitted.
 ## Results (2026-10-07): items 7/8/9 figures regenerated after 06cec02 -- verdict
 
 Regenerated (uncommitted) with the current code (06cec02 separate gas/CR wave speeds + c740cc3
-always-on `e_cr` floor): `pics/cr_dsa_mach_dependence_test_{48,96,224}.svg`,
-`pics/cr_sedov_taylor_test_224.svg`, `pics/cr_modified_shock_structure_resolution.svg`. 3D runs
+always-on `e_cr` floor): `pics/08_dsa_mach_dependence/cr_dsa_mach_dependence_test_{48,96,224}.svg`,
+`pics/07_sedov_taylor/cr_sedov_taylor_test_224.svg`, `pics/09_modified_shock_structure/cr_modified_shock_structure_resolution.svg`. 3D runs
 were split one blast per GPU and fed back into the unchanged test functions (cached final
 states). Scripts, states and logs: `/export/scratch/nknoell/cr_regen_20261007/` (not committed;
 `scripts/plot_shock_resolution.py` rebuilds the item-9 resolution figure, whose original script
@@ -595,7 +658,7 @@ DESIGN.md "Open: CR diffusion follow-up (audit 2026-10-05)": steps 1-2 done, 3-6
     well-resolved structures. Still an extrapolation; step 4 measures it in M7's field.
   - 128^3 float64 needs about 9.1 GB.
   - The other 9 tests in the file reproduce their numbers exactly.
-  - Plot: `pics/cr_diffusion_rate_3d_test.svg`.
+  - Plot: `pics/03_anisotropic_diffusion/cr_diffusion_rate_3d_test.svg`.
 
 ## Done (2026-10-05): CR diffusion follow-up step 1 (F_z in 2D MHD, bug F1)
 
@@ -612,7 +675,7 @@ DESIGN.md "Open: CR diffusion follow-up (audit 2026-10-05)" is the plan; steps 2
   - T2e, B tilted 45 deg out of plane: `D_x / (kappa cos^2 phi)` = 1.0701 at `C_cfl` 0.4 / 0.2 /
     0.1 (N = 128) and 1.0285 at N = 256. Before: 0.344 / 0.233 / 0.165 and 0.115.
   - T2f, projection only: in-plane wave speed 1.0002 of exact. Before: 0.007 (no wave).
-  - Plots: `pics/cr_diffusion_rate_out_of_plane{,_wave}_test.svg`.
+  - Plots: `pics/03_anisotropic_diffusion/cr_diffusion_rate_out_of_plane{,_wave}_test.svg`.
 - **Regression.** Before/after on CPU in float64: the T2 resolution study, T2a, T2d, both item-3
   runs and a 1D control are bitwise identical. `cr_diffusion_rate.py` 9/9;
   `cr_divergence_b_preservation` div B 7.6e-15; `cr_mhd_energy_budget` energy 9.098e-14,
@@ -1017,15 +1080,14 @@ was fine: only the reference formula and the test comparison changed.
 - **Rerun (default N=1000), both pass:** rho/u/P errors 0.24 / 0.51 / 0.46% (N=2000: 0.3 /
   0.6 / 0.5%); CR flux jump -0.0632 inside [-0.105, -0.057] (inj = 0.0571), i.e. most CRs
   appear after compression, as expected with injection spread over the post-shock cells.
-  `pics/cr_modified_shock_structure_jump_test.svg` regenerated (prediction drawn on the
-  downstream side only); `pics/cr_modified_shock_structure_sign_check_N2000.svg` shows the
-  three predictions (old / sign-only / new) against the N=2000 run and the zero-injection control.
+  `pics/09_modified_shock_structure/cr_modified_shock_structure_jump_test.svg` regenerated (prediction drawn on the
+  downstream side only).
 - **Unaffected:** Test B (`cr_precursor_ode_rhs` has no hard-coded flow direction and keeps
   `P_cr` in the momentum balance), and nothing else imports the changed function.
 - **Resolution series redone (Test A only, N = 1000 / 2000 / 4000; Test B unaffected, its
   earlier data reused):** rho/u/P errors 0.24-0.31 / 0.51-0.55 / 0.46-0.48% at 1000-2000, 0.13 /
   0.25 / 0.22% at 4000; CR flux jump 1.11 / 1.03 / 1.12 x inj, all inside the bracket; Mach
-  1.97, P_cr2 = 0.041-0.044 throughout. `pics/cr_modified_shock_structure_resolution.svg` and the
+  1.97, P_cr2 = 0.041-0.044 throughout. `pics/09_modified_shock_structure/cr_modified_shock_structure_resolution.svg` and the
   `cr_modified_shock_resolution.pdf` copies in both reports regenerated; item-9 text in both
   reports (and the supervisor status-table row) rewritten. Supervisor digest still 5 pages, long
   report 23. Not audited: whether other formulas in `test_setups/reference_solutions/` assume
@@ -1135,7 +1197,7 @@ within ~5e-4 time units; spreading into the post-shock cells, where the dissipat
 anisotropic transport on, `numerical_precision=DOUBLE_PRECISION`. Relative total-energy error
 `9.4e-14` (isotropic `9.4e-14`, CR-off MHD control `7.5e-14`, SINGLE_PRECISION tolerance `1.5e-9`);
 mass `5e-15`. `E_mag` 0.0200 -> 0.0243, `E_cr/E_tot=0.028`. Passes (GPU 0, float64, ~70 min for the
-four runs). Also writes `pics/cr_mhd_energy_budget_fields.png` (midplane MHD/CR field maps).
+four runs). Also writes `pics/18_energy_budget/cr_mhd_energy_budget_fields.png` (midplane MHD/CR field maps).
 
 **The ~1e-6 "MHD truncation residual" from 2026-09-18 was misdiagnosed -- it's the magnetic
 update's fixed-point tolerance.** Instrumented a real `time_integration` run's sub-steps: gas
@@ -1191,8 +1253,8 @@ clean** -- Phase D touched no shared transport/injection/emission code, only two
 scripts and a `pyproject.toml` dependency addition (`optax`, already an incidental dependency via
 `examples/scripts/`, now declared for real).
 
-Diagnostic plots: `pytests/cosmic_rays_grey/pics/cr_phase_d_kappa_inference_test.svg`,
-`pytests/cosmic_rays_grey/pics/cr_phase_d_injection_efficiency_inference_test.svg`.
+Diagnostic plots: `pytests/cosmic_rays_grey/pics/phase_d_inference/cr_phase_d_kappa_inference_test.svg`,
+`pytests/cosmic_rays_grey/pics/phase_d_inference/cr_phase_d_injection_efficiency_inference_test.svg`.
 
 ## Where things stand (2026-09-22, latest: M5/M6 clumpiness-evolution filmstrips + a real M6 OOM finding)
 
@@ -4629,7 +4691,7 @@ See "What's done" and "Verified" below for details.
     a genuine wave. Isotropic closure: the bump expands as a clean ring (matches the standard
     even-dimension wave-equation fundamental solution). Anisotropic (B-projected) closure: the
     bump splits into exactly two pulses moving along +/-B -- both clearly visible in the
-    committed plot (`pics/cr_anisotropic_diffusion_oblique_test.svg`).
+    committed plot (`pics/03_anisotropic_diffusion/cr_anisotropic_diffusion_oblique_test.svg`).
   - Diagnostic: `e_cr`-weighted second moment of the distribution, resolved parallel/perpendicular
     to B, tracked as *growth* relative to the initial (isotropic Gaussian) moment to normalize out
     the pulse's own width. Isotropic run: perp/parallel growth ratio ~1.00 (spreads equally in
