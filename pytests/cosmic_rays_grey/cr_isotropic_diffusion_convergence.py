@@ -241,8 +241,8 @@ def test_cr_isotropic_diffusion_convergence(
     ax_convergence.legend()
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "04_isotropic_diffusion"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_isotropic_diffusion_convergence_test.svg")
     plt.close(fig)
 

@@ -468,8 +468,8 @@ def test_snr_molecular_cloud_pion_bump(
     ax_map.legend(fontsize=8)
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "15_snr_molecular_cloud_pion_bump"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     suffix = "" if NUM_CELLS == 256 else f"_{NUM_CELLS}"
     fig.savefig(pics_dir / f"cr_snr_molecular_cloud_pion_bump{suffix}.svg")
     plt.close(fig)

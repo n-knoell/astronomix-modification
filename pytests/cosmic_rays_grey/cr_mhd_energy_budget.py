@@ -447,8 +447,8 @@ def test_cr_mhd_energy_budget(energy_tol: float = 1e-9, mass_tol: float = 1e-10)
 
     fig.suptitle("Ladder item 18 (MHD + CR): thermal + kinetic + magnetic + CR energy budget")
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "18_energy_budget"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_mhd_energy_budget_test.svg")
     plt.close(fig)
 

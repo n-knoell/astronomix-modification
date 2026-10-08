@@ -231,8 +231,8 @@ def test_cr_divergence_b_preservation(tol: float = 1e-10):
     ax.legend()
     plt.xticks(rotation=15, ha="right")
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "19_divergence_b"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_divergence_b_preservation_test.svg")
     plt.close(fig)
 

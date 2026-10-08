@@ -203,7 +203,7 @@ if __name__ == "__main__":
     ax_err.legend()
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "13_pion_decay_emission"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_pion_decay_emission.svg")
     plt.close(fig)

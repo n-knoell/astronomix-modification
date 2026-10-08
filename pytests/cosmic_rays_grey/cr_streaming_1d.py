@@ -193,8 +193,8 @@ def test_cr_streaming_1d(tol: float = 1e-2):
     ax_heating.legend()
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "05_streaming"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_streaming_1d_test.svg")
     plt.close(fig)
 

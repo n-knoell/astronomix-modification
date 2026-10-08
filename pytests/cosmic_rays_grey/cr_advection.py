@@ -171,8 +171,8 @@ def test_cr_advection(l2_tol: float = 0.05, peak_retention_tol: float = 0.15):
     )
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "01_advection"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_advection_test.svg")
     plt.close(fig)
 

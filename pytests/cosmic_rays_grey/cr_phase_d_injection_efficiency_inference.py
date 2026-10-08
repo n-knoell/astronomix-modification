@@ -330,8 +330,8 @@ def test_cr_phase_d_injection_efficiency_inference():
         "a full live rollout"
     )
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "phase_d_inference"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_phase_d_injection_efficiency_inference_test.svg")
     plt.close(fig)
 

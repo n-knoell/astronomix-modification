@@ -258,8 +258,8 @@ def test_cr_anisotropic_diffusion_oblique(leak_ratio_tol: float = 0.1):
     ax_ratio.set_title("Cross-field leak ratio")
     ax_ratio.legend()
 
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "03_anisotropic_diffusion"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_anisotropic_diffusion_oblique_test.svg")
     plt.close(fig)
 

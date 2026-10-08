@@ -306,9 +306,9 @@ def _bump_moments(
     return times, np.array(var_par), np.array(var_perp), int(snapshots.num_iterations)
 
 
-def _save(fig, name):
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+def _save(fig, name, subdir):
+    pics_dir = Path(__file__).resolve().parent / "pics" / subdir
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(pics_dir / name)
     plt.close(fig)
@@ -393,7 +393,7 @@ def test_cr_diffusion_rate_1d(
     ax_n.set_ylabel("D / kappa")
     ax_n.set_title(f"T1b: refinement (C_cfl = {c_cfl})")
     ax_n.legend()
-    _save(fig, "cr_diffusion_rate_1d_test.svg")
+    _save(fig, "cr_diffusion_rate_1d_test.svg", "04_isotropic_diffusion")
 
     assert abs(errors[-1]) < tol, (
         f"D/kappa = {1 + errors[-1]:.4f} at N = {resolutions[-1]}, expected 1 "
@@ -651,7 +651,7 @@ def test_cr_anisotropic_out_of_plane_b(
     ax.set_ylabel("D_x / (kappa cos^2 phi)")
     ax.set_title(f"T2e: B tilted {phi_deg:g} deg out of plane")
     ax.legend()
-    _save(fig, "cr_diffusion_rate_out_of_plane_test.svg")
+    _save(fig, "cr_diffusion_rate_out_of_plane_test.svg", "03_anisotropic_diffusion")
 
     assert abs(ratio - 1.0) < tol, (
         f"D_x = {ratio:.4f} kappa cos^2(phi) at N = {resolutions[-1]}, expected 1 "
@@ -712,7 +712,7 @@ def test_cr_anisotropic_out_of_plane_wave_speed(
     ax.set_ylabel("var_x(t) - var_x(0)")
     ax.set_title(f"T2f: projection-only wave, B tilted {phi_deg:g} deg")
     ax.legend()
-    _save(fig, "cr_diffusion_rate_out_of_plane_wave_test.svg")
+    _save(fig, "cr_diffusion_rate_out_of_plane_wave_test.svg", "03_anisotropic_diffusion")
 
     assert abs(c_fit / c_exact - 1.0) < tol, (
         f"In-plane CR wave speed {c_fit:.4f} vs. {c_exact:.4f} "
@@ -809,7 +809,7 @@ def test_cr_anisotropic_3d(
         ax.set_xscale("log", base=2)
         ax.set_xlabel("N")
         ax.legend(fontsize=8)
-    _save(fig, "cr_diffusion_rate_3d_test.svg")
+    _save(fig, "cr_diffusion_rate_3d_test.svg", "03_anisotropic_diffusion")
 
     for r in rows:
         dev = max(abs(r["in_plane"][0] - r["two_d"][0]), abs(r["in_plane"][1] - r["two_d"][1]))
@@ -849,7 +849,7 @@ def _plot_anisotropic(study):
         ax.set_xscale("log", base=2)
         ax.set_xlabel("N")
         ax.legend()
-    _save(fig, "cr_diffusion_rate_2d_test.svg")
+    _save(fig, "cr_diffusion_rate_2d_test.svg", "03_anisotropic_diffusion")
 
 
 if __name__ == "__main__":

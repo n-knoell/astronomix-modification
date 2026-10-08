@@ -542,8 +542,8 @@ def test_cr_gradient_check_rollout_stability(tol: float = 0.1):
         "the positivity floor does not silently kill the adjoint"
     )
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "16_17_gradient_check"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_gradient_check_rollout_stability_test.svg")
     plt.close(fig)
 

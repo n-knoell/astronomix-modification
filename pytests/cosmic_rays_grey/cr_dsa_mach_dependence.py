@@ -545,8 +545,8 @@ def test_cr_dsa_mach_dependence(
     ax_curve.legend(fontsize=8)
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "08_dsa_mach_dependence"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     suffix = "" if NUM_CELLS == 48 else f"_{NUM_CELLS}"
     fig.savefig(pics_dir / f"cr_dsa_mach_dependence_test{suffix}.svg")
     plt.close(fig)

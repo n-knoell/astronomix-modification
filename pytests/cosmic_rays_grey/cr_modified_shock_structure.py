@@ -459,8 +459,8 @@ def test_cr_dsa_shock_jump(
         ax.set_xlabel(r"$\xi = x - x_{\rm shock}(t)$")
         ax.set_title(name)
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "09_modified_shock_structure"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_modified_shock_structure_jump_test.svg")
     plt.close(fig)
 
@@ -638,8 +638,8 @@ def test_cr_precursor_ode(
     ax_fcr.set_ylabel(r"$F_{\rm cr}$")
     ax_fcr.set_title("CR flux (shock-comoving frame)")
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "09_modified_shock_structure"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_modified_shock_structure_precursor_test.svg")
     plt.close(fig)
 

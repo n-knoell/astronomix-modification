@@ -419,8 +419,8 @@ def test_cr_snr_clumpy_medium(
     ax_slice.set_ylabel("y")
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "11_snr_clumpy_medium"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_snr_clumpy_medium_test.svg")
     plt.close(fig)
 

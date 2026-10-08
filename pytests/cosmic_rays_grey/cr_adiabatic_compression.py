@@ -227,8 +227,8 @@ def test_cr_adiabatic_compression(edge_margin: float = 0.1, tol: float = 5e-3):
     ax_scaling.legend()
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "02_adiabatic_compression"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_adiabatic_compression_test.svg")
     plt.close(fig)
 

@@ -412,8 +412,8 @@ def test_cr_wind_bubble(
     ax_profile.legend()
 
     fig.tight_layout()
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "10_wind_bubble"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_wind_bubble_test.svg", dpi=150)
     plt.close(fig)
 

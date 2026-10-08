@@ -269,8 +269,8 @@ def _sharma_hammett_metrics(times, e, x, y, num_cells):
 
 
 def _save(fig, name):
-    pics_dir = Path(__file__).resolve().parent / "pics"
-    pics_dir.mkdir(exist_ok=True)
+    pics_dir = Path(__file__).resolve().parent / "pics" / "03_anisotropic_diffusion"
+    pics_dir.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(pics_dir / name)
     plt.close(fig)
