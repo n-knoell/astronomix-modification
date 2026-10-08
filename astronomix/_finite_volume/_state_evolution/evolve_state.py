@@ -43,7 +43,12 @@ from astronomix._finite_volume._riemann_solver._riemann_solver import _riemann_s
 from astronomix._finite_volume._magnetic_update._magnetic_field_update import magnetic_update
 from astronomix._integrators._explicit_rk import rk2_ssp
 from astronomix._modules._time_integrator_sources import _time_integrator_sources
-from astronomix._modules._cosmic_rays_grey.cr_grey_sources import cr_flux_relaxation_update
+from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
+    cr_entropy_closure_source,
+    cr_entropy_sync,
+    cr_entropy_to_energy,
+    cr_flux_relaxation_update,
+)
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     cr_flux_realizability_cap,
     cr_monotonicity_guard,
@@ -818,6 +823,21 @@ def _evolve_gas_state_unsplit_inner(
             * _stencil_add(fluxes, indices=(0, 1), factors=(1.0, -1.0), axis=axis)
             * dt
         )
+        # Conservative CR entropy: the closure (diffusion) part of the e_cr
+        # change, cell-weighted onto s_cr.
+        if registered_variables.cosmic_ray_entropy_active:
+            conserved_change = cr_entropy_closure_source(
+                conserved_change,
+                fluxes,
+                primitives_left_interface,
+                primitives_right_interface,
+                primitive_state,
+                dt,
+                config,
+                params,
+                registered_variables,
+                axis,
+            )
         conservative_states += conserved_change
 
     # update the primitive state
@@ -934,6 +954,11 @@ def _evolve_gas_state_unsplit(
         # in sync too (other modules and the initial condition leave it stale).
         primitive_state = _dual_energy_sync(primitive_state, gamma, registered_variables)
 
+    # Conservative CR entropy: s_cr from the current e_cr, so injections, the
+    # floor and the initial condition are all included.
+    if registered_variables.cosmic_ray_entropy_active:
+        primitive_state = cr_entropy_sync(primitive_state, registered_variables, params)
+
     # Grey-CR wave-speed reduction for the Riemann solver: depends only on B
     # and the CR parameters, both constant during this (half-)step.
     cr_factors = cr_wave_speed_factors(
@@ -1026,6 +1051,14 @@ def _evolve_gas_state_unsplit(
     if apply_operator_split_sources and not well_balanced_inline_gravity:
         primitive_state = _apply_gravity_source(
             primitive_state, gravity_source, gamma, config, params, registered_variables
+        )
+
+    # Conservative CR entropy: e_cr from the advected s_cr, the difference to
+    # the gas. After the operator-split sources, so the -P_cr div u work they
+    # add to e_cr is replaced by the adiabatic change s_cr carries.
+    if registered_variables.cosmic_ray_entropy_active:
+        primitive_state = cr_entropy_to_energy(
+            primitive_state, gamma, registered_variables, params
         )
 
     return primitive_state
@@ -1139,6 +1172,9 @@ def _split_gas_and_magnetic_state(
         ),
         entropy_index=_shift_field_past_removed_rows(
             registered_variables.entropy_index, removed_rows_sorted
+        ),
+        cosmic_ray_entropy_index=_shift_field_past_removed_rows(
+            registered_variables.cosmic_ray_entropy_index, removed_rows_sorted
         ),
     )
 

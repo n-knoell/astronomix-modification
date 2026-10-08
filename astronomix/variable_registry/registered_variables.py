@@ -118,6 +118,12 @@ class RegisteredVariables(NamedTuple):
     cosmic_ray_flux_index: Union[int, StaticIntVector] = -1
     cosmic_ray_flux_active: bool = False
 
+    #: conservative CR entropy density s_cr = P_cr * rho**(1 - gamma_cr)
+    #: (cosmic_ray_grey_config.cr_entropy, FV only). Re-synced from e_cr at
+    #: the start of every hydro update, so other modules need not maintain it.
+    cosmic_ray_entropy_index: int = -1
+    cosmic_ray_entropy_active: bool = False
+
     #: dual-energy entropy density s = p * rho**(1 - gamma)
     #: (config.dual_energy, FV only). Re-synced from the pressure at the start
     #: of every hydro update, so other modules need not maintain it.
@@ -261,6 +267,16 @@ def get_registered_variables(config: SimulationConfig) -> RegisteredVariables:
                     num_vars=registered_variables.num_vars + 3
                 )
             registered_variables = registered_variables._replace(cosmic_ray_flux_active=True)
+
+        if (
+            config.cosmic_ray_grey_config.grey_cosmic_rays
+            and config.cosmic_ray_grey_config.cr_entropy
+        ):
+            registered_variables = registered_variables._replace(
+                cosmic_ray_entropy_index=registered_variables.num_vars,
+                num_vars=registered_variables.num_vars + 1,
+                cosmic_ray_entropy_active=True,
+            )
 
         if config.dual_energy:
             registered_variables = registered_variables._replace(

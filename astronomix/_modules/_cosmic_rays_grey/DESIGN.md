@@ -1701,7 +1701,7 @@ always followed by Equation (8)"). To keep total energy conserved they suggest, 
 Hanawa and Gupta et al.'s "Et+Scr", to take the gas thermal energy as total minus CR energy.
 No shock detection is needed for the CRs.
 
-### Design: an advected CR entropy row, synchronized into `e_cr` every RK stage
+### Design: an advected CR entropy row, synchronized into `e_cr` once per hydro step
 
 This mirrors the existing gas dual-energy formalism (`evolve_state._dual_energy_*`,
 `registered_variables.entropy_index`), which already advects `s = p rho^(1 - gamma)` as a
@@ -1723,12 +1723,19 @@ generic density-like passive row.
    is added to `s_cr` as `Delta s_cr = (gamma_cr - 1) rho^(1 - gamma_cr) Delta e_clos`, with the
    stage-start `rho`. This is not conservative in `s_cr`, and it should not be: diffusion and
    streaming are non-adiabatic. For static gas it reproduces the `e_cr` change cell by cell, so
-   the pure-transport tests (items 1, 3, 4) are unaffected up to `O(dt d rho/dt)`. The same
-   weighting applies to the streaming loss in `_time_integrator_sources`
-   (`cr_streaming_heating_source`). Implementation choice: return the closure flux alongside
-   the fluxes, or recompute it in the flux-differencing step as `e_cr` flux minus mass flux x
-   upwind `e_cr/rho`.
-5. **Stage end (after the conserved update, before `cr_flux_relaxation_update`):**
+   the pure-transport tests (items 1, 3, 4) are unaffected up to `O(dt d rho/dt)`.
+   Implemented (step 2) by recomputing the advective part in the flux-differencing step
+   (`cr_grey_transport.cr_passive_row_flux`, the same helper `_grey_cr_hll_rows` uses) and
+   taking the closure part as the difference. **Streaming is out of scope** (user decision
+   2026-10-08): the CR model is the diffusion limit of Jiang & Oh (2018), which is a complete
+   formalism on its own (the streaming part of their interaction coefficient and the
+   streaming loss vanish for zero streaming speed). `cr_entropy` with `streaming=True`
+   raises.
+5. **Step end (`_evolve_gas_state_unsplit`, after `_apply_gravity_source`).** *Corrected
+   during step 1:* the CR `-grad P_cr` / `-P_cr div u` sources are operator-split. They are
+   presolved from the pre-step state and applied once after the whole RK2, not inside the
+   stages, so the sync goes there too. One sync per step also makes `e_cr = e(s_cr)` exact
+   after the RK average, which a per-stage sync would not, because `e(s, rho)` is nonlinear.
    `e_s = s_cr rho^(gamma_cr - 1) / (gamma_cr - 1)`, `delta = e_cr - e_s`; set `e_cr := e_s`
    and give `delta` to the gas thermal energy (in the primitive state: pressure row
    `+= (gamma - 1) delta`). The existing scheme conserves `E_gas + e_cr` exactly:
@@ -1782,6 +1789,28 @@ row and two `pow` evaluations per cell per stage.
   KR13/CS14 fractions move), 9 (Test A jump prediction already assumes adiabatic CRs, so it
   should agree better), 10/11/15, and the M7 CR budget (the `-P_cr div u` term, PROGRESS.md
   2026-10-08).
+
+### Status
+
+- **Step 1 implemented (2026-10-08, uncommitted).** It adds:
+  - the `CosmicRayGreyConfig.cr_entropy` flag (default off);
+  - `registered_variables.cosmic_ray_entropy_index`, allocated after the CR flux rows and
+    re-indexed in the MHD gas/B split;
+  - the s_cr flux in `hll._grey_cr_hll_rows`: mass flux x upwind `s_cr/rho`;
+  - `cr_grey_sources.cr_entropy_sync` / `cr_entropy_to_energy`, hooked in
+    `_evolve_gas_state_unsplit`;
+  - config validation: FV, unsplit, RK2, HLL/HLLC(_LM); `streaming` and `dual_energy` raise
+    `NotImplementedError` until steps 2-3.
+- **Step 2 implemented (2026-10-08, uncommitted):** `cr_grey_sources.cr_entropy_closure_source`,
+  called per axis in `_evolve_gas_state_unsplit_inner`, adds the closure (diffusion) part of the
+  `e_cr` change to `s_cr` with the cell weight. Checks:
+  - Static heavy gas, 2D MHD anisotropic diffusion: flag on vs off agree to 3e-14 (uniform
+    rho).
+  - Stratified static rho (x2 contrast): they differ by 1.0e-3 / 2.5e-4 / 8.0e-5 at
+    N = 32 / 64 / 128. HLL's contact diffusion moves mass even at rest, and mixing gas of
+    different `K_cr` conserves `sum e_cr` in one scheme and `sum s_cr` in the other, so this
+    is truncation error.
+- **Results:** `PROGRESS_PHASEA.md`, 2026-10-08 step-1 entry.
 
 ### Steps
 

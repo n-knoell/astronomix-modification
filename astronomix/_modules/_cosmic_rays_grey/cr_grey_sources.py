@@ -32,10 +32,13 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 
 # astronomix functions
 from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import (
+    cr_entropy_from_e_cr,
+    e_cr_from_cr_entropy,
     pressure_from_e_cr,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     cr_flux_rows,
+    cr_passive_row_flux,
     magnetic_unit_vector,
     regularized_streaming_sign,
 )
@@ -345,3 +348,134 @@ def cr_streaming_heating_source(
     )
 
     return source_term
+
+
+@partial(jax.jit, static_argnames=["registered_variables"])
+def cr_entropy_sync(
+    primitive_state: STATE_TYPE,
+    registered_variables: RegisteredVariables,
+    params: SimulationParams,
+) -> STATE_TYPE:
+    """Set the CR entropy row from ``e_cr``, ``s_cr = P_cr rho^(1 - gamma_cr)``.
+
+    Called at the start of every hydro update, so every ``e_cr`` change made
+    outside it (injections, the floor, continuous updates, initial
+    conditions) is picked up without those call sites knowing about
+    ``s_cr``. Mirrors the gas dual-energy ``_dual_energy_sync``.
+    """
+    rho = primitive_state[registered_variables.density_index]
+    e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
+    return primitive_state.at[registered_variables.cosmic_ray_entropy_index].set(
+        cr_entropy_from_e_cr(e_cr, rho, params.cosmic_ray_grey_params.gamma_cr)
+    )
+
+
+@partial(jax.jit, static_argnames=["registered_variables"])
+def cr_entropy_to_energy(
+    primitive_state: STATE_TYPE,
+    gamma: Union[float, Float[Array, ""]],
+    registered_variables: RegisteredVariables,
+    params: SimulationParams,
+) -> STATE_TYPE:
+    """Take ``e_cr`` from the advected CR entropy and give the difference to the
+    gas thermal energy (DESIGN.md "Open: conservative CR entropy at shocks",
+    design step 5).
+
+    At the end of a hydro step the conservative ``e_cr`` row (fluxes plus the
+    operator-split ``-P_cr div u``) and the gas energy conserve
+    ``E_gas + e_cr`` exactly, but the partition between them is not unique at
+    shocks. ``s_cr`` carries the CRs adiabatically, so ``e_cr := e(s_cr)``
+    and ``P_th += (gamma - 1) (e_cr,old - e_cr,new)`` keeps the total and
+    fixes the partition.
+
+    Args:
+        primitive_state: The primitive state after the full hydro step,
+            including the operator-split sources.
+        gamma: The gas adiabatic index.
+        registered_variables: The registered variables.
+        params: The simulation parameters.
+
+    Returns:
+        The state with ``e_cr`` and the gas pressure updated.
+    """
+    rho = primitive_state[registered_variables.density_index]
+    e_cr_energy = primitive_state[registered_variables.cosmic_ray_e_index]
+    e_cr_entropy = e_cr_from_cr_entropy(
+        primitive_state[registered_variables.cosmic_ray_entropy_index],
+        rho,
+        params.cosmic_ray_grey_params.gamma_cr,
+    )
+    delta = e_cr_energy - e_cr_entropy
+    primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(
+        e_cr_entropy
+    )
+    return primitive_state.at[registered_variables.pressure_index].add(
+        (gamma - 1.0) * delta
+    )
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables", "axis"])
+def cr_entropy_closure_source(
+    conserved_change: STATE_TYPE,
+    fluxes: STATE_TYPE,
+    primitives_left_interface: STATE_TYPE,
+    primitives_right_interface: STATE_TYPE,
+    primitive_state: STATE_TYPE,
+    dt: Union[float, Float[Array, ""]],
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+    axis: int,
+) -> STATE_TYPE:
+    """Add the non-adiabatic CR transport of one axis to the CR entropy row
+    (DESIGN.md "Open: conservative CR entropy at shocks", design step 4).
+
+    The ``e_cr`` interface flux is the advective part (mass flux x upwind
+    ``e_cr / rho``, which ``s_cr`` already gets for its own row) plus the
+    closure part (``F_cr`` and its Rusanov term: diffusion relative to the
+    gas). This recomputes the advective part with the same arithmetic as
+    ``hll._grey_cr_hll_rows``, takes the closure part of this axis' ``e_cr``
+    change as the difference, and adds it to ``s_cr`` cell by cell with the
+    weight ``(gamma_cr - 1) rho^(1 - gamma_cr)`` of the stage-start density.
+    The weight is cell-centred on purpose: a face-weighted flux would add a
+    spurious ``C d(w)/dx`` term in stratified gas. For static gas the
+    resulting ``e(s_cr)`` equals the ``e_cr`` row exactly.
+
+    Args:
+        conserved_change: This axis' conserved-state change, ``-dt/dx`` times
+            the flux difference.
+        fluxes: This axis' interface fluxes, as returned by the Riemann solver.
+        primitives_left_interface, primitives_right_interface: The interface
+            states the Riemann solver was called with.
+        primitive_state: The stage-start primitive state.
+        dt: The stage time step.
+        config: The simulation configuration.
+        params: The simulation parameters.
+        registered_variables: The registered variables.
+        axis: The flux direction (1, 2 or 3).
+
+    Returns:
+        ``conserved_change`` with the closure source added to the ``s_cr`` row.
+    """
+    e = registered_variables.cosmic_ray_e_index
+    rho = registered_variables.density_index
+    gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+
+    advective_flux = cr_passive_row_flux(
+        fluxes[rho],
+        primitives_left_interface[e],
+        primitives_right_interface[e],
+        primitives_left_interface[rho],
+        primitives_right_interface[rho],
+    )
+    advective_change = (
+        1
+        / config.grid_spacing
+        * _stencil_add(advective_flux, indices=(0, 1), factors=(1.0, -1.0), axis=axis - 1)
+        * dt
+    )
+    closure_change = conserved_change[e] - advective_change
+    weight = (gamma_cr - 1.0) * primitive_state[rho] ** (1.0 - gamma_cr)
+    return conserved_change.at[registered_variables.cosmic_ray_entropy_index].add(
+        weight * closure_change
+    )

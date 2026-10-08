@@ -1041,6 +1041,32 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
             "require solver_mode == FINITE_VOLUME, split == UNSPLIT and "
             "time_integrator == RK2_SSP (flux_realizability_cap acts only with them)."
         )
+    # cr_entropy is ignored without grey CRs (no s_cr row is allocated).
+    if cr_grey_config.grey_cosmic_rays and cr_grey_config.cr_entropy:
+        if not (
+            config.solver_mode == FINITE_VOLUME
+            and config.split == UNSPLIT
+            and config.time_integrator == RK2_SSP
+            and config.riemann_solver in (HLL, HLLC, HLLC_LM)
+        ):
+            # Only HLL and HLLC(_LM) give the CR rows their own flux
+            # (hll._grey_cr_hll_rows), which carries s_cr with the mass flux.
+            raise ValueError(
+                "cosmic_ray_grey_config.cr_entropy requires "
+                "solver_mode == FINITE_VOLUME, split == UNSPLIT, "
+                "time_integrator == RK2_SSP and riemann_solver in (HLL, HLLC, HLLC_LM)."
+            )
+        # Streaming is out of scope for the CR entropy scheme (diffusion limit
+        # of Jiang & Oh 2018 only), and the gas dual-energy entropy row is not
+        # yet re-synced after the transfer (DESIGN.md "Open: conservative CR
+        # entropy at shocks", step 3).
+        if cr_grey_config.streaming:
+            raise NotImplementedError(
+                "cr_entropy does not support streaming (the CR entropy scheme covers "
+                "the diffusion limit of Jiang & Oh 2018 only)."
+            )
+        if config.dual_energy:
+            raise NotImplementedError("cr_entropy with dual_energy is not implemented yet.")
     if cr_grey_config.anisotropic_transport and not config.mhd:
         raise ValueError(
             "cosmic_ray_grey_config.anisotropic_transport requires mhd (a magnetic "

@@ -35,6 +35,7 @@ from astronomix.option_classes.simulation_params import SimulationParams
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     cr_closure_signal_speed,
     cr_flux_rows,
+    cr_passive_row_flux,
     cr_pressure_coupling_speed,
 )
 from astronomix._stencil_operations._stencil_operations import _stencil_add
@@ -184,11 +185,21 @@ def _grey_cr_hll_rows(
         [registered_variables.cosmic_ray_e_index] + list(cr_flux_rows(registered_variables))
     )
     q_L, q_R = conserved_left[rows], conserved_right[rows]
-    advective = mass_flux * jnp.where(mass_flux >= 0, q_L / rho_L, q_R / rho_R)
+    advective = cr_passive_row_flux(mass_flux, q_L, q_R, rho_L, rho_R)
     closure = 0.5 * (
         fluxes_left[rows] - u_L * q_L + fluxes_right[rows] - u_R * q_R
     ) - 0.5 * signal_speed * (q_R - q_L)
-    return fluxes.at[rows].set(advective + closure)
+    fluxes = fluxes.at[rows].set(advective + closure)
+
+    # CR entropy (cosmic_ray_grey_config.cr_entropy): the advective part only,
+    # with the same mass flux and upwinding as e_cr, so s_cr / rho = K_cr is
+    # carried across contacts and shocks unchanged.
+    if registered_variables.cosmic_ray_entropy_active:
+        s = registered_variables.cosmic_ray_entropy_index
+        fluxes = fluxes.at[s].set(
+            cr_passive_row_flux(mass_flux, conserved_left[s], conserved_right[s], rho_L, rho_R)
+        )
+    return fluxes
 
 
 # @jaxtyped(typechecker=typechecker)

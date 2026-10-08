@@ -56,3 +56,45 @@ def e_cr_from_pressure(
         The cosmic-ray energy density.
     """
     return p_cr / (gamma_cr - 1)
+
+
+@jax.jit
+def cr_entropy_from_e_cr(
+    e_cr: Float[Array, "..."],
+    rho: Float[Array, "..."],
+    gamma_cr: Union[float, Float[Array, ""]],
+) -> Float[Array, "..."]:
+    """CR entropy density ``s_cr = P_cr * rho^(1 - gamma_cr)`` (= ``rho * K_cr``).
+
+    Conserved by adiabatic flow, ``d s_cr/dt + div(s_cr u) = 0`` (Semenov,
+    Kravtsov & Diemer 2021, eq. 8); see DESIGN.md "Open: conservative CR entropy
+    at shocks".
+
+    Args:
+        e_cr: The cosmic-ray energy density.
+        rho: The gas density.
+        gamma_cr: The cosmic-ray adiabatic index.
+
+    Returns:
+        The CR entropy density.
+    """
+    return pressure_from_e_cr(e_cr, gamma_cr) * rho ** (1.0 - gamma_cr)
+
+
+@jax.jit
+def e_cr_from_cr_entropy(
+    s_cr: Float[Array, "..."],
+    rho: Float[Array, "..."],
+    gamma_cr: Union[float, Float[Array, ""]],
+) -> Float[Array, "..."]:
+    """Inverse of :func:`cr_entropy_from_e_cr` at fixed ``rho``.
+
+    Args:
+        s_cr: The CR entropy density.
+        rho: The gas density.
+        gamma_cr: The cosmic-ray adiabatic index.
+
+    Returns:
+        The cosmic-ray energy density.
+    """
+    return e_cr_from_pressure(s_cr * rho ** (gamma_cr - 1.0), gamma_cr)

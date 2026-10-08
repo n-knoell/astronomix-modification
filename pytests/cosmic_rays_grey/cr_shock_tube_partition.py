@@ -113,6 +113,7 @@ from astronomix.option_classes.simulation_config import (
     BoundarySettings1D,
     DOUBLE_PRECISION,
     OPEN_BOUNDARY,
+    REFLECTIVE_BOUNDARY,
     DOUBLE_MINMOD,
     HLL,
     HLLC,
@@ -201,8 +202,12 @@ def reference_structure(tube):
     )
 
 
-def run_shock_tube(tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HLL):
-    """Run a shock tube in float64. Returns ``x, rho, u, P_th, P_cr`` (numpy)."""
+def run_shock_tube(tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HLL, cr_entropy=False):
+    """Run a shock tube in float64. Returns ``x, rho, u, P_th, P_cr`` (numpy).
+
+    ``cr_entropy`` switches on the conservative CR entropy scheme
+    (``CosmicRayGreyConfig.cr_entropy``).
+    """
     config = SimulationConfig(
         solver_mode=FINITE_VOLUME,
         dimensionality=1,
@@ -214,7 +219,7 @@ def run_shock_tube(tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HL
         numerical_precision=DOUBLE_PRECISION,
         limiter=limiter,
         riemann_solver=riemann_solver,
-        cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True),
+        cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, cr_entropy=cr_entropy),
     )
     registered_variables = get_registered_variables(config)
     x = get_helper_data(config).geometric_centers
@@ -588,7 +593,161 @@ def test_cr_shock_tube_mach_scan(
         assert abs(r["dK_L"]) < max_control_error, f"M={r['mach']} N={r['n']}: dK_cr,L = {r['dK_L']:.3e}."
 
 
+def test_cr_entropy_shock_partition(
+    max_entropy_error=1e-6,
+    max_entropy_error_gupta_b=1e-4,
+    max_plateau_error=2e-3,
+):
+    """A6.1-A6.3 with ``CosmicRayGreyConfig.cr_entropy``: the CRs pass the shock adiabatically.
+
+    Acceptance test of the conservative CR entropy scheme (DESIGN.md "Open: conservative CR
+    entropy at shocks"). Same tubes and metrics as the energy-scheme tests above, with the flag
+    on; the energy scheme runs alongside for the figure.
+
+    Args:
+        max_entropy_error: Bound on ``|dK_cr,2|`` (measured <= 2e-9 at N = 1600 for all tubes
+            and all ``C_cfl``; energy scheme 1-11%).
+        max_entropy_error_gupta_b: Bound for Gupta B at N = 4000, whose plateau is 18 cells
+            wide in the window (measured 7e-6).
+        max_plateau_error: Bound on the shocked-plateau ``P_th``, ``P_cr`` and ``rho`` errors
+            (measured <= 7e-4; truncation of the smeared shock).
+    """
+    cases = [
+        ("item 6", ITEM6, 1600, 0.1),
+        ("item 6", ITEM6, 1600, 0.4),
+        ("item 6", ITEM6, 1600, 0.8),
+        ("Gupta A", GUPTA_A, 2000, 0.4),
+        ("Gupta B", GUPTA_B, 4000, 0.4),
+        ("M = 2", pfrommer_mach_tube(2.0), 1600, 0.4),
+        ("M = 10", pfrommer_mach_tube(10.0), 1600, 0.4),
+        ("M = 100", pfrommer_mach_tube(100.0), 1600, 0.4),
+    ]
+    rows = []
+    profiles = {}
+    for label, tube, n, cfl in cases:
+        ref = reference_structure(tube)
+        per_flag = {}
+        for flag in (False, True):
+            x, rho, _, p_th, p_cr = run_shock_tube(tube, n, C_cfl=cfl, cr_entropy=flag)
+            per_flag[flag] = partition_metrics(tube, x, rho, p_th, p_cr, ref)
+            if cfl == 0.4 and label in ("item 6", "Gupta A", "M = 10"):
+                profiles[label, flag] = (x, p_cr / rho**GAMMA_CR / (tube.right[3] / tube.right[0] ** GAMMA_CR), ref)
+        rows.append((label, n, cfl, per_flag[False], per_flag[True]))
+        m = per_flag[True]
+        print(
+            f"{label:8s} N={n:5d} C_cfl={cfl}  energy scheme dK_2={per_flag[False]['dK_2']:+.3e} | "
+            f"cr_entropy dK_2={m['dK_2']:+.3e} dP_th_2={m['dP_th_2']:+.2e} dP_cr_2={m['dP_cr_2']:+.2e} "
+            f"drho_2={m['drho_2']:+.2e} spurious={m['spurious_fraction']:+.2e}"
+        )
+
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+    for ax, label in zip(axes[:3], ("item 6", "Gupta A", "M = 10")):
+        for flag, style, name in ((False, "--", "energy scheme"), (True, "-", "cr_entropy")):
+            x, k_ratio, ref = profiles[label, flag]
+            width = ref["x_shock"] - ref["x_contact"]
+            m = (x > ref["x_contact"] - 0.3 * width) & (x < ref["x_shock"] + 0.2 * width)
+            ax.plot(x[m], k_ratio[m] - 1.0, style, label=name)
+        ax.axhline(0.0, color="black", lw=0.8, label="reference (adiabatic CRs)")
+        ax.axvline(ref["x_contact"], color="grey", ls=":")
+        ax.axvline(ref["x_shock"], color="grey", ls=":")
+        ax.set_ylim(-0.03, 0.15)
+        ax.set_xlabel("x")
+        ax.set_ylabel(r"$K_{cr}/K_{cr,R} - 1$")
+        ax.set_title(f"{label} (M = {ref['mach']:.2f})")
+        ax.legend()
+    labels = [f"{r[0]}\nN={r[1]}, C={r[2]}" for r in rows]
+    xs = np.arange(len(rows))
+    axes[3].bar(xs - 0.2, [max(abs(r[3]["dK_2"]), 1e-16) for r in rows], 0.4, label="energy scheme")
+    axes[3].bar(xs + 0.2, [max(abs(r[4]["dK_2"]), 1e-16) for r in rows], 0.4, label="cr_entropy")
+    axes[3].set_yscale("log")
+    axes[3].set_ylim(1e-15, 1e3)  # room for the legend above the bars
+    axes[3].set_xticks(xs, labels, rotation=60, fontsize=7)
+    axes[3].set_ylabel(r"$|K_{cr,2}/K_{cr,R} - 1|$")
+    axes[3].set_title("Post-shock CR entropy error")
+    axes[3].legend()
+    worst = max(abs(r[4]["dK_2"]) for r in rows)
+    fig.suptitle(
+        f"Conservative CR entropy (cr_entropy=True): post-shock |dK_cr,2| <= {worst:.1e} "
+        f"(energy scheme up to {100 * max(abs(r[3]['dK_2']) for r in rows):.1f}%)"
+    )
+    fig.tight_layout()
+    PICS_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(PICS_DIR / "cr_shock_tube_cr_entropy_test.svg")
+    plt.close(fig)
+
+    for label, n, cfl, _, m in rows:
+        bound = max_entropy_error_gupta_b if label == "Gupta B" else max_entropy_error
+        assert abs(m["dK_2"]) < bound, f"{label} N={n} C_cfl={cfl}: dK_cr,2 = {m['dK_2']:.3e}."
+        for key in ("dP_th_2", "dP_cr_2", "drho_2"):
+            assert abs(m[key]) < max_plateau_error, f"{label} N={n} C_cfl={cfl}: {key} = {m[key]:.3e}."
+
+
+def test_cr_shock_tube_energy_conservation(num_cells=800, tol=1e-12):
+    """A6.5: mass and total energy ``E_gas + e_cr`` in a closed (reflecting) shock tube.
+
+    The ``-v.grad P_cr`` / ``-P_cr div u`` coupling telescopes, so the energy scheme conserves
+    the total to round-off; the ``cr_entropy`` transfer moves energy between ``e_cr`` and the
+    gas only, so it must too. Item-6 and Gupta A tubes, run to 3 t_end (several wall
+    reflections), both schemes. Measured: mass <= 2e-16, energy <= 5e-14.
+
+    Args:
+        num_cells: Cell count.
+        tol: Bound on the relative drift of mass and total energy.
+    """
+    for label, tube in (("item 6", ITEM6), ("Gupta A", GUPTA_A)):
+        for flag in (False, True):
+            config = SimulationConfig(
+                solver_mode=FINITE_VOLUME,
+                dimensionality=1,
+                num_cells=num_cells,
+                box_size=1.0,
+                boundary_settings=BoundarySettings1D(
+                    left_boundary=REFLECTIVE_BOUNDARY, right_boundary=REFLECTIVE_BOUNDARY
+                ),
+                numerical_precision=DOUBLE_PRECISION,
+                cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, cr_entropy=flag),
+            )
+            registered_variables = get_registered_variables(config)
+            x = get_helper_data(config).geometric_centers
+            left = x < X0
+            state = jnp.zeros((registered_variables.num_vars, num_cells))
+            rows = (
+                registered_variables.density_index,
+                registered_variables.velocity_index,
+                registered_variables.pressure_index,
+            )
+            for row, value_l, value_r in zip(rows, tube.left[:3], tube.right[:3]):
+                state = state.at[row].set(jnp.where(left, value_l, value_r))
+            state = state.at[registered_variables.cosmic_ray_e_index].set(
+                jnp.where(left, tube.left[3], tube.right[3]) / (GAMMA_CR - 1.0)
+            )
+            config = finalize_config(config, state.shape)
+            params = SimulationParams(
+                t_end=3 * tube.t_end,
+                gamma=GAMMA,
+                cosmic_ray_grey_params=CosmicRayGreyParams(gamma_cr=GAMMA_CR, reduced_streaming_speed=0.0),
+            )
+            final = np.asarray(time_integration(state, config, params, registered_variables))
+
+            def totals(s):
+                rho = s[registered_variables.density_index]
+                u = s[registered_variables.velocity_index]
+                p_th = s[registered_variables.pressure_index]
+                e_cr = s[registered_variables.cosmic_ray_e_index]
+                return rho.sum(), (p_th / (GAMMA - 1.0) + 0.5 * rho * u**2 + e_cr).sum()
+
+            (m0, e0), (m1, e1) = totals(np.asarray(state)), totals(final)
+            d_mass, d_energy = abs(m1 / m0 - 1.0), abs(e1 / e0 - 1.0)
+            print(f"{label:8s} cr_entropy={flag!s:5}  mass drift {d_mass:.1e}  energy drift {d_energy:.1e}")
+            assert not np.any(np.isnan(final))
+            assert d_mass < tol and d_energy < tol, (
+                f"{label} cr_entropy={flag}: mass drift {d_mass:.2e}, energy drift {d_energy:.2e}."
+            )
+
+
 if __name__ == "__main__":
     test_cr_shock_tube_partition()
     test_cr_shock_tube_gupta()
     test_cr_shock_tube_mach_scan()
+    test_cr_entropy_shock_partition()
+    test_cr_shock_tube_energy_conservation()

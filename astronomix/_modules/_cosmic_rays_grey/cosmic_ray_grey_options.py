@@ -116,6 +116,19 @@ class CosmicRayGreyConfig(NamedTuple):
     #: those cells, >= 1 for resolved shocks.
     dsa_velocity_consistency: float = 0.5
 
+    #: conservative CR entropy (DESIGN.md "Open: conservative CR entropy at
+    #: shocks"): advect s_cr = P_cr rho^(1 - gamma_cr) as an extra passive row,
+    #: with no -P_cr div u work, and at the end of every hydro step set
+    #: e_cr = e(s_cr), giving the difference to the gas thermal energy (total
+    #: energy stays exact). CRs then pass through shocks adiabatically instead
+    #: of taking part of the numerical shock dissipation (Phase A plan A6.1-
+    #: A6.3: K_cr 0.4-11% too high). The closure (diffusion) part of the e_cr
+    #: flux is added to s_cr cell by cell (cr_grey_sources.
+    #: cr_entropy_closure_source), so diffusion is unchanged. FV, unsplit RK2,
+    #: HLL/HLLC only. Not with streaming (out of scope: the CR model is the
+    #: diffusion limit of Jiang & Oh 2018) or the gas dual_energy (not yet).
+    cr_entropy: bool = False
+
 
 class CosmicRayGreyParams(NamedTuple):
 

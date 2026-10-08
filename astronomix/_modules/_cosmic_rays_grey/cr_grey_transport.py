@@ -185,6 +185,26 @@ def cr_flux_rows(registered_variables: RegisteredVariables) -> tuple:
     return tuple(row for row in rows if row >= 0)
 
 
+def cr_passive_row_flux(mass_flux, q_left, q_right, rho_left, rho_right):
+    """Advective interface flux of a density-like CR row: the gas mass flux
+    times the upwind ``q / rho``.
+
+    Used for the advective part of the ``e_cr`` / ``F_cr`` rows and for the
+    CR entropy row (``hll._grey_cr_hll_rows``), and recomputed with the same
+    arithmetic to split the ``e_cr`` flux into its advective and closure
+    parts for the CR entropy source (``cr_grey_sources.cr_entropy_closure_source``).
+
+    Args:
+        mass_flux: The gas mass flux at the interfaces.
+        q_left, q_right: The row's left/right interface states.
+        rho_left, rho_right: The left/right interface densities.
+
+    Returns:
+        The interface flux.
+    """
+    return mass_flux * jnp.where(mass_flux >= 0, q_left / rho_left, q_right / rho_right)
+
+
 @partial(jax.jit, static_argnames=["registered_variables"])
 def cr_pressure_coupling_speed(
     primitive_state: STATE_TYPE,

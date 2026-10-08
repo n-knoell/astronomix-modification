@@ -42,7 +42,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A6.2 Gupta et al. (2021) tubes A and B | 2 | done | `cr_shock_tube_partition.py` | A (CR-dominated, M 2.6): `K_cr,2` +6.3%, `P_th,2` -10.5%, spurious 19% of e_th; B (M 9.9): +10.6% | 2026-10-08 |
 | A6.3 Mach-number scan (Pfrommer et al. 2006) | 2 | done | `cr_shock_tube_partition.py` | `K_cr,2` error 0.4% (M 1.4) -> saturates 11.2% (M >= 30); spurious/e_th peaks 4.2% at M 3, ~M^-2 above | 2026-10-08 |
 | A6.4 reference-solver regression tests | 2 | todo | | | |
-| A6.5 conservation in the shock tube | 3 | todo | | | |
+| A6.5 conservation in the shock tube | 3 | done | `cr_shock_tube_partition.py` | mass <= 2e-16, E_gas + e_cr <= 5e-14 (reflecting box, both schemes) | 2026-10-08 |
 | A6.6 finite-`kappa` two-moment shock tube | 3 | todo | | | |
 | A6.7 remedy evaluation (decision) | -- | done | DESIGN.md | option a (CR entropy, Semenov et al. 2021 eq. 8 + Et+Scr energy bookkeeping); design note written | 2026-10-08 |
 | **Cross-cutting** | | | | | |
@@ -74,6 +74,93 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-08: CR entropy step 2 (diffusion carried by s_cr) + full-suite reruns
+
+- **Scope decision (user):** streaming is out of scope. The CR model is the diffusion limit of
+  Jiang & Oh (2018), so `cr_entropy` with `streaming=True` raises.
+- **Code (uncommitted):**
+  - `cr_grey_sources.cr_entropy_closure_source`, called per axis in each RK stage, adds the
+    closure (diffusion) part of the `e_cr` change to `s_cr` with the cell weight
+    `(gamma_cr - 1) rho^(1 - gamma_cr)`;
+  - the shared helper `cr_grey_transport.cr_passive_row_flux`;
+  - `cr_entropy` validation only when `grey_cosmic_rays` is on: a CR-free config with the flag
+    set raised before, which the flag-on suite found in `cr_divergence_b_preservation`.
+- **Unit checks:**
+  - Static heavy gas, 2D MHD anisotropic diffusion: flag on vs off agree to 3e-14.
+  - Stratified static rho: differences 1.0e-3 / 2.5e-4 / 8.0e-5 at N = 32 / 64 / 128. This is
+    HLL contact smearing, which mixes gas of different `K_cr`, so it is truncation error.
+- **Flag off is still bitwise identical** to HEAD `54c4655` (1D relaxation shock tube, 2D MHD
+  anisotropic).
+- **Flag-off regression of the full CR suite** (step-1 code; step 2 is bitwise-equal with the
+  flag off):
+  - 50/52 pass.
+  - `test_cr_ring_flux_cap_alone` fails by design (plan Sec. 3.1, to be marked xfail).
+  - `test_cr_phase_d_injection_efficiency_inference` crashed on GPU index 2 with
+    `CUDA_ERROR_ILLEGAL_ADDRESS` (the known flaky card). Rerun on GPU 0 it passes, identical to
+    HEAD: AD-FD 9.04e-4, mach_scale 1.06358.
+  - Items 11 and 15 OOM at their default 256^3 / 300^3 and pass at 128^3.
+- **Flag-on run of the full CR suite** (default forced on in the runner,
+  `/export/scratch/nknoell/phaseA/regress_step2_on/`):
+  - 43 pass, plus divergence-B after the validation fix.
+  - Rejected by design: item 5, `cr_energy_budget` and `cr_mhd_energy_budget` (they use
+    streaming).
+  - Unchanged failure: the ring cap-alone test.
+  - `test_cr_anisotropic_3d` OOMs at 128^3 float64 with the default 75% preallocation; rerun
+    with `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95` it passes, with D_par/kappa 1.02607 and D_perp
+    0.01662 at N = 128, identical to flag off to 5 digits. The flag-off run is already at the
+    limit: XLA warns it cannot get below 9.15 GiB.
+- **Flag off vs on:**
+
+  | test | flag off | flag on |
+  |---|---|---|
+  | item 8 (48^3) E_cr/E_tot KR13 / CS14 | 0.0877 / 0.0457 | 0.0836 / 0.0436 (-4.7%) |
+  | item 9 Test A rho/u/P err; Test B du/dx | 0.13/0.15/0.15%; 26% | 0.09/0.13/0.08%; 20% |
+  | ring 3a kappa_perp,num/kappa_par (N 50-400) | 4.08e-2 ... 3.26e-3 | 4.00e-2 ... 3.26e-3 |
+  | Phase D kappa | 0.01974 | 0.01974 |
+  | Phase D injection mach_scale; AD-FD | 1.06358; 9.0e-4 | 1.06371; 2.6e-3 |
+  | divergence-B (CR iso / aniso) | 6.1e-15 / 7.1e-15 | 6.7e-15 / 6.4e-15 |
+  | T3 3D diffusion, N 128: D_par/kappa, D_perp | 1.02607, 0.01662 | 1.02607, 0.01662 |
+
+  The item-8 drop is the first measurement on a 3D shock problem: ~5% of the DSA test's
+  CR energy was spurious shock gain from the energy scheme.
+
+### 2026-10-08: CR entropy implementation step 1 -- post-shock K_cr exact to round-off
+
+- **Code (uncommitted):** `CosmicRayGreyConfig.cr_entropy` (default off), the
+  `cosmic_ray_entropy_index` row, the s_cr flux in `hll._grey_cr_hll_rows`,
+  `cr_grey_sources.cr_entropy_sync` / `cr_entropy_to_energy` in
+  `_evolve_gas_state_unsplit`, and config validation. Details in DESIGN.md
+  "Open: conservative CR entropy at shocks" -> Status.
+- **Design correction:** one sync per hydro step after the operator-split CR sources, not per
+  RK stage. The CR sources are not applied inside the stages, and one sync makes
+  `e_cr = e(s_cr)` exact after the RK average.
+- **Acceptance (new tests in `cr_shock_tube_partition.py`, CPU float64):**
+  - `test_cr_entropy_shock_partition` passes; figure
+    `pics/06_shock_tube/cr_shock_tube_cr_entropy_test.svg`.
+
+    | case | energy scheme dK_cr,2 | cr_entropy dK_cr,2 | cr_entropy dP_th,2 |
+    |---|---|---|---|
+    | item 6, N 1600, C_cfl 0.1 / 0.4 / 0.8 | 1.21 / 1.06 / 0.83% | -7e-14 / -2e-14 / -1e-14 | -3e-6 / -5e-5 / -1e-4 |
+    | Gupta A, N 2000 | 6.35% | 1.5e-14 | -8e-5 |
+    | Gupta B, N 4000 (18-cell window) | 10.6% | -7.3e-6 | -9.6e-4 |
+    | M = 2 / 10 / 100, N 1600 | 2.6 / 10.6 / 11.2% | 2e-14 / 6e-10 / -1e-9 | -1e-4 / -5.5e-4 / -5.7e-4 |
+
+  - Full scan (51 runs, `/export/scratch/nknoell/phaseA/ent/`): every resolved run has
+    |dK_cr,2| <= 2e-9. Spurious CR energy per e_th is <= 1e-4 (was up to 19%). The CFL,
+    limiter and Riemann-solver dependence is gone. What remains are plateau errors <= 1e-3
+    (truncation at the smeared shock, ~0.4 dx shock offset). At N = 400 the M >= 30 windows
+    still see the smeared contact (up to 1%), as before.
+  - `test_cr_shock_tube_energy_conservation` (A6.5) passes: reflecting box, 3 t_end, both
+    schemes; mass <= 2.2e-16, total energy <= 4.5e-14.
+- **Flag off is bitwise unchanged:** a 1D relaxation shock tube and a 2D MHD anisotropic
+  transport run give identical final states with the committed code (HEAD `54c4655`
+  worktree) and the working tree (max |diff| = 0).
+- **Regression of the full CR suite (flag off; GPUs pinned by UUID, from a scratch copy so
+  committed figures are not touched):** see the next entry.
+- **Not yet (step 2):** the closure-flux and streaming sources on s_cr. Until then
+  `cr_entropy` is only correct with `reduced_streaming_speed = 0`; streaming and dual_energy
+  raise `NotImplementedError`.
 
 ### 2026-10-08: D2 -> option a; design note written (no code)
 
