@@ -116,9 +116,7 @@ def test_cr_streaming_1d(tol: float = 1e-2):
             left_boundary=OPEN_BOUNDARY, right_boundary=OPEN_BOUNDARY
         ),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
-            grey_cosmic_rays=True, streaming=True,
-            # streaming is out of scope for the CR entropy scheme
-            cr_entropy=False,
+            grey_cosmic_rays=True, streaming=True
         ),
     )
     registered_variables = get_registered_variables(config)

@@ -1672,7 +1672,7 @@ literature table was reproduced (only the method was validated, via the
 degenerate-limit checks above), so this is a genuine, independently-checked
 comparison rather than a tuned-to-pass one.
 
-## Resolved: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08, default on 2026-10-09)
+## Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08, implemented opt-in, default off)
 
 Not implemented. The user picked option a of `astronomix_CR_phaseA_test_plan.md` A6.7 on
 2026-10-08; this note is for review before any code changes.
@@ -1833,7 +1833,8 @@ row and two `pow` evaluations per cell per stage.
   is bitwise identical to HEAD `54c4655`, including dual-energy runs with and without CRs
   (`_dual_energy_select` was refactored).
 
-- **Default on (2026-10-09).** The M7 A/B runs showed a real difference (user's criterion):
+- **Default on for part of 2026-10-09, then reverted to off (user decision).** History:
+  the M7 A/B runs showed a real difference, by the user's criterion:
   - E_cr at 250 Myr -19% / -31% (v_red 1000, seeds 42 / 43) and -33% (v_red 1e4);
   - E_cr/injected 1.41-1.75 -> 1.07-1.16;
   - eta(1 kpc) 0.21-0.28 -> 0.38-0.44, against a seed scatter of 0.02-0.06.
@@ -1842,6 +1843,26 @@ row and two `pow` evaluations per cell per stage.
   `cr_entropy=False`: CWB (split scheme), the streaming tests, and the A6.1-A6.3
   energy-scheme controls. Items 7, 8, 10, 11 and 15 are re-baselined (their docstrings
   carry both numbers).
+
+- **Reverted to off (2026-10-09, after PROGRESS_PHASEA.md "is the cr_entropy default worth
+  it?").** The energy-conserving transfer is the "Et+Scr" scheme family of Gupta et al. (2021),
+  whose spurious waves they and Kudoh & Hanawa (2016) report.
+  - It drains the thermal energy of CR-dominated gas: M7 halo P_th x1.9e-3 (v_red 1000) and
+    x1.2e-4 (v_red 1e4), item-2 gas entropy errors up to 84%.
+  - So the M7 A/B differences cannot be credited to the shock fix.
+  - The figures and docstrings re-baselined for the default are reverted to their flag-off
+    state; the tests keep the metric prints added for the re-baseline.
+  - Candidate next step: a shock-only transfer (Semenov et al. 2021 style; a 1D prototype
+    beats both variants on item 2 and keeps post-shock K_cr exact, at the cost of exact energy
+    conservation, drift 1e-4 to 3e-3).
+- **Known limitation (found 2026-10-09, item-2 re-baseline):** in strongly CR-dominated gas
+  (P_cr/P_th >> 1) the transfer that keeps total energy exact moves the energy scheme's
+  truncation-level CR error into the thin gas.
+  - The cold rarefaction shows it, and so does item 2, where P_cr/P_th = 33: the ringing
+    behind the compression triples, with P_th ringing at ~50% of P_th.
+  - At P_cr/P_th ~ 1 the effect is neutral or positive.
+  - Open: accept, or limit the transfer relative to the gas thermal energy
+    (PROGRESS_PHASEA.md 2026-10-09).
 
 ### Steps
 

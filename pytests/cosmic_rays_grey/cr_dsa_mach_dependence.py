@@ -68,12 +68,6 @@ check):
      floating-point precision, not just approximately. This is what actually
      proves the injection code is *using* the Mach-dependent formula and not
      something else, independent of the aggregate-energy checks above.
-
-**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
-DESIGN.md "Resolved: conservative CR entropy at shocks"; flag off / on at N = 48):
-``E_cr / E_total`` KR13 0.0877 / 0.0836, CS14-like 0.0457 / 0.0436 (-4.7% each: the energy
-scheme's spurious CR gain at the shocks), CS14/KR13 ratio 0.5214 / 0.5213 (rel. err 4.28% /
-4.26%), surface Mach numbers and the cross-check unchanged.
 """
 
 # ==== GPU selection ====

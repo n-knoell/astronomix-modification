@@ -70,15 +70,6 @@ identity above, which only compares the two runs against each other, and
 runs share the same, biased, injected-energy budget -- ``dsa_efficiency``
 only redirects a couple of percent of it into ``e_cr``), calibrated to
 agree to ~4e-6 relative error.
-
-**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
-DESIGN.md "Resolved: conservative CR entropy at shocks"; same code, flag off / on):
-``E_cr / E_total`` (DSA run) 0.0438 / 0.0552 (+26%), energy-partition identity 4.4e-4 /
-3.2e-4, control-vs-DSA total energy 1.9e-5 / 1.8e-5, Weaver forward shock 1.2% and interior
-pressure 23.5% in both (CR-free control run, identical). The sign is the opposite of the
-Sedov/DSA tests: the energy scheme loses CR energy in adiabatic expansion (Phase A cold
-rarefaction test: -9%), and the shocked wind expands for most of the run. The older numbers
-above (``E_cr`` ~1.6%) predate the adaptive DSA sampling and are kept as history.
 """
 
 # ==== GPU selection ====

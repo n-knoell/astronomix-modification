@@ -232,6 +232,7 @@ def test_cr_adiabatic_compression(edge_margin: float = 0.1, tol: float = 5e-3):
     fig.savefig(pics_dir / "cr_adiabatic_compression_test.svg")
     plt.close(fig)
 
+    print(f"max |e_cr/e_cr0 / (rho/rho0)^gamma_cr - 1| (inner 80%) {max_rel_err:.4e}, max rho/rho0 {float(jnp.max(rho_ratio)):.4f}")
     assert max_rel_err < tol, (
         f"e_cr does not scale as rho^gamma_cr under adiabatic compression: "
         f"max pointwise relative error {max_rel_err:.4e} >= tol {tol}."

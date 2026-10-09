@@ -55,7 +55,7 @@ Usage::
 
     python m7_girichidis_pilot.py [both|thermal|cr] [--setup-only] [--res=F] [--t-end-myr=T] [--snapshots=N] [--sn-radius-pc=R] [--out-dir=DIR]
         [--no-mhd] [--no-self-gravity] [--no-jeans-floor] [--mhd-tolerance=double|single]
-        [--half-height-kpc=H] [--kappa-perp-cgs=K] [--v-red-kms=V] [--seed=N] [--no-flux-cap] [--guard] [--energy-scheme] [--tag=NAME]
+        [--half-height-kpc=H] [--kappa-perp-cgs=K] [--v-red-kms=V] [--seed=N] [--no-flux-cap] [--guard] [--cr-entropy] [--tag=NAME]
 
 ``both`` (default) is their "thermal + CR" run (1e51 erg thermal + 1e50 erg CR
 per SN), ``thermal`` their thermal-only run (no CR transport at all, as in the
@@ -293,11 +293,9 @@ FLUX_CAP = "--no-flux-cap" not in sys.argv
 # v_red ~ 1e4 km/s, guard on never does). --guard switches it back on. Off-guard runs carry
 # "_noguard" in OUT_SUFFIX, so they never overwrite the earlier guard-on outputs.
 GUARD = "--guard" in sys.argv
-# Conservative CR entropy (CosmicRayGreyConfig.cr_entropy, DESIGN.md "Resolved: conservative CR
-# entropy at shocks") is on by default since 2026-10-09; --energy-scheme switches it off.
-# Entropy runs carry "_crent" in OUT_SUFFIX, so earlier (energy-scheme) outputs keep their names.
-# (--cr-entropy is still accepted, as a no-op, for the A/B runs of 2026-10-09.)
-CR_ENTROPY = "--energy-scheme" not in sys.argv
+# --cr-entropy: conservative CR entropy (CosmicRayGreyConfig.cr_entropy, off by default; DESIGN.md
+# "Open: conservative CR entropy at shocks"); "_crent" goes into OUT_SUFFIX.
+CR_ENTROPY = "--cr-entropy" in sys.argv
 # --tag=NAME is appended to OUT_SUFFIX (e.g. short check runs that must not overwrite outputs).
 TAG = _OPTS.get("tag")
 OUT_SUFFIX = (f"_{MODE}{'_mhd' if MHD else ''}{'_sg' if SELF_GRAVITY else ''}"

@@ -246,6 +246,7 @@ def test_cr_isotropic_diffusion_convergence(
     fig.savefig(pics_dir / "cr_isotropic_diffusion_convergence_test.svg")
     plt.close(fig)
 
+    print(f"L2 errors {[f'{e:.3e}' for e in errors]} at N = {list(resolutions)}, order (N <= 512) {convergence_order:.3f}")
     assert convergence_order >= min_order, (
         f"CR isotropic diffusion did not converge as expected: order "
         f"{convergence_order:.3f} < min {min_order}. Errors: {errors}."

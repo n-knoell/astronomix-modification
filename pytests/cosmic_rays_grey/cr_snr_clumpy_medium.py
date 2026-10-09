@@ -66,13 +66,6 @@ case) interprets similar behavior.
 See ``astronomix/_modules/_cosmic_rays_grey/PROGRESS.md``'s 2026-09-11
 entry for exact calibrated numbers, tolerances, and the reasoning behind
 this test's specific parameter choices.
-
-**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
-DESIGN.md "Resolved: conservative CR entropy at shocks"; flag off / on, run at N = 128 because
-256^3 does not fit an 11 GB GPU): ``E_cr / E_total`` uniform 0.0570 / 0.0545, clumpy 0.0532 /
-0.0511 (-4%), clumpy-vs-uniform DSA ``E_cr`` -6.7% / -6.3% (Check 2), energy-partition
-identity 6e-5-7e-5 / 9e-5-1e-4, total-energy conservation ~5e-5 in all four runs. The older
-numbers above are kept as history.
 """
 
 # ==== GPU selection ====

@@ -207,9 +207,7 @@ def run_shock_tube(tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HL
     """Run a shock tube in float64. Returns ``x, rho, u, P_th, P_cr`` (numpy).
 
     ``cr_entropy`` selects the conservative CR entropy scheme
-    (``CosmicRayGreyConfig.cr_entropy``). The library default is True since 2026-10-09; this
-    helper keeps False as its default so that A6.1-A6.3 keep measuring the energy scheme
-    (tracked controls).
+    (``CosmicRayGreyConfig.cr_entropy``, off by default like the library).
     """
     config = SimulationConfig(
         solver_mode=FINITE_VOLUME,
@@ -603,7 +601,7 @@ def test_cr_entropy_shock_partition(
 ):
     """A6.1-A6.3 with ``CosmicRayGreyConfig.cr_entropy``: the CRs pass the shock adiabatically.
 
-    Acceptance test of the conservative CR entropy scheme (DESIGN.md "Resolved: conservative CR
+    Acceptance test of the conservative CR entropy scheme (DESIGN.md "Open: conservative CR
     entropy at shocks"). Same tubes and metrics as the energy-scheme tests above, with the flag
     on; the energy scheme runs alongside for the figure.
 

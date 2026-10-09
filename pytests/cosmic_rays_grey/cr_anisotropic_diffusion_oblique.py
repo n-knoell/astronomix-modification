@@ -263,6 +263,7 @@ def test_cr_anisotropic_diffusion_oblique(leak_ratio_tol: float = 0.1):
     fig.savefig(pics_dir / "cr_anisotropic_diffusion_oblique_test.svg")
     plt.close(fig)
 
+    print(f"leak ratio anisotropic {float(leak_ratio_aniso):.4e}, isotropic {float(leak_ratio_iso):.4f}; parallel growth aniso {float(par_growth_aniso):.4e}, iso {float(par_growth_iso):.4e}")
     assert leak_ratio_aniso < leak_ratio_tol, (
         f"Cross-field leak too large: perp/parallel growth ratio "
         f"{leak_ratio_aniso:.4f} >= tol {leak_ratio_tol} for the anisotropic "

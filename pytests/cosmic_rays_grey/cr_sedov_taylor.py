@@ -40,13 +40,6 @@ clearly nonzero and physically bounded signal at ``dsa_efficiency = 0.1``,
 ambient + E_EXPLOSION vs. final thermal+kinetic+CR) independently holds to
 ~1.6e-5 (control) / ~1.7e-5 (DSA). (Old fixed 1-cell sampling: identity
 ~2.1e-5, conservation ~1.7e-5.)
-
-**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
-DESIGN.md "Resolved: conservative CR entropy at shocks"; same code, flag off / on):
-``E_cr / E_total`` 0.0434 / 0.0414 (-4.6%: the energy scheme also gave the CRs part of the
-numerical shock dissipation), energy-partition identity 3.3e-5 / 4.6e-5, total-energy
-conservation 1.6e-5 (control) and 1.7e-5 (DSA) in both. The older numbers above are kept as
-history.
 """
 
 # ==== GPU selection ====

@@ -152,9 +152,6 @@ def _run(
             grey_cosmic_rays=grey_cosmic_rays,
             diffusive_shock_acceleration=grey_cosmic_rays,
             streaming=grey_cosmic_rays,
-            # Streaming is out of scope for the CR entropy scheme (default since
-            # 2026-10-09); all runs of this test stay on the energy scheme.
-            cr_entropy=False,
             anisotropic_transport=grey_cosmic_rays and anisotropic_transport,
         ),
     )

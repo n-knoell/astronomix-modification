@@ -176,6 +176,7 @@ def test_cr_advection(l2_tol: float = 0.05, peak_retention_tol: float = 0.15):
     fig.savefig(pics_dir / "cr_advection_test.svg")
     plt.close(fig)
 
+    print(f"L2/amp {l2_err:.4e}, peak loss {peak_retention_loss:.4e}")
     assert l2_err < l2_tol, (
         f"CR pulse shape not preserved: L2 relative error {l2_err:.4f} "
         f">= tol {l2_tol}."

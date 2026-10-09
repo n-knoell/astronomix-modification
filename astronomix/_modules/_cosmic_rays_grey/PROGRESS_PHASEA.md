@@ -61,7 +61,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | ID | Question | Status | Outcome |
 |---|---|---|---|
 | D1 | Absolute `kappa_perp,num/kappa_par` budget for item 3? | open | |
-| D2 | Shock partition: change CR energy formulation or prescribe it? | **done: option a, default on** (2026-10-09) | Conservative CR entropy row synced into `e_cr` every RK stage; design note in DESIGN.md "Resolved: conservative CR entropy at shocks", awaiting review, not implemented |
+| D2 | Shock partition: change CR energy formulation or prescribe it? | **open again** (2026-10-09) | option a implemented as opt-in `cr_entropy` (default off after the 2026-10-09 analysis: the energy-conserving transfer drains CR-dominated gas); candidate: shock-only transfer (Semenov-style) |
 | D3 | Hard gates on library default (guard on) or production (guard off)? | open | |
 
 ## Infrastructure
@@ -74,6 +74,96 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-09: cr_entropy default reverted to off (user decision)
+
+- `CosmicRayGreyConfig.cr_entropy = False` again; flag docstring updated.
+- The M7 pilot is back to the opt-in `--cr-entropy` (suffix `_crent`).
+- Opt-outs added for the default (CWB `_cwb_setup.py`, `cr_streaming_1d`, `cr_energy_budget`,
+  `cr_mhd_energy_budget`) reverted to `a5c0968`.
+- Figures of items 1-4, 6-11 and 15 back to their flag-off versions: items 7, 8, 10, 11 and 15
+  from `a5c0968`, the rest from HEAD (never committed with the flag on). The re-baseline
+  notes are removed from the 13 test docstrings. The metric prints added for the re-baseline
+  stay; they do not depend on the flag.
+- Kept: the `cr_entropy` implementation (steps 1-3), its tests in `cr_shock_tube_partition.py`
+  (flag set explicitly), and the log entries below as history.
+- DESIGN.md section renamed back to "Open: conservative CR entropy at shocks".
+
+### 2026-10-09: is the cr_entropy default worth it? Analysis -> the energy-conserving transfer is harmful in CR-dominated gas
+
+- **Literature:**
+  - Gupta, Sharma & Mignone (2021), Sec. 5.1-5.2: their "Et+Scr" (total energy + CR entropy,
+    gas = remainder; our scheme family) "fails to maintain the pressure balance mode"
+    (spurious waves).
+  - Kudoh & Hanawa (2016) reduce those waves only with resolution or extra diffusion. Gupta et
+    al. also argue that constant CR entropy across shocks is not physically justified (DSA).
+  - Semenov, Kravtsov & Diemer (2021, Sec. 2.2) always follow CRs by entropy but take the gas
+    thermal energy from the total energy only in detected shock zones (gas entropy elsewhere),
+    and accept that strict energy conservation is lost.
+- **Item 2 resolution study** (P_cr/P_th = 33; off / on / shock-only prototype = transfer only
+  in Gupta-type shock zones, div u < 0 and total-pressure jump >= 0.5, widened 2 cells):
+  - Ringing in rho: N 256 0.017 / 0.033 / 0.011; 512 0.044 / 0.136 / 0.019; 1024 0.20 / 0.42 /
+    0.037; 2048 0.27 / 0.34 / 0.17.
+  - Gas entropy error max abs(K_th - 1): N 512 1.5e-3 / 0.34 / 4e-4; N 2048 0.09 / 0.82 / 0.02.
+  - CR entropy error: N 2048 9.9e-3 / 2.9e-2 / 1.6e-3.
+  - The ringing is a pre-existing energy-scheme instability that grows with N. "on" amplifies
+    it and wrecks the gas entropy; shock-only is best on every metric at every N.
+- **Shock-only prototype on the shock tests:** post-shock K_cr exact (<= 1e-10) like "on";
+  plateau P_th errors <= 1.1e-3. Energy no longer exact: drift 9e-5 in the reflecting box, 2.7e-3
+  in the cold rarefaction (K_cr there exact).
+- **M7 (late, >= 150 Myr):**
+  - 80-85% of the volume has P_cr/P_th > 30, the halo median is 110-200 with the flag off.
+  - With the flag on, the halo median P_th collapses by x1.9e-3 (v_red 1000) and x1.2e-4
+    (v_red 1e4), and T_halo with it. Halo rho and e_cr change little; the disc is unchanged.
+  - The transfer drains the expanding halo gas. The 50%-per-step safeguard does not limit the
+    cumulative drain.
+  - **So the M7 A/B differences (eta x1.4-2, less infall, E_cr -19..-33%) cannot be credited to
+    the shock fix.**
+- **Conclusion:**
+  - The energy-conserving variant of cr_entropy (current default) is not acceptable for
+    CR-dominated gas, which is M7's halo.
+  - The shock benefit itself is real (A6.1-A6.3; DSA tests ~5%), but needs a transfer
+    restricted to shocks (Semenov-style), not the global one.
+  - Recommendation to the user: revert the default to off now. Optionally implement and test
+    the shock-only variant (N-D shock mask, e.g. the existing `_dual_energy_shock_mask`), then
+    redo item 2, A6 and the M7 A/B before deciding again.
+
+### 2026-10-09: re-baseline of items 1-4, 6 and 9 for the cr_entropy default
+
+- **How:** flag off / on from the same code. Items 1 and 2, the oblique item-3 test, the
+  isotropic item-4 test and item 6 were rerun (`/export/scratch/nknoell/phaseA/rb3_{on,off}/`);
+  these five tests now print their gated metrics. Ring, diffusion rate (T1-T3) and item 9 reuse
+  the step-1 (off) and step-3 flag-on suite runs (same code paths). All pass in both. Figures in
+  `pics/01-04, 06, 09` regenerated; docstrings carry both sets of numbers.
+
+  | item | metric | off | on |
+  |---|---|---|---|
+  | 1 advection | L2/amp; peak loss | 6.035e-3; 3.715e-2 | 6.036e-3; 3.715e-2 |
+  | 2 adiabatic compression | invariant error; ringing amplitude in rho | 1.52e-3; 0.044 | 1.89e-3; **0.136** |
+  | 3 oblique | leak ratio | 2.182e-2 | 2.182e-2 |
+  | 3 ring 3a, N 50 / 400 | kappa_perp,num/kappa_par | 4.08e-2 / 3.26e-3 | 4.00e-2 / 3.26e-3 |
+  | 3/4 diffusion rate T1-T3 | all D/kappa | -- | identical to printed digits |
+  | 4 isotropic | L2 at N 128-1024; order | 1.69e-3 ... 1.27e-4; 1.555 | same; 1.555 |
+  | 6 shock tube | MAE rho / u / P_th / e_cr | 2.50 / 3.15 / 1.38 / 2.93e-3 | 2.50 / 3.45 / 1.20 / 2.49e-3 |
+  | 9 modified shock | Test A rho/u/P err; Test B du/dx | 0.13/0.15/0.15%; 26.1% | 0.09/0.13/0.08%; 19.7% |
+
+- **Finding (item 2): the flag triples the wave-train ringing in strongly CR-dominated
+  compression.** Diagnosis (1D, item-2 setup, N = 512):
+
+  | precision | P_th0 | v_red | rho ringing off -> on | max abs(K_cr - 1) off -> on | P_th ringing off -> on |
+  |---|---|---|---|---|---|
+  | f32 and f64 (identical) | 0.01 | 0.1 | 0.044 -> 0.136 | 1.5e-3 -> 2.1e-3 | 7.9e-4 -> 5.6e-3 |
+  | f64 | 0.01 | 0 | 0.056 -> 0.212 | 1.7e-3 -> 3e-14 | 1.0e-3 -> 7.8e-3 |
+  | f64 | 0.3 | 0.1 | 0.0004 -> 0.0002 | 5.5e-4 -> 5.6e-4 | 2.0e-4 -> 1.1e-4 |
+
+  - The ringing exists in both schemes (the open item-2 diagnostic, plan Sec. 2.3 / A2.3).
+  - With P_cr/P_th = 33 the energy scheme's truncation-level CR error (~1.5e-3 of e_cr) is
+    handed to the thin gas to keep total energy exact: ~50% of P_th in the ringing zone. That
+    amplifies the wave trains, the same trade-off as the cold rarefaction.
+  - At P_cr/P_th ~ 1 the flag reduces the ringing.
+  - **Needs a user decision:** accept it as a known limitation for P_cr/P_th >> 1, or look for
+    a remedy (e.g. limit the transfer per step relative to the gas thermal energy in both
+    directions, at the price of exactness at shocks in very CR-dominated gas).
 
 ### 2026-10-09: M7 A/B (cr_entropy off vs on) -> real difference -> default on
 
@@ -245,7 +335,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
   `cosmic_ray_entropy_index` row, the s_cr flux in `hll._grey_cr_hll_rows`,
   `cr_grey_sources.cr_entropy_sync` / `cr_entropy_to_energy` in
   `_evolve_gas_state_unsplit`, and config validation. Details in DESIGN.md
-  "Resolved: conservative CR entropy at shocks" -> Status.
+  "Open: conservative CR entropy at shocks" -> Status.
 - **Design correction:** one sync per hydro step after the operator-split CR sources, not per
   RK stage. The CR sources are not applied inside the stages, and one sync makes
   `e_cr = e(s_cr)` exact after the RK average.
@@ -278,7 +368,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 ### 2026-10-08: D2 -> option a; design note written (no code)
 
-- User picked A6.7 option a. Design note: DESIGN.md "Resolved: conservative CR entropy at shocks
+- User picked A6.7 option a. Design note: DESIGN.md "Open: conservative CR entropy at shocks
   (Phase A plan D2, option a; design note 2026-10-08)".
 - **Core of the design:**
   - Add a CR entropy row `s_cr = P_cr rho^(1 - gamma_cr)`, advected as a passive

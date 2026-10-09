@@ -379,7 +379,7 @@ def cr_entropy_to_energy(
     gas_energy_cells=None,
 ) -> STATE_TYPE:
     """Take ``e_cr`` from the advected CR entropy and give the difference to the
-    gas thermal energy (DESIGN.md "Resolved: conservative CR entropy at shocks",
+    gas thermal energy (DESIGN.md "Open: conservative CR entropy at shocks",
     design step 5).
 
     At the end of a hydro step the conservative ``e_cr`` row (fluxes plus the
@@ -451,7 +451,7 @@ def cr_entropy_closure_source(
     axis: int,
 ) -> STATE_TYPE:
     """Add the non-adiabatic CR transport of one axis to the CR entropy row
-    (DESIGN.md "Resolved: conservative CR entropy at shocks", design step 4).
+    (DESIGN.md "Open: conservative CR entropy at shocks", design step 4).
 
     The ``e_cr`` interface flux is the advective part (mass flux x upwind
     ``e_cr / rho``, which ``s_cr`` already gets for its own row) plus the

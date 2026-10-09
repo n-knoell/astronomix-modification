@@ -235,6 +235,7 @@ def test_cr_shock_tube(tol: float = 1e-2):
     fig.savefig(pics_dir / "cr_shock_tube_test.svg")
     plt.close(fig)
 
+    print(f"mean abs error rho {density_error:.4e}, u {velocity_error:.4e}, P_th {pressure_error:.4e}, e_cr {e_cr_error:.4e}; max|F_cr| {max_f_cr:.1e}")
     assert density_error < tol, f"Density error {density_error} exceeds tolerance {tol}"
     assert velocity_error < tol, f"Velocity error {velocity_error} exceeds tolerance {tol}"
     assert pressure_error < tol, f"Pressure error {pressure_error} exceeds tolerance {tol}"
