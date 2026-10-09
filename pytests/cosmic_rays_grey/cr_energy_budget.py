@@ -64,6 +64,10 @@ no-ops: `E_cr` is a clearly nonzero fraction of the budget when
 `dsa_efficiency=0.1` (confirms DSA fires), and disabling streaming heating
 measurably changes the final state (confirms it does real work, not just
 exercising a dead code path).
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+relative total-energy error 1.0e-10 [1.0e-10], mass 0 [1e-16], ``E_cr(t_end)`` 0.03517 [0.03510].
 """
 
 # ==== GPU selection ====

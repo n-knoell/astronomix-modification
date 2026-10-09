@@ -102,6 +102,12 @@ pre-shock state).
    Phase D infers).
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md's differentiability plan.
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+AD-vs-FD rel. err: transport 2.7e-5 [2.7e-5], injection 5.9e-11 [3.6e-10], emission 1.8e-8
+[4.6e-9], rollout stability t_end 0.02 / 0.1 / 0.2 / 0.4: 2.3e-4 / 2.1e-4 / 4.0e-6 / 2.6e-4
+[2.0e-3 / 1.3e-3 / 2.0e-4 / 6.3e-5], guard 5.6e-6 [6.3e-6].
 """
 
 # ==== GPU selection ====

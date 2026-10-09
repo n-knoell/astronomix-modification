@@ -67,6 +67,11 @@ actually computes the *max* absolute divergence, not the mean. Arguably the
 max is the more appropriate diagnostic (a mean could mask a localized
 violation), so this is flagged as a stale docstring, not treated as a bug
 to fix.
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+max|div B| at t = 5: CR on (isotropic) 7.5e-15 [6.1e-15], CR on + anisotropic 8.0e-15
+[7.1e-15], CR off 6.8e-15 [same]: round-off in all cases.
 """
 
 # ==== GPU selection ====

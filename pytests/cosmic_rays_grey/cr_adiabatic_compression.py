@@ -50,6 +50,12 @@ test -- see ``grey_cr_fast_speed``'s docstring and PROGRESS.md.
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md for the state-variable
 and equation definitions this test exercises.
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+max invariant error (inner 80%) 9.8e-4 [1.52e-3], max rho/rho0 1.145 [1.167]. The wave trains
+at x ~ 0.3-0.4 / 0.6-0.7 are gone: they came from the operator-split coupling, not from the
+gas scheme or the boundaries (``cr_adiabatic_coupling.py``, A2.3: gamma = 4/3 hydro shows none).
 """
 
 # ==== GPU selection ====

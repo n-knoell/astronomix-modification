@@ -40,6 +40,11 @@ clearly nonzero and physically bounded signal at ``dsa_efficiency = 0.1``,
 ambient + E_EXPLOSION vs. final thermal+kinetic+CR) independently holds to
 ~1.6e-5 (control) / ~1.7e-5 (DSA). (Old fixed 1-cell sampling: identity
 ~2.1e-5, conservation ~1.7e-5.)
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+``E_cr / E_total`` 0.0434 [0.0434], energy-partition identity 3.0e-6 [3.3e-5], total-energy
+conservation 1.3e-5 (control) / 1.3e-5 (DSA) [1.6e-5 / 1.7e-5].
 """
 
 # ==== GPU selection ====

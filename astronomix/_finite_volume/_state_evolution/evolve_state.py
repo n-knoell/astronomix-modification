@@ -42,7 +42,10 @@ from astronomix.option_classes.simulation_params import SimulationParams
 from astronomix._finite_volume._riemann_solver._riemann_solver import _riemann_solver
 from astronomix._finite_volume._magnetic_update._magnetic_field_update import magnetic_update
 from astronomix._integrators._explicit_rk import rk2_ssp
-from astronomix._modules._time_integrator_sources import _time_integrator_sources
+from astronomix._modules._time_integrator_sources import (
+    _time_integrator_sources,
+    cr_grey_feedback_sources,
+)
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     CR_ENTROPY_TRANSFER_SHOCKS,
 )
@@ -242,12 +245,14 @@ def _gravity_source_presolve(
     params: SimulationParams,
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
+    include_cr: bool = True,
 ) -> STATE_TYPE:
     """Build the operator-split self-gravity source from the pre-hydro state.
 
     The source depends only on the pre-hydro state, so evaluating it before
     the hydro update and adding it afterwards reproduces the former
-    ``_apply_self_gravity`` scheme exactly.
+    ``_apply_self_gravity`` scheme exactly. ``include_cr=False`` leaves out the
+    grey-CR feedback, which the unsplit scheme applies inside its RK stages.
     """
     return _time_integrator_sources(
         conserved_state_from_primitive(
@@ -261,6 +266,7 @@ def _gravity_source_presolve(
         params,
         helper_data,
         registered_variables,
+        include_cr=include_cr,
     )
 
 
@@ -714,6 +720,18 @@ def _evolve_gas_state_unsplit_inner(
         primitive_state, gamma, config, registered_variables
     )
 
+    # Grey-CR feedback (-grad P_cr with its work, -P_cr div u, streaming
+    # heating) inside every RK stage, evaluated on the stage-start state
+    # (Gupta, Sharma & Mignone 2021, "Unsplit-pdv"). Applied once after the whole
+    # RK2 instead (operator split, before 2026-10-09) it was a forward-Euler step
+    # of an oscillatory subsystem: first order in time and unstable above
+    # C_cfl ~ 0.2 when CR-dominated (PROGRESS_PHASEA.md A2.2/A2.3). Added before
+    # the primitive recovery so the stage's positivity floor covers it.
+    if registered_variables.cosmic_ray_e_active:
+        conservative_states = conservative_states + dt * cr_grey_feedback_sources(
+            primitive_state, config, params, registered_variables
+        )
+
     # Pallas-fused per-axis recon+Riemann+divergence: each axis writes
     # ``conservative_states += -(dt/dx) * (F[i+1/2] - F[i-1/2])`` directly
     # into the conservative buffer via ``input_output_aliases``.  No
@@ -928,9 +946,9 @@ def _evolve_gas_state_unsplit(
 
     # See _evolve_gas_state_split's identical comment: this pair is gated on
     # either gravity or CR-grey being active, not gravity alone.
-    apply_operator_split_sources = (
-        config.gravity_config.gravity or registered_variables.cosmic_ray_e_active
-    )
+    # Grey-CR feedback is applied inside the RK stages
+    # (_evolve_gas_state_unsplit_inner), so only gravity stays operator-split here.
+    apply_operator_split_sources = config.gravity_config.gravity
 
     # Well-balanced FV gravity (opt-in, see _gravity.py's "Well-balanced FV
     # coupling" section) cannot use the presolve-once/apply-once pattern
@@ -967,7 +985,8 @@ def _evolve_gas_state_unsplit(
 
     if apply_operator_split_sources and not well_balanced_inline_gravity:
         gravity_source = _gravity_source_presolve(
-            primitive_state, dt, gamma, config, params, helper_data, registered_variables
+            primitive_state, dt, gamma, config, params, helper_data, registered_variables,
+            include_cr=False,
         )
 
     # Dual energy: one shock mask per step, from the pre-step state, shared
@@ -1043,7 +1062,8 @@ def _evolve_gas_state_unsplit(
             )
             if well_balanced_inline_gravity:
                 du = du + _gravity_source_presolve(
-                    p, dt_step, gamma, config, params, helper_data, registered_variables
+                    p, dt_step, gamma, config, params, helper_data, registered_variables,
+                    include_cr=False,
                 )
             return du
 

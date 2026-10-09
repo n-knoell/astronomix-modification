@@ -66,6 +66,35 @@ from astronomix._modules._conduction._conduction import fd_conduction_source
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
+def cr_grey_feedback_sources(
+    primitive_state: STATE_TYPE,
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+) -> STATE_TYPE:
+    """Rate of the grey-CR feedback sources on the conserved state:
+    ``-grad(P_cr)`` on the momentum with its ``-v . grad(P_cr)`` work,
+    ``-P_cr div(v)`` on ``e_cr`` and, with streaming, the streaming heating.
+
+    The unsplit FV scheme adds it inside every RK stage
+    (``evolve_state._evolve_gas_state_unsplit_inner``, Gupta, Sharma & Mignone
+    2021's "Unsplit-pdv"); the other paths get it through
+    :func:`_time_integrator_sources`.
+    """
+    source_term = cr_pressure_gradient_source(
+        primitive_state, config, registered_variables, params
+    )
+    source_term += cr_adiabatic_work_source(
+        primitive_state, config, registered_variables, params
+    )
+    if config.cosmic_ray_grey_config.streaming:
+        source_term += cr_streaming_heating_source(
+            primitive_state, config, registered_variables, params
+        )
+    return source_term
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables", "include_cr"])
 def _time_integrator_sources(
     conserved_state: STATE_TYPE,
     density_fluxes,
@@ -76,6 +105,7 @@ def _time_integrator_sources(
     params: SimulationParams,
     helper_data: HelperData,
     registered_variables: RegisteredVariables,
+    include_cr: bool = True,
 ) -> STATE_TYPE:
     """
     Compute the physics source terms for the given **conserved** state.
@@ -91,6 +121,8 @@ def _time_integrator_sources(
         params: The simulation parameters.
         helper_data: The helper data.
         registered_variables: The registered variables.
+        include_cr: Include the grey-CR feedback sources. The unsplit FV scheme
+            passes False and applies them inside every RK stage instead.
 
     Returns:
         The physics source terms for the conserved state.
@@ -228,28 +260,13 @@ def _time_integrator_sources(
     # _evolve_gas_state_unsplit). registered_variables.cosmic_ray_e_active is only ever
     # set by the FV branch of get_registered_variables (see that module's
     # DESIGN.md "FD limitation"), so this is a no-op under FD for now.
-    if registered_variables.cosmic_ray_e_active:
+    if include_cr and registered_variables.cosmic_ray_e_active:
         cr_primitive_state = primitive_state_from_conserved(
             conserved_state, gamma, config, registered_variables
         )
         source_term += (
-            cr_pressure_gradient_source(
-                cr_primitive_state, config, registered_variables, params
-            )
+            cr_grey_feedback_sources(cr_primitive_state, config, params, registered_variables)
             * dt
         )
-        source_term += (
-            cr_adiabatic_work_source(
-                cr_primitive_state, config, registered_variables, params
-            )
-            * dt
-        )
-        if config.cosmic_ray_grey_config.streaming:
-            source_term += (
-                cr_streaming_heating_source(
-                    cr_primitive_state, config, registered_variables, params
-                )
-                * dt
-            )
 
     return source_term

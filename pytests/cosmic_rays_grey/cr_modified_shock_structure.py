@@ -116,6 +116,11 @@ sampled profile into the shock's own frame before comparing to the
 (shock-frame) reference formulas.
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+Test A post-shock rho / u / P errors 0.17 / 0.21 / 0.22% [0.13 / 0.15 / 0.15%]; Test B du/dx
+20.9% [26.1%], dP_cr/dx 1.60% [1.61%], dF_cr/dx 0.74% [0.77%].
 """
 
 # ==== GPU selection ====

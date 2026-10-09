@@ -1672,6 +1672,35 @@ literature table was reproduced (only the method was validated, via the
 degenerate-limit checks above), so this is a genuine, independently-checked
 comparison rather than a tuned-to-pass one.
 
+## Resolved: stage-wise CR-gas coupling in the unsplit FV scheme (2026-10-09, Phase A A2.2/A2.3)
+
+- **Change.** The grey-CR feedback sources are now added inside every RK stage of the unsplit
+  FV scheme:
+  - `-grad P_cr` on the momentum with its `-v.grad P_cr` work, `-P_cr div u` on `e_cr`, and
+    streaming heating; `_time_integrator_sources.cr_grey_feedback_sources`;
+  - evaluated on the stage-start state, added to the conserved state at the start of
+    `evolve_state._evolve_gas_state_unsplit_inner`, i.e. before the primitive recovery and the
+    stage's positivity floor.
+  - Previously they were presolved from the pre-step state and added once after the whole
+    RK2. `_time_integrator_sources(..., include_cr=False)` keeps them out of the
+    operator-split presolve (gravity) and the well-balanced inline path.
+  - The split (MUSCL) path (CWB) and FD are unchanged.
+  - This is Gupta, Sharma & Mignone (2021)'s Et+Ecr "Unsplit-pdv". The `-v.grad P_cr` /
+    `-P_cr div u` pair still telescopes at every stage, so total energy stays exact.
+- **Why.** The operator-split coupling was a forward-Euler step of an oscillatory subsystem
+  (PROGRESS_PHASEA.md 2026-10-09):
+  - the linear CR-modified sound wave converged at order 1.09 / 0.68 / -0.09 for
+    P_cr/P_th = 0.5 / 2 / 10, with an exponentially growing 8-12-cell wave train;
+  - it was first order in dt for C_cfl <= 0.2 and unstable above;
+  - the item-2 ringing came from it; gamma = 4/3 hydro shows none.
+- **Now** (`pytests/cosmic_rays_grey/cr_adiabatic_coupling.py`):
+  - A2.2 order 1.85-1.87 at every CR fraction, stable at C_cfl 0.8;
+  - the CR-only limit matches gamma = 4/3 hydro at order 1.85 (simple wave);
+  - the item-2 squeeze ringing is at hydro level (0.0026 vs 0.0012);
+  - item 2: K_cr and K_th exact to 2e-6 / 1e-7.
+  - The post-shock CR/thermal partition (A6.1-A6.3) is unchanged in kind (item 6 1.27%),
+    and now only weakly CFL-dependent (1.26-1.31% over C_cfl 0.1-0.8).
+
 ## Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08, implemented opt-in, default off)
 
 Not implemented. The user picked option a of `astronomix_CR_phaseA_test_plan.md` A6.7 on

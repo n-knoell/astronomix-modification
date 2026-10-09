@@ -53,6 +53,11 @@ uniform `B_x = B0`. No gravity, cooling or collisional losses (the latter are
 not implemented as a dynamical e_cr sink anywhere in this module, see
 `cr_energy_budget.py`'s docstring), so nothing enters or leaves the box and
 total (thermal+kinetic+magnetic+CR) energy must be exactly constant.
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+MHD+CR relative energy error 1.02e-10 [9.81e-11], isotropic 9.81e-11 [9.81e-11], CR-off control
+7.5e-14 [same], single-precision tolerance 2.90e-9 [2.89e-9]; ``E_cr(t_end)`` 0.04295 [0.04291].
 """
 
 # ==== GPU selection ====

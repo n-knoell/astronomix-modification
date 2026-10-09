@@ -22,8 +22,8 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A1.5 free-streaming limit, production config | 3 | todo | | | |
 | **Item 2: adiabatic compression** | | | | | |
 | A2.1 ballistic homologous compression/expansion | 3 | todo | | | |
-| A2.2 CR-modified linear sound wave | 1 | todo | | | |
-| A2.3 CR-dominated fluid vs gamma=4/3 hydro | 1 | todo | | | |
+| A2.2 CR-modified linear sound wave | 1 | done; fixed by the stage-wise coupling | `cr_adiabatic_coupling.py` | **fails with the operator-split coupling**: order 1.09 / 0.68 / -0.09 at P_cr/P_th 0.5 / 2 / 10, an instability at 8-12 cells, unstable above C_cfl ~0.2. Stage-wise coupling prototype: order 1.85-1.87, stable at C_cfl 0.8 | 2026-10-09 |
+| A2.3 CR-dominated fluid vs gamma=4/3 hydro | 1 | done; fixed by the stage-wise coupling | `cr_adiabatic_coupling.py` | item-2 ringing is **not** in gamma=4/3 hydro (0.0012), only in the operator-split two-fluid run (0.36 at N 2048). Stage-wise: 0.0026, and the simple wave matches hydro at order 1.85 | 2026-10-09 |
 | A2.4 two-moment linear dispersion relation | 2 | todo | | | |
 | **Item 3: anisotropic diffusion** | | | | | |
 | A3.1 Sovinec steady state | 2 | todo | | | |
@@ -53,7 +53,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | X5 float64 for analytic tests | -- | todo | | covered per test | |
 | X6 static heavy gas for pure transport | -- | todo | | via helper below | |
 | X7 FV only | -- | dropped | -- | out of scope (plan item 20) | |
-| Mark ring "cap alone" test `xfail` (Sec. 3.1) | -- | todo | `cr_anisotropic_ring.py` | | |
+| Mark ring "cap alone" test `xfail` (Sec. 3.1) | -- | done | `cr_anisotropic_ring.py` | `pytest.mark.xfail(strict=True)` when pytest is importable (the venv has none); standalone runs print XFAIL; verified with pytest 9.1.1 from a scratch install | 2026-10-09 |
 | Fix Pfrommer et al. 2006 citation (Sec. 6.2) | -- | todo | `cr_shock_tube.py`, DESIGN.md | | |
 
 ## Decisions
@@ -74,6 +74,148 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-09: re-baseline for the stage-wise coupling (docstrings + figures)
+
+- **A6 scans repeated** with the new coupling (`/export/scratch/nknoell/phaseA/a61_sw`,
+  `a62_a63_sw`).
+  - A6.1 dK_cr,2 1.27% at every N; C_cfl 0.1 / 0.4 / 0.8 1.26 / 1.27 / 1.31% (was 1.21 / 1.06 /
+    0.82%).
+  - Gupta A / B 6.83 / 12.9% (was 6.35 / 10.6%).
+  - Mach scan saturates at 13.6% (was 11.2%); C_cfl sensitivity -2 / +5% (was +15 / -18%).
+  - The smooth control now converges at order ~1.1 (dK_L 3.4e-9 at N = 3200).
+  - `cr_shock_tube_partition.py`: the module tables were rewritten (old values in brackets),
+    and the measured values in the test docstrings, including the cr_entropy tests, updated.
+    The squeeze no longer rings in any variant; the global mode's gas-entropy error there is
+    1.5e-3, against 0.34 before.
+- **Dated "Re-measured 2026-10-09 with the stage-wise CR coupling" notes**, with the
+  operator-split values in brackets, in 12 test docstrings: items 2, 6, 7, 8, 9, 10 and 11, the
+  energy budget, the MHD energy budget, div B, the gradient check and Phase D injection.
+  - The older per-argument "Calibrated observed error" lines are left as history; the notes
+    supersede them.
+- **Figures regenerated** (from `regress_coupling/`, flag defaults, items 11 and 15 at 128^3):
+  `pics/02` (item 2, plus the new A2.2 / A2.3 figures), `06` (item 6 and the four A6 /
+  cr_entropy figures), `07`, `08`, `09` (jump, precursor), `10`, `11`, `16_17` (rollout
+  stability), `18` (both energy budgets + fields png), `19`, and `phase_d_inference` (injection).
+- **Unchanged and therefore not touched:** items 1, 3, 4, 5 and 15, the ring tests, diffusion
+  rate T1-T3, and Phase D kappa (identical to the printed digits).
+- **Not regenerated** (made by separate scripts / higher resolutions):
+  `cr_modified_shock_structure_resolution.svg`, the `*_48/_96/_224.svg` variants of items 7/8.
+
+### 2026-10-09: stage-wise CR coupling implemented (user OK); A2.2/A2.3 committed as tests; regression running
+
+- **Code (uncommitted):**
+  - `_time_integrator_sources.cr_grey_feedback_sources` (new) and
+    `_time_integrator_sources(..., include_cr=True)`;
+  - `evolve_state._gravity_source_presolve(..., include_cr=True)`;
+  - in the unsplit scheme the CR sources are added per stage in
+    `_evolve_gas_state_unsplit_inner` (before the positivity floor), and the operator-split
+    presolve/apply covers gravity only.
+  - DESIGN.md "Resolved: stage-wise CR-gas coupling".
+- **The repo code reproduces the scratch prototype exactly** (A2.2 orders 1.85-1.87; A2.3a order
+  1.86, two-fluid vs hydro 1.85; squeeze ringing 0.0026/0.0027; item 2 ringing 0.0014; A6
+  numbers identical).
+- **New test file** `pytests/cosmic_rays_grey/cr_adiabatic_coupling.py`, both tests pass:
+  - `test_cr_linear_sound_wave` (A2.2): order >= 1.8, phase error < 1e-4, eigenvector error
+    < 1e-3 (measured 1e-8), C_cfl 0.8 error < 1e-2 eps;
+  - `test_cr_hydro_equivalence` (A2.3): order >= 1.8 vs exact and vs hydro, squeeze ringing
+    <= 3x hydro.
+  - Figures `pics/02_adiabatic_compression/cr_{linear_sound_wave,hydro_equivalence}_test.svg`.
+- **Regression:** full CR suite (scratch copy `regress_coupling/`; GPUs through
+  `scheduler.py`, which waits for free GPUs, as other users occupy most of them; 1D tests on
+  CPU) plus M7 with the new coupling (tag `stagewise`: v_red 1000 seeds 42 and 43, v_red 1e4).
+  Results below when done.
+- **CPU results (all pass; operator-split -> stage-wise):**
+  - item 1 L2/amp 6.035e-3 -> 6.034e-3;
+  - item 2 invariant 1.52e-3 -> 9.8e-4, max rho/rho0 1.167 -> 1.145 (ringing gone);
+  - item 4 order 1.555 -> 1.554;
+  - item 6 MAE rho/u/P_th/e_cr 2.50/3.15/1.38/2.93e-3 -> 3.00/4.12/1.81/3.68e-3 (gate 1e-2; the
+    post-shock partition error is a bit larger, as in A6.1: 1.06 -> 1.27%);
+  - item 9 Test A 0.13-0.15% -> 0.17-0.22%, Test B du/dx 26% -> 21%;
+  - A2.2/A2.3, item 5 and the shock-partition tests pass.
+- **M7, v_red 1000 (cr_entropy off), operator-split -> stage-wise:**
+  - seed 42: E_cr(250) 4.270e11 -> 4.286e11, E_cr/inj 1.410 -> 1.416, compression work
+    2.83e10 -> 2.87e10, halo P_th 3.78e-2 -> 3.78e-2, eta 0.28 -> 0.27, H_gas 351 -> 351;
+  - seed 43: 4.706e11 -> 4.701e11, 1.557 -> 1.555, 4.10e10 -> 4.08e10, 3.66e-2 -> 3.65e-2,
+    0.22 -> 0.24, 336 -> 339.
+  - All changes are below the seed scatter. M7's dt (hot gas, v_red) is far below the coupling
+    oscillation timescale, so the operator-split error was small there.
+  - **Correction:** the ~10% smooth-expansion CR error seen in the cr_entropy A/B is *not* the
+    time coupling. It is more likely spatial (central -P_cr div u vs upwind advection in strong
+    expansion). Open.
+- **M7, v_red 1e4, seed 42, operator-split -> stage-wise:** E_cr(250) 5.231e11 -> 5.259e11, E_cr/inj
+  1.746 -> 1.755, compression work 5.66e10 -> 5.75e10, boundary advection 1.70e11 -> 1.72e11, halo
+  P_th 2.70e-2 -> 2.68e-2, eta 0.21 -> 0.20, v_out 3.3 -> 3.3, H_gas 280 -> 283. Also unchanged
+  within ~1%, so the stage-wise coupling does not alter the M7 results.
+- **GPU suite (stage-wise coupling, flag defaults):** everything passes except
+  - `test_cr_ring_flux_cap_alone`: the expected failure (the standalone runner ignores xfail);
+  - `test_cr_entropy_cold_rarefaction`: the opt-in cr_entropy test, re-calibrated (below).
+
+  Metrics, operator-split -> stage-wise:
+  - DSA item 8 KR13 / CS14 0.0877 / 0.0457 -> 0.0876 / 0.0457;
+  - item 7 E_cr/E_tot 0.0434 -> 0.0434, partition identity 3.3e-5 -> 3.0e-6;
+  - item 10 E_cr/E_tot 0.0438 -> 0.0438, identity 4.4e-4 -> 1.8e-4, Weaver checks identical;
+  - item 11 0.0570 / 0.0532 -> same, identity 6-7e-5 -> 2.5-2.7e-5, clumpy effect -6.67% -> same;
+  - item 15 identical;
+  - div B 6.1 / 7.1e-15 -> 7.5 / 8.0e-15;
+  - energy budgets 1.0e-10 / 9.8e-11 -> 1.0e-10 / 1.0e-10;
+  - Phase D kappa 0.01974 -> 0.01974;
+  - ring, diffusion rate T1-T3, gradient checks: pass.
+- **`test_cr_entropy_cold_rarefaction` re-calibrated** (opt-in cr_entropy):
+  - With the stage-wise coupling the energy scheme's start-up error drops: K_cr 9.1% -> 5.3%,
+    energy drift 4.6e-4 -> 3.8e-8 (no more floor hits). cr_entropy without dual energy:
+    0.89% -> 6.3e-5.
+  - With dual energy: 0.75% -> 2.2% (energy scheme 2.6%). Less spurious start-up heat means the
+    safeguard limits more.
+  - New gates: 1e-3 / 3e-2 (no dual / dual), better than the energy scheme, energy drift < 1e-4.
+- **Stale docstring numbers** (calibrated with the operator-split coupling; gates still pass):
+  items 2, 6 and 9, A6.1-A6.3 (energy scheme now 1.27% at item 6), and the cr_entropy tests'
+  "measured" values. To re-baseline once the user wants it (figures too).
+
+### 2026-10-09: A2.2 + A2.3 -- the operator-split CR coupling is unstable; stage-wise coupling (Gupta et al. 2021 "Unsplit-pdv") fixes it
+
+- **Ring cap-alone test** marked `xfail(strict=True)` (pytest optional; verified with pytest
+  9.1.1 from a scratch install).
+- **A2.2** (periodic 1D, v_red = 0, float64, eps = 1e-6 eigenmode, one period):
+  - Coupling strength is right: phase speed within ~2e-5 of c_eff, eigenvector ratio
+    dP_cr/P_cr / (drho/rho) = gamma_cr to 2e-4.
+  - The error converges only at order 1.09 / 0.68 / -0.09 for P_cr/P_th = 0.5 / 2 / 10, against
+    1.86 without CRs.
+  - The error is a wave train at a fixed 8-12 cells, independent of N, growing exponentially
+    in time (P_cr/P_th = 10, N = 1024: 0.08 eps at T/2, 26 eps at T).
+  - It scales with C_cfl: first order in dt for C_cfl <= 0.2, unstable above (C_cfl 0.8: 2.7e2
+    eps at P_cr/P_th = 2, 1e5 eps at 10).
+  - Cause: `-grad P_cr` / `-P_cr div u` are presolved from the pre-step state and applied once
+    after the whole RK2. That is a forward-Euler step of an oscillatory subsystem, which the
+    HLL dissipation only partly damps.
+- **A2.3:**
+  - (a) Simple wave (gamma = 4/3, A = 0.1, t = 0.5 t_shock), P_th = 1e-6 P_cr vs gamma = 4/3
+    hydro vs the exact characteristic solution: L1 two-fluid vs exact *grows* with N
+    (order -0.31, 1.5e-2 at N = 1024); hydro order 1.87.
+  - (b) Item-2 squeeze in the CR-only limit: ringing 0.080 / 0.355 (N 512 / 2048); hydro
+    gamma = 4/3 0.0012. So the item-2 ringing comes from the coupling, not from the gas scheme or
+    the boundaries.
+- **Prototype stage-wise coupling** (scratch monkeypatch: the same source, evaluated on each
+  RK stage's start state with the stage dt, inside `_evolve_gas_state_unsplit_inner`; no
+  post-RK application). This is Gupta, Sharma & Mignone (2021)'s Et+Ecr "Unsplit-pdv", the
+  method they found least sensitive to numerical details.
+  - A2.2: order 1.85 / 1.86 / 1.87, C_cfl 0.8 stable (3.9e-4 eps at P_cr/P_th = 10).
+  - A2.3a: two-fluid vs exact 7.1e-6 at N = 1024 (order 1.86), vs hydro order 1.85.
+    Needs the stage's pressure floor after the source (NaN at N <= 128 otherwise, P_th = 1e-6
+    P_cr).
+  - A2.3b: ringing 0.0025.
+  - Item 2 (v_red = 0, N = 2048): ringing 0.30 -> 0.0013; max abs(K_cr - 1) 1.2e-2 -> 2.3e-6;
+    max abs(K_th - 1) 9.4e-2 -> 1.4e-7. Both fluids are adiabatic in smooth flow.
+  - A6 shock partition: unchanged in kind (item 6 1.26-1.31% over C_cfl 0.1-0.8, Gupta A 6.8%,
+    M 10 12.9%), less CFL-dependent. As Gupta et al. say, the post-shock partition still
+    depends on the method.
+  - Energy conservation is kept (the source pair telescopes at every stage).
+- **Proposal (user decision; fix to an existing scheme):**
+  - Move the CR-grey feedback sources from the operator-split presolve/apply into the RK stages
+    of `_evolve_gas_state_unsplit` (the well-balanced-gravity path already does this for
+    gravity), before the stage's positivity floor.
+  - Then re-check items 1-11, 15, 18 and M7. The M7 smooth-flow CR error (~10% of the CR
+    injection) should shrink, which may also change the cr_entropy picture.
 
 ### 2026-10-09: M7 with the shock-only transfer -- no drain, but CR energy is created in the expanding halo
 

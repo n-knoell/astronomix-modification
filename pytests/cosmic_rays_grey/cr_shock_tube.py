@@ -83,6 +83,13 @@ this implementation was not checked against directly -- only the underlying
 *method* is validated, via the degenerate-limit cross-checks above).
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+mean absolute error rho 3.0e-3 [2.5e-3], u 4.1e-3 [3.1e-3], P_th 1.8e-3 [1.4e-3], e_cr 3.7e-3
+[2.9e-3]; ``F_cr`` stays exactly 0. Slightly larger, as the post-shock CR/thermal partition error
+grows from 1.06% to 1.27% (``cr_shock_tube_partition.py``, A6.1), but now nearly
+CFL-independent.
 """
 
 # ==== GPU selection ====

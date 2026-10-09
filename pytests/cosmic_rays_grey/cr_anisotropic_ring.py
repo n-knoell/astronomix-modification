@@ -420,6 +420,23 @@ def test_cr_ring_positivity(
 
 
 
+# pytest is optional here (these scripts also run standalone, and the project venv does not
+# ship it), so the expected-failure marker is applied only when pytest is importable.
+try:
+    import pytest
+
+    _expected_failure = pytest.mark.xfail(
+        strict=True,
+        reason="the flux cap alone does not keep the ring monotone/positive "
+        "(measured 2026-10-05, see the docstring; Phase A test plan Sec. 3.1)",
+    )
+except ImportError:  # pragma: no cover
+
+    def _expected_failure(test):
+        return test
+
+
+@_expected_failure
 def test_cr_ring_flux_cap_alone(
     resolutions: tuple = CAP_RESOLUTIONS,
     undershoot_tol: float = 1e-3,
@@ -435,7 +452,10 @@ def test_cr_ring_flux_cap_alone(
     (S&H eq. 39) is printed for comparison with the guard (0.0198 / 0.0086 at
     N = 100 / 200) and with neither (0.0183 / 0.0083).
 
-    Measured (2026-10-05): **FAILS -- the cap alone is not enough.**
+    Measured (2026-10-05): **FAILS -- the cap alone is not enough.** Marked as an
+    expected failure (``pytest.mark.xfail(strict=True)``; Phase A test plan Sec. 3.1), so it
+    documents the configuration without counting as a CI failure; ``strict`` flags it if it
+    ever starts passing.
     - 3a: ``e_min`` = 9.961462 / 9.954316 at N = 100 / 200 and
       ``kappa_perp,num / kappa_par`` = 0.0183 / 0.0083, identical to six digits
       to the run with neither cap nor guard. On a background of 10 the cap
@@ -541,12 +561,19 @@ if __name__ == "__main__":
         test_cr_ring_jiang_oh, test_cr_ring_positivity, test_cr_ring_sharma_hammett,
         test_cr_ring_flux_cap_alone,
     )
+    expected_failures = {test_cr_ring_flux_cap_alone.__name__}
     failed = []
     for test in tests:
         try:
             test()
             print(f"PASS {test.__name__}")
+            if test.__name__ in expected_failures:
+                failed.append(test.__name__)
+                print(f"XPASS {test.__name__}: expected to fail (strict)")
         except AssertionError as error:
-            failed.append(test.__name__)
-            print(f"FAIL {test.__name__}: {error}")
-    print(f"{len(tests) - len(failed)}/{len(tests)} passed")
+            if test.__name__ in expected_failures:
+                print(f"XFAIL {test.__name__} (expected): {error}")
+            else:
+                failed.append(test.__name__)
+                print(f"FAIL {test.__name__}: {error}")
+    print(f"{len(tests) - len(failed)}/{len(tests)} as expected")

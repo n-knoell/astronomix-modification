@@ -68,6 +68,11 @@ check):
      floating-point precision, not just approximately. This is what actually
      proves the injection code is *using* the Mach-dependent formula and not
      something else, independent of the aggregate-energy checks above.
+
+**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
+RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
+(N = 48) ``E_cr / E_total`` KR13 0.0876 [0.0877], CS14-like 0.0457 [0.0457]; CS14/KR13 ratio
+0.5215 [0.5214], rel. err 4.30% [4.28%]; surface Mach numbers unchanged.
 """
 
 # ==== GPU selection ====
