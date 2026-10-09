@@ -40,6 +40,13 @@ clearly nonzero and physically bounded signal at ``dsa_efficiency = 0.1``,
 ambient + E_EXPLOSION vs. final thermal+kinetic+CR) independently holds to
 ~1.6e-5 (control) / ~1.7e-5 (DSA). (Old fixed 1-cell sampling: identity
 ~2.1e-5, conservation ~1.7e-5.)
+
+**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
+DESIGN.md "Resolved: conservative CR entropy at shocks"; same code, flag off / on):
+``E_cr / E_total`` 0.0434 / 0.0414 (-4.6%: the energy scheme also gave the CRs part of the
+numerical shock dissipation), energy-partition identity 3.3e-5 / 4.6e-5, total-energy
+conservation 1.6e-5 (control) and 1.7e-5 (DSA) in both. The older numbers above are kept as
+history.
 """
 
 # ==== GPU selection ====
@@ -237,6 +244,7 @@ def test_cr_sedov_taylor(
     E_total_initial = E_ambient_initial + E_EXPLOSION
     for name, run in (("control", control), ("dsa", dsa)):
         rel_err = abs(run["E_total"] - E_total_initial) / E_total_initial
+        print(f"{name}: total-energy rel. err {rel_err:.3e}")
         assert rel_err < conservation_tol, (
             f"{name} run's total energy is not conserved: final "
             f"{run['E_total']:.6f} vs. initial {E_total_initial:.6f} "
@@ -249,6 +257,7 @@ def test_cr_sedov_taylor(
     # which was spurious injection; 4.3% at N = 48 with the DSA velocity
     # check of 2026-10-07 -- see cr_dsa_mach_dependence.py).
     cr_fraction = dsa["E_cr"] / E_total_initial
+    print(f"E_cr / E_total = {cr_fraction:.4f}")
     assert 0.01 < cr_fraction < 0.3, (
         f"DSA run's CR energy fraction ({cr_fraction:.4f}) is outside the "
         f"expected [0.01, 0.3] band for dsa_efficiency={DSA_EFFICIENCY} -- "
@@ -262,6 +271,7 @@ def test_cr_sedov_taylor(
     thermal_kinetic_dsa = dsa["E_thermal"] + dsa["E_kinetic"]
     energy_diverted = thermal_kinetic_control - thermal_kinetic_dsa
     partition_rel_err = abs(energy_diverted - dsa["E_cr"]) / dsa["E_cr"]
+    print(f"energy-partition identity rel. err {partition_rel_err:.3e}")
     assert partition_rel_err < energy_partition_tol, (
         f"Energy-partition identity violated: thermal+kinetic energy "
         f"diverted from the control run ({energy_diverted:.6f}) does not "

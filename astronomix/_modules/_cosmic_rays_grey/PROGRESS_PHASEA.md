@@ -61,7 +61,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | ID | Question | Status | Outcome |
 |---|---|---|---|
 | D1 | Absolute `kappa_perp,num/kappa_par` budget for item 3? | open | |
-| D2 | Shock partition: change CR energy formulation or prescribe it? | **decided: option a** (2026-10-08) | Conservative CR entropy row synced into `e_cr` every RK stage; design note in DESIGN.md "Open: conservative CR entropy at shocks", awaiting review, not implemented |
+| D2 | Shock partition: change CR energy formulation or prescribe it? | **done: option a, default on** (2026-10-09) | Conservative CR entropy row synced into `e_cr` every RK stage; design note in DESIGN.md "Resolved: conservative CR entropy at shocks", awaiting review, not implemented |
 | D3 | Hard gates on library default (guard on) or production (guard off)? | open | |
 
 ## Infrastructure
@@ -74,6 +74,120 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-09: M7 A/B (cr_entropy off vs on) -> real difference -> default on
+
+- **Runs:** `m7_girichidis_pilot.py both --res=0.5` (62.5 pc, 250 Myr, MHD + self-gravity,
+  guard off), seeds 42 and 43, v_red = 1000 km/s, flag off and on.
+  - Instrumented with `/export/scratch/nknoell/phaseA/m7ab/m7_budget_ab.py`: the 2026-10-08
+    budget wrapper plus a log of the per-call CR->gas transfer (two calls per step, from the
+    MHD gas half-steps).
+  - Analysis: `ab_analyze.py`. Data: `/export/scratch/nknoell/phaseA/m7ab/out/`.
+  - The pilot got a `--cr-entropy` switch for these runs; since the default flip it is
+    `--energy-scheme` (opt-out). Entropy runs carry `_crent` in the suffix.
+
+  | v_red = 1000 | seed 42 off -> on | seed 43 off -> on | seed scatter (off / on) |
+  |---|---|---|---|
+  | E_cr(250 Myr) | 4.27e11 -> 3.48e11 (-19%) | 4.71e11 -> 3.22e11 (-31%) | -- |
+  | E_cr / injected (250 Myr) | 1.41 -> 1.15 | 1.56 -> 1.07 | 0.15 / 0.08 |
+  | cumulative CR->gas transfer | +4.7e10 | +5.3e10 | -- |
+  | eta(1 kpc), late | 0.28 -> 0.38 | 0.22 -> 0.40 | 0.06 / 0.02 |
+  | v_out late (km/s) | 3.1 -> 3.9 | 3.1 -> 4.2 | 0 / 0.3 |
+  | H_gas late (pc) | 351 -> 358 | 336 -> 360 | 15 / 2 |
+  | mean mass flux at abs(z) = 1 kpc, 150-250 Myr (code) | -2.3 -> -1.4 | -3.1 -> -1.3 | -- |
+
+  - **Transfer time series (seed 42):** gas -> CR up to ~100 Myr (-6.8e9; the energy scheme
+    under-predicts CR energy in expansions, as in the 1-2-3 test), then CR -> gas (+5.4e10)
+    once infall and compression take over.
+  - **Reading:**
+    - The flag removes most of M7's CR-energy excess over injection (1.4-1.6x -> 1.07-1.15x).
+      The rest is the open-boundary inflow found on 2026-10-08, which the flag does not touch.
+    - It raises the late outflow loading by 35-80%, well beyond the seed scatter. Net infall
+      at 1 kpc halves.
+    - Disc thickness is unchanged within the scatter.
+  - **Decision (user's rule):** a real difference, so `CosmicRayGreyConfig.cr_entropy`
+    defaults to True. Opt-outs:
+    - CWB `_cwb_setup.py` (split MUSCL scheme);
+    - `cr_streaming_1d`, `cr_energy_budget` and `cr_mhd_energy_budget` (streaming);
+    - `cr_shock_tube_partition.run_shock_tube` keeps `cr_entropy=False` as its default, so
+      A6.1-A6.3 keep measuring the energy scheme as tracked controls.
+- **v_red = 1e4 (production setting), seed 42** (~77 / 93 min):
+
+  | | flag off | flag on |
+  |---|---|---|
+  | E_cr(250 Myr) | 5.23e11 | 3.48e11 (-33%) |
+  | E_cr / injected | 1.75 | 1.16 |
+  | cumulative CR->gas transfer | -- | +3.7e10 |
+  | CR energy advected in through the z boundaries (cumulative) | +1.70e11 | +0.71e11 |
+  | eta(1 kpc), late | 0.21 | 0.44 |
+  | v_out late (km/s) | 3.3 | 4.4 |
+  | H_gas late (pc) | 280 | 323 (+15%) |
+  | mean mass flux at abs(z) = 1 kpc, 150-250 Myr (code) | -2.3 | -0.35 |
+  | e_cr(abs(z) > 1.5 kpc) / e_cr(abs(z) < 250 pc), late | 0.70 | 0.59 |
+
+  - Same direction as at v_red = 1000, and stronger.
+  - The CR energy entering through the open z boundaries (the 2026-10-08 finding) drops by 60%:
+    with less spurious shock CR energy there is less infall and a less CR-filled upper box.
+    So part of that "boundary artefact" was itself driven by the energy scheme's shock error.
+  - The remaining E_cr/injected = 1.16 is the boundary inflow that is left; the diode-boundary
+    option of 2026-10-08 is still open.
+- **Re-baseline of items 7, 8, 10, 11 and 15** (scratch copies, flag forced off vs the new
+  default; items 11 and 15 at 128^3; `/export/scratch/nknoell/phaseA/rb2_{on,off}/`). All pass
+  in both.
+  - Figures in `pics/{07,08,10,11,15}_*` regenerated with the default; docstrings carry both
+    sets of numbers.
+  - The four tests now print their calibrated metrics (one `print` per metric before its gate,
+    no gate changes).
+
+  | item | metric | off (energy scheme) | on (default) |
+  |---|---|---|---|
+  | 7 Sedov 48^3 | E_cr/E_tot; partition identity | 0.0434; 3.3e-5 | 0.0414; 4.6e-5 |
+  | 8 DSA vs Mach 48^3 | KR13 / CS14 E_cr/E_tot | 0.0877 / 0.0457 | 0.0836 / 0.0436 |
+  | 10 wind bubble | E_cr/E_tot; partition identity | 0.0438; 4.4e-4 | 0.0552; 3.2e-4 |
+  | 11 clumpy SNR 128^3 | E_cr/E_tot uniform / clumpy; clumpy effect | 0.0570 / 0.0532; -6.7% | 0.0545 / 0.0511; -6.3% |
+  | 15 pion bump 128^3 | hotspot; SED slope; suppression | 1.0 cell; 0.120; 0.949 | identical |
+
+  The wind bubble goes up: the energy scheme loses CR energy in adiabatic expansion (cold
+  rarefaction test -9%), and the shocked wind expands for most of the run. The shock-dominated
+  tests go down by 4-5%.
+- **Not re-baselined:** the other CR tests also run with the new default, and they pass in the
+  flag-on suite. Their committed figures and docstring numbers still show the energy scheme:
+  items 1-4, 6 and 9, Phase D, and the gradient checks. Item 9 Test A improved: 0.13-0.15% ->
+  0.08-0.13%.
+
+### 2026-10-09: CR entropy step 3 (gas-positivity safeguard, dual-energy interplay)
+
+- **Code (uncommitted):**
+  - `CosmicRayGreyParams.cr_entropy_max_thermal_drain` (0.5): the transfer may take at most
+    this fraction of the gas thermal energy above the floor per step; the rest stays in
+    `e_cr`.
+  - With gas `dual_energy`, cells whose pressure comes from the gas entropy take
+    `e_cr := e(s_cr)` without a transfer (`evolve_state._dual_energy_entropy_cells`, factored
+    out of `_dual_energy_select`), and the gas entropy row is re-synced afterwards.
+  - The `NotImplementedError` for `dual_energy` is removed.
+- **Why:** in a cold, CR-dominated double rarefaction (Einfeldt 1-2-3, P_th/P_cr = 1e-2 ...
+  1e-6) the energy scheme turns ~9% of the CR energy into start-up gas heat. `cr_entropy`
+  took it back, more than the gas had, and went NaN.
+- **New test** `cr_shock_tube_partition.test_cr_entropy_cold_rarefaction` (periodic, P_th
+  1e-4) passes:
+
+  | | energy scheme | cr_entropy |
+  |---|---|---|
+  | max \|K_cr/K_cr,0 - 1\| in the rarefaction, no / with dual energy | 9.1% / 7.4% | 0.89% / 0.75% |
+  | energy drift (both hit the gas pressure floor at start-up) | 4.6e-4 | 2.1e-4 |
+
+  - Known trade-off: at P_th/P_cr = 1e-6 with dual energy, the start-up region takes ~1e-4 of
+    the CR energy as heat, 8x the energy scheme. Without dual energy `cr_entropy` halves the
+    spurious heating.
+- **Flag off:** bitwise identical to HEAD `54c4655` for 1D relaxation, 2D MHD anisotropic,
+  and `dual_energy` with and without CRs.
+- **Flag on, full CR suite** (`/export/scratch/nknoell/phaseA/regress_step3_on/`, 3D test with
+  `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`):
+  - 48 pass. Failures: the 3 streaming tests (rejected by design) and the ring cap-alone test
+    (fails by design).
+  - Every printed metric is identical to the step-2 flag-on run (items 8 and 9, Phase D kappa
+    and injection, T3, ring 3a/3b/3c), so the safeguard and the dual-energy rule do not act in
+    any existing test.
 
 ### 2026-10-08: CR entropy step 2 (diffusion carried by s_cr) + full-suite reruns
 
@@ -131,7 +245,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
   `cosmic_ray_entropy_index` row, the s_cr flux in `hll._grey_cr_hll_rows`,
   `cr_grey_sources.cr_entropy_sync` / `cr_entropy_to_energy` in
   `_evolve_gas_state_unsplit`, and config validation. Details in DESIGN.md
-  "Open: conservative CR entropy at shocks" -> Status.
+  "Resolved: conservative CR entropy at shocks" -> Status.
 - **Design correction:** one sync per hydro step after the operator-split CR sources, not per
   RK stage. The CR sources are not applied inside the stages, and one sync makes
   `e_cr = e(s_cr)` exact after the RK average.
@@ -164,7 +278,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 ### 2026-10-08: D2 -> option a; design note written (no code)
 
-- User picked A6.7 option a. Design note: DESIGN.md "Open: conservative CR entropy at shocks
+- User picked A6.7 option a. Design note: DESIGN.md "Resolved: conservative CR entropy at shocks
   (Phase A plan D2, option a; design note 2026-10-08)".
 - **Core of the design:**
   - Add a CR entropy row `s_cr = P_cr rho^(1 - gamma_cr)`, advected as a passive

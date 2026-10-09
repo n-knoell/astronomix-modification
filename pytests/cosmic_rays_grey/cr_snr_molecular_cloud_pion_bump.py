@@ -75,6 +75,11 @@ explicitly deferred):**
    Egamma)`` shape function, to floating-point precision against naima) --
    item 15 is the first time it's exercised end-to-end from a real
    simulation's CR content rather than a hand-specified spectrum.
+
+**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
+DESIGN.md "Resolved: conservative CR entropy at shocks"; flag off / on, ``CR_NUM_CELLS=128``):
+identical to the printed digits -- pion hotspot 1.00 cell from the cloud centre, high-energy
+SED slope 0.120, low-energy suppression 0.949.
 """
 
 # ==== GPU selection ====
@@ -410,6 +415,7 @@ def test_snr_molecular_cloud_pion_bump(
 
     peak_i, peak_j = np.unravel_index(np.argmax(maps["morphology_map"]), maps["morphology_map"].shape)
     hotspot_dist = float(np.hypot(peak_i - cloud_i, peak_j - cloud_j))
+    print(f"pion hotspot distance from cloud centre: {hotspot_dist:.2f} cells")
     assert hotspot_dist <= hotspot_tolerance_cells, (
         f"Projected pion-decay emission peaks {hotspot_dist:.1f} cells from the molecular "
         f"cloud's own projected center ({cloud_i}, {cloud_j}) -- tolerance {hotspot_tolerance_cells} "
@@ -434,6 +440,7 @@ def test_snr_molecular_cloud_pion_bump(
     sed_lo_naive = sed_hi_1 * (e_lo / e_hi_1) ** slope
 
     suppression = 1.0 - float(sed_lo_actual / sed_lo_naive)
+    print(f"pion-bump SED: high-energy slope {float(slope):.3f}, low-energy suppression {suppression:.3f}")
     assert suppression > bump_suppression_min, (
         f"Pion-decay SED at 50 MeV ({float(sed_lo_actual):.3e}) is not suppressed enough below "
         f"the naive power-law extrapolation from the 3-30 GeV slope ({float(sed_lo_naive):.3e}) -- "

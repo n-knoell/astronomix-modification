@@ -116,7 +116,7 @@ class CosmicRayGreyConfig(NamedTuple):
     #: those cells, >= 1 for resolved shocks.
     dsa_velocity_consistency: float = 0.5
 
-    #: conservative CR entropy (DESIGN.md "Open: conservative CR entropy at
+    #: conservative CR entropy (DESIGN.md "Resolved: conservative CR entropy at
     #: shocks"): advect s_cr = P_cr rho^(1 - gamma_cr) as an extra passive row,
     #: with no -P_cr div u work, and at the end of every hydro step set
     #: e_cr = e(s_cr), giving the difference to the gas thermal energy (total
@@ -126,8 +126,12 @@ class CosmicRayGreyConfig(NamedTuple):
     #: flux is added to s_cr cell by cell (cr_grey_sources.
     #: cr_entropy_closure_source), so diffusion is unchanged. FV, unsplit RK2,
     #: HLL/HLLC only. Not with streaming (out of scope: the CR model is the
-    #: diffusion limit of Jiang & Oh 2018) or the gas dual_energy (not yet).
-    cr_entropy: bool = False
+    #: diffusion limit of Jiang & Oh 2018). Gas-positivity safeguard:
+    #: CosmicRayGreyParams.cr_entropy_max_thermal_drain. On by default since
+    #: 2026-10-09 (user decision after the M7 A/B runs, PROGRESS_PHASEA.md):
+    #: configs it does not support (streaming, split scheme, other Riemann
+    #: solvers) must set it to False explicitly.
+    cr_entropy: bool = True
 
 
 class CosmicRayGreyParams(NamedTuple):
@@ -248,3 +252,12 @@ class CosmicRayGreyParams(NamedTuple):
     #: cr_grey_injection.inject_crs_at_shocks. Matches
     #: find_shocks_pfrommer's own default.
     dsa_mach_min: float = 1.3
+
+    #: CosmicRayGreyConfig.cr_entropy gas-positivity safeguard: the per-step
+    #: transfer e_cr(energy) - e_cr(s_cr) may take at most this fraction of the
+    #: gas thermal energy above minimum_pressure; the rest stays in e_cr (total
+    #: energy is exact either way). Acts where the energy scheme has put
+    #: CR energy into spurious gas heating that the gas cannot return, e.g.
+    #: cold, CR-dominated, strongly expanding gas (DESIGN.md "Resolved:
+    #: conservative CR entropy at shocks", design step 6).
+    cr_entropy_max_thermal_drain: float = 0.5

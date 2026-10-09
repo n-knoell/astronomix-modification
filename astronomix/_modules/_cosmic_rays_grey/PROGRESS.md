@@ -7,12 +7,27 @@ file is what's actually done against it.
 Phase A test-plan work (`astronomix_CR_phaseA_test_plan.md`) is tracked in `PROGRESS_PHASEA.md`;
 scheme changes that come out of it are still logged here.
 
+## Done (2026-10-09): conservative CR entropy (Phase A D2, option a) -- default on
+
+- **Implementation:** `CosmicRayGreyConfig.cr_entropy`, now the default (steps 1-3), DESIGN.md
+  "Resolved: conservative CR entropy at shocks". CRs pass shocks adiabatically (post-shock K_cr
+  exact to round-off). Diffusion is carried exactly, and total energy is conserved.
+- **Verification:**
+  - With the flag off, bitwise identical to `54c4655`.
+  - The full CR suite passes with the flag on, except the streaming tests, which opt out
+    (streaming is out of scope).
+- **M7 A/B:** E_cr -19 to -33%, E_cr/injected 1.4-1.75 -> 1.07-1.16, eta(1 kpc) roughly
+  doubles. The CR energy entering through the open z boundaries falls by 60% at v_red = 1e4.
+- **Re-baselined:** items 7 (-4.6%), 8 (-4.7%), 10 (+26%: the energy scheme loses CR energy in
+  expansion), 11 (-4%) and 15 (unchanged).
+- Full log: `PROGRESS_PHASEA.md` (2026-10-08/09). Uncommitted.
+
 ## Proposed (2026-10-08): conservative CR entropy row (Phase A D2, option a) -- design only
 
 A6.1-A6.3 (`PROGRESS_PHASEA.md`) showed that the `-P_cr div u` energy scheme gives CRs part of
 the shock dissipation. The post-shock `K_cr` is 0.4-11% too high (M 1.4-100), does not
 converge, and depends on CFL; at M 2-3 the extra CR energy is 4-19% of e_th. The user chose
-the CR entropy formulation. Design note: DESIGN.md "Open: conservative CR entropy at shocks".
+the CR entropy formulation. Design note: DESIGN.md "Resolved: conservative CR entropy at shocks".
 Not implemented; awaiting review.
 
 ## Results (2026-10-08): M7 CR energy budget -- the excess comes in through the open z boundaries

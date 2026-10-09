@@ -392,7 +392,10 @@ def run_cwb(
             central_object_only=False,
         ),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
-            grey_cosmic_rays=True, diffusive_shock_acceleration=True
+            grey_cosmic_rays=True, diffusive_shock_acceleration=True,
+            # The CR entropy scheme (default since 2026-10-09) needs the unsplit
+            # RK2 scheme; this setup uses the split MUSCL one.
+            cr_entropy=False,
         ),
         # FIXES_TODO.md item 1b, round 14: radiative cooling, disabled by
         # default (CoolingConfig()'s own default is cooling=False), enabled

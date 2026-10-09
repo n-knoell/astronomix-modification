@@ -1672,7 +1672,7 @@ literature table was reproduced (only the method was validated, via the
 degenerate-limit checks above), so this is a genuine, independently-checked
 comparison rather than a tuned-to-pass one.
 
-## Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08)
+## Resolved: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08, default on 2026-10-09)
 
 Not implemented. The user picked option a of `astronomix_CR_phaseA_test_plan.md` A6.7 on
 2026-10-08; this note is for review before any code changes.
@@ -1745,15 +1745,30 @@ generic density-like passive row.
    spurious CR gain measured above, and it returns to the gas. `F_cr`, the relaxation, the cap
    and the guard are untouched. The guard acts through the closure Rusanov speed, so it enters
    via item 4.
-6. **Gas positivity safeguard.** If `delta < 0` would push the gas thermal energy below
-   `max(minimum_pressure, eps * P_th)` / (gamma - 1) (expected only in cold, CR-dominated,
-   strongly expanding cells, where `e_s` can exceed the `e_cr` energy value by truncation
-   error), clip `delta` there and keep the rest in `e_cr`. Count the clipped cells as a
-   diagnostic; they should be ~0 in the tests.
-7. **Interplay with gas `dual_energy`:** `delta` changes the gas internal energy, so the gas
-   entropy row must be re-synced after step 5 (`_dual_energy_sync`) in cells where the
-   total-energy pressure is used, and `delta` added through the entropy pressure where it is
-   not. To work out during implementation; CWB is the only dual-energy user.
+6. **Gas positivity safeguard (implemented, step 3).** A negative `delta` takes energy from the
+   gas. Per step it may take at most `CosmicRayGreyParams.cr_entropy_max_thermal_drain`
+   (default 0.5) of the gas thermal energy above `minimum_pressure`; the rest stays in `e_cr`,
+   and total energy is exact either way.
+   - Where it acts: in a cold, CR-dominated double rarefaction (Einfeldt's 1-2-3 problem,
+     `P_th/P_cr = 1e-2 ... 1e-6`) the energy scheme turns ~9% of the rarefied CRs' energy
+     into start-up gas heat. `cr_entropy` takes it back, which is more than the cold gas has:
+     without the safeguard the run goes NaN, with it K_cr stays within 0.9% (energy scheme
+     9.1%).
+   - Test: `cr_shock_tube_partition.test_cr_entropy_cold_rarefaction`.
+7. **Interplay with gas `dual_energy` (implemented, step 3).**
+   - In cells where dual energy takes the gas pressure from the gas entropy
+     (`evolve_state._dual_energy_entropy_cells`, factored out of `_dual_energy_select`),
+     `e_cr := e(s_cr)` and the gas is left unchanged. Dual energy already discards the
+     total-energy residue there as truncation error, so the transfer would heat tiny entropy
+     pressures or drain heat that is no longer there (measured: K_th up to 4e4x and a 12.7%
+     K_cr deficit before this rule).
+   - Everywhere else the transfer and the safeguard apply. The gas entropy row is re-synced
+     after the transfer.
+   - Result in the cold rarefaction: K_cr within 0.75% (energy scheme with dual energy 7.4%).
+   - Known trade-off: at `P_th/P_cr = 1e-6` the start-up region (u ~ 0, a total-energy cell)
+     takes ~1e-4 of the CR energy as heat, 8x the energy scheme's gas heating there. This is
+     the price of exact energy conservation in extremely CR-dominated cold gas. Without dual
+     energy, `cr_entropy` halves the spurious gas heating instead.
 
 What stays as it is: the `e_cr` row (the variable every consumer reads: momentum coupling,
 emission, injection, diagnostics, `F_cr` closure), the conservative `e_cr` fluxes (still needed
@@ -1811,6 +1826,22 @@ row and two `pow` evaluations per cell per stage.
     different `K_cr` conserves `sum e_cr` in one scheme and `sum s_cr` in the other, so this
     is truncation error.
 - **Results:** `PROGRESS_PHASEA.md`, 2026-10-08 step-1 entry.
+
+- **Step 3 implemented (2026-10-09, uncommitted):** the gas-positivity safeguard and the
+  dual-energy interplay (design steps 6 and 7 above). The `NotImplementedError` for
+  `dual_energy` is gone; streaming still raises (out of scope). With the flag off, everything
+  is bitwise identical to HEAD `54c4655`, including dual-energy runs with and without CRs
+  (`_dual_energy_select` was refactored).
+
+- **Default on (2026-10-09).** The M7 A/B runs showed a real difference (user's criterion):
+  - E_cr at 250 Myr -19% / -31% (v_red 1000, seeds 42 / 43) and -33% (v_red 1e4);
+  - E_cr/injected 1.41-1.75 -> 1.07-1.16;
+  - eta(1 kpc) 0.21-0.28 -> 0.38-0.44, against a seed scatter of 0.02-0.06.
+
+  Details: PROGRESS_PHASEA.md 2026-10-09. Configs the scheme does not support must set
+  `cr_entropy=False`: CWB (split scheme), the streaming tests, and the A6.1-A6.3
+  energy-scheme controls. Items 7, 8, 10, 11 and 15 are re-baselined (their docstrings
+  carry both numbers).
 
 ### Steps
 

@@ -70,6 +70,15 @@ identity above, which only compares the two runs against each other, and
 runs share the same, biased, injected-energy budget -- ``dsa_efficiency``
 only redirects a couple of percent of it into ``e_cr``), calibrated to
 agree to ~4e-6 relative error.
+
+**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
+DESIGN.md "Resolved: conservative CR entropy at shocks"; same code, flag off / on):
+``E_cr / E_total`` (DSA run) 0.0438 / 0.0552 (+26%), energy-partition identity 4.4e-4 /
+3.2e-4, control-vs-DSA total energy 1.9e-5 / 1.8e-5, Weaver forward shock 1.2% and interior
+pressure 23.5% in both (CR-free control run, identical). The sign is the opposite of the
+Sedov/DSA tests: the energy scheme loses CR energy in adiabatic expansion (Phase A cold
+rarefaction test: -9%), and the shocked wind expands for most of the run. The older numbers
+above (``E_cr`` ~1.6%) predate the adaptive DSA sampling and are kept as history.
 """
 
 # ==== GPU selection ====
@@ -306,6 +315,7 @@ def test_cr_wind_bubble(
     r_shock_weaver = weaver.get_outer_shock_radius(T_END_PHYS).to(u.pc).value
     r_shock_sim = control["r_shock_max"] * code_length_pc
     shock_rel_err = abs(r_shock_sim - r_shock_weaver) / r_shock_weaver
+    print(f"forward shock vs Weaver R_2: rel. err {shock_rel_err:.3e}")
     assert shock_rel_err < weaver_shock_radius_tol, (
         f"Control run's forward-shock radius (r={r_shock_sim:.4f} pc) does "
         f"not match Weaver's R_2(t)={r_shock_weaver:.4f} pc -- rel. err "
@@ -331,6 +341,7 @@ def test_cr_wind_bubble(
     interior_rel_err = float(
         abs(p_interior_sim - p_interior_weaver) / p_interior_weaver
     )
+    print(f"interior pressure vs Weaver: rel. err {interior_rel_err:.3e}")
     assert interior_rel_err < weaver_interior_pressure_tol, (
         f"Control run's shocked-wind interior pressure ({p_interior_sim:.4e}) "
         f"does not match Weaver's analytic value ({p_interior_weaver:.4e}) -- "
@@ -339,6 +350,7 @@ def test_cr_wind_bubble(
 
     # --- Differential CR checks (both runs) ---
     self_consistency_rel_err = abs(control["E_total"] - dsa["E_total"]) / control["E_total"]
+    print(f"control vs DSA total energy: rel. err {self_consistency_rel_err:.3e}")
     assert self_consistency_rel_err < self_consistency_tol, (
         f"Control and DSA runs' realized total energy disagree: "
         f"control={control['E_total']:.6e}, dsa={dsa['E_total']:.6e} -- rel. "
@@ -346,6 +358,7 @@ def test_cr_wind_bubble(
     )
 
     cr_fraction = dsa["E_cr"] / dsa["E_total"]
+    print(f"E_cr / E_total (DSA run) = {cr_fraction:.4f}")
     assert 0.001 < cr_fraction < 0.2, (
         f"DSA run's CR energy fraction ({cr_fraction:.4f}) is outside the "
         f"expected (0.001, 0.2) band for dsa_efficiency={DSA_EFFICIENCY} -- "
@@ -356,6 +369,7 @@ def test_cr_wind_bubble(
     thermal_kinetic_dsa = dsa["E_thermal"] + dsa["E_kinetic"]
     energy_diverted = thermal_kinetic_control - thermal_kinetic_dsa
     partition_rel_err = abs(energy_diverted - dsa["E_cr"]) / dsa["E_cr"]
+    print(f"energy-partition identity rel. err {partition_rel_err:.3e}")
     assert partition_rel_err < partition_tol, (
         f"Energy-partition identity violated: thermal+kinetic energy "
         f"diverted from the control run ({energy_diverted:.6e}) does not "

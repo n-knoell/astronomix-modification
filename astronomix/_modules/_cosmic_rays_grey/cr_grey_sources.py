@@ -376,9 +376,10 @@ def cr_entropy_to_energy(
     gamma: Union[float, Float[Array, ""]],
     registered_variables: RegisteredVariables,
     params: SimulationParams,
+    gas_energy_cells=None,
 ) -> STATE_TYPE:
     """Take ``e_cr`` from the advected CR entropy and give the difference to the
-    gas thermal energy (DESIGN.md "Open: conservative CR entropy at shocks",
+    gas thermal energy (DESIGN.md "Resolved: conservative CR entropy at shocks",
     design step 5).
 
     At the end of a hydro step the conservative ``e_cr`` row (fluxes plus the
@@ -386,7 +387,9 @@ def cr_entropy_to_energy(
     ``E_gas + e_cr`` exactly, but the partition between them is not unique at
     shocks. ``s_cr`` carries the CRs adiabatically, so ``e_cr := e(s_cr)``
     and ``P_th += (gamma - 1) (e_cr,old - e_cr,new)`` keeps the total and
-    fixes the partition.
+    fixes the partition. Where that would take more than
+    ``cr_entropy_max_thermal_drain`` of the gas thermal energy, the transfer
+    is limited and the rest stays in ``e_cr``.
 
     Args:
         primitive_state: The primitive state after the full hydro step,
@@ -394,6 +397,11 @@ def cr_entropy_to_energy(
         gamma: The gas adiabatic index.
         registered_variables: The registered variables.
         params: The simulation parameters.
+        gas_energy_cells: Optional boolean mask of the cells whose gas pressure
+            comes from the total energy (gas dual energy). Elsewhere ``e_cr``
+            is taken from ``s_cr`` and the gas is left unchanged: the
+            dual-energy scheme already discards the total-energy residue there.
+            None: all cells.
 
     Returns:
         The state with ``e_cr`` and the gas pressure updated.
@@ -406,12 +414,27 @@ def cr_entropy_to_energy(
         params.cosmic_ray_grey_params.gamma_cr,
     )
     delta = e_cr_energy - e_cr_entropy
-    primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(
-        e_cr_entropy
+
+    # Gas-positivity safeguard: a negative delta takes energy from the gas;
+    # take at most cr_entropy_max_thermal_drain of its thermal energy above
+    # the floor and leave the rest in e_cr.
+    p_th = primitive_state[registered_variables.pressure_index]
+    available = jnp.maximum(p_th - params.minimum_pressure, 0.0) / (gamma - 1.0)
+    delta = jnp.maximum(
+        delta, -params.cosmic_ray_grey_params.cr_entropy_max_thermal_drain * available
     )
-    return primitive_state.at[registered_variables.pressure_index].add(
+
+    e_cr_new = e_cr_energy - delta
+    if gas_energy_cells is not None:
+        e_cr_new = jnp.where(gas_energy_cells, e_cr_new, e_cr_entropy)
+        delta = jnp.where(gas_energy_cells, delta, 0.0)
+
+    primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(e_cr_new)
+    primitive_state = primitive_state.at[registered_variables.pressure_index].add(
         (gamma - 1.0) * delta
     )
+    # Keep s_cr consistent with the (possibly limited) e_cr.
+    return cr_entropy_sync(primitive_state, registered_variables, params)
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables", "axis"])
@@ -428,7 +451,7 @@ def cr_entropy_closure_source(
     axis: int,
 ) -> STATE_TYPE:
     """Add the non-adiabatic CR transport of one axis to the CR entropy row
-    (DESIGN.md "Open: conservative CR entropy at shocks", design step 4).
+    (DESIGN.md "Resolved: conservative CR entropy at shocks", design step 4).
 
     The ``e_cr`` interface flux is the advective part (mass flux x upwind
     ``e_cr / rho``, which ``s_cr`` already gets for its own row) plus the

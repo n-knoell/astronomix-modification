@@ -66,6 +66,13 @@ case) interprets similar behavior.
 See ``astronomix/_modules/_cosmic_rays_grey/PROGRESS.md``'s 2026-09-11
 entry for exact calibrated numbers, tolerances, and the reasoning behind
 this test's specific parameter choices.
+
+**Re-baselined 2026-10-09 for the CR entropy default** (``CosmicRayGreyConfig.cr_entropy=True``,
+DESIGN.md "Resolved: conservative CR entropy at shocks"; flag off / on, run at N = 128 because
+256^3 does not fit an 11 GB GPU): ``E_cr / E_total`` uniform 0.0570 / 0.0545, clumpy 0.0532 /
+0.0511 (-4%), clumpy-vs-uniform DSA ``E_cr`` -6.7% / -6.3% (Check 2), energy-partition
+identity 6e-5-7e-5 / 9e-5-1e-4, total-energy conservation ~5e-5 in all four runs. The older
+numbers above are kept as history.
 """
 
 # ==== GPU selection ====
@@ -360,6 +367,7 @@ def test_cr_snr_clumpy_medium(
         ("clumpy DSA", clumpy_dsa),
     ):
         rel_err = abs(run["E_total"] - E_total_initial) / E_total_initial
+        print(f"{name}: total-energy rel. err {rel_err:.3e}")
         assert rel_err < conservation_tol, (
             f"{name} run's total energy is not conserved: final "
             f"{run['E_total']:.6f} vs. initial {E_total_initial:.6f} "
@@ -372,6 +380,7 @@ def test_cr_snr_clumpy_medium(
         thermal_kinetic_dsa = dsa["E_thermal"] + dsa["E_kinetic"]
         energy_diverted = thermal_kinetic_ctrl - thermal_kinetic_dsa
         partition_rel_err = abs(energy_diverted - dsa["E_cr"]) / dsa["E_cr"]
+        print(f"{name}: energy-partition identity rel. err {partition_rel_err:.3e}, E_cr / E_total = {dsa['E_cr'] / E_total_initial:.4f}")
         assert partition_rel_err < partition_tol, (
             f"{name}: energy-partition identity violated -- thermal+kinetic "
             f"energy diverted from the control run ({energy_diverted:.6e}) "
@@ -384,6 +393,7 @@ def test_cr_snr_clumpy_medium(
     # note) -- check the magnitude of the difference, not a presumed
     # direction.
     clumpy_effect = (clumpy_dsa["E_cr"] - uni_dsa["E_cr"]) / uni_dsa["E_cr"]
+    print(f"clumpy vs uniform DSA E_cr: {clumpy_effect:+.4f}")
     assert abs(clumpy_effect) > clumpy_effect_min, (
         f"Clumpy-DSA run's E_cr ({clumpy_dsa['E_cr']:.6e}) does not differ "
         f"measurably from the uniform-DSA run's ({uni_dsa['E_cr']:.6e}) -- "

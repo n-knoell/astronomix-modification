@@ -67,7 +67,7 @@ def cr_entropy_from_e_cr(
     """CR entropy density ``s_cr = P_cr * rho^(1 - gamma_cr)`` (= ``rho * K_cr``).
 
     Conserved by adiabatic flow, ``d s_cr/dt + div(s_cr u) = 0`` (Semenov,
-    Kravtsov & Diemer 2021, eq. 8); see DESIGN.md "Open: conservative CR entropy
+    Kravtsov & Diemer 2021, eq. 8); see DESIGN.md "Resolved: conservative CR entropy
     at shocks".
 
     Args:

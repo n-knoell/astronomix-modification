@@ -159,6 +159,34 @@ def _dual_energy_sync(
     )
 
 
+def _dual_energy_entropy_cells(
+    primitive_state: STATE_TYPE,
+    p_energy,
+    p_entropy,
+    shock_mask,
+    gamma: Union[float, Float[Array, ""]],
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+):
+    """The dual-energy cell selection: ``(cold, valid, use_entropy)``.
+
+    ``use_entropy`` marks cold (thermal energy below ``dual_energy_eta`` of
+    the kinetic energy, or at the pressure floor), unshocked cells with a
+    valid entropy pressure: there the gas pressure comes from the entropy row
+    and the total-energy residue is discarded as truncation error.
+    """
+    rho = primitive_state[registered_variables.density_index]
+    u = get_absolute_velocity(primitive_state, config, registered_variables)
+    kinetic = 0.5 * rho * u**2
+    cold = (p_entropy / (gamma - 1.0) < params.dual_energy_eta * kinetic) | (
+        p_energy <= params.minimum_pressure
+    )
+    valid = (p_entropy > 0) & jnp.isfinite(p_entropy)
+    use_entropy = (~shock_mask) & valid & cold
+    return cold, valid, use_entropy
+
+
 def _dual_energy_select(
     primitive_state: STATE_TYPE,
     shock_mask,
@@ -178,14 +206,9 @@ def _dual_energy_select(
     rho = primitive_state[registered_variables.density_index]
     p_energy = primitive_state[registered_variables.pressure_index]
     p_entropy = primitive_state[registered_variables.entropy_index] * rho ** (gamma - 1.0)
-    u = get_absolute_velocity(primitive_state, config, registered_variables)
-    kinetic = 0.5 * rho * u**2
-
-    cold = (p_entropy / (gamma - 1.0) < params.dual_energy_eta * kinetic) | (
-        p_energy <= params.minimum_pressure
+    cold, valid, use_entropy = _dual_energy_entropy_cells(
+        primitive_state, p_energy, p_entropy, shock_mask, gamma, config, params, registered_variables
     )
-    valid = (p_entropy > 0) & jnp.isfinite(p_entropy)
-    use_entropy = (~shock_mask) & valid & cold
     # Cold cells inside the (widened) shock band keep the total-energy
     # pressure, which carries the shock heating, but never drop below the
     # entropy pressure: in a hypersonic pre-shock cell p_energy is dominated
@@ -1057,9 +1080,24 @@ def _evolve_gas_state_unsplit(
     # the gas. After the operator-split sources, so the -P_cr div u work they
     # add to e_cr is replaced by the adiabatic change s_cr carries.
     if registered_variables.cosmic_ray_entropy_active:
+        # With gas dual energy, cells whose gas pressure comes from the gas
+        # entropy do not take part in the energy transfer (their total-energy
+        # residue is already discarded as truncation error).
+        gas_energy_cells = None
+        if registered_variables.entropy_active:
+            p_gas = primitive_state[registered_variables.pressure_index]
+            _, _, use_entropy = _dual_energy_entropy_cells(
+                primitive_state, p_gas, p_gas, shock_mask, gamma, config, params,
+                registered_variables,
+            )
+            gas_energy_cells = ~use_entropy
         primitive_state = cr_entropy_to_energy(
-            primitive_state, gamma, registered_variables, params
+            primitive_state, gamma, registered_variables, params, gas_energy_cells
         )
+        # The transfer changed the gas pressure; keep the dual-energy entropy
+        # row consistent with it (the next step re-syncs it anyway).
+        if registered_variables.entropy_active:
+            primitive_state = _dual_energy_sync(primitive_state, gamma, registered_variables)
 
     return primitive_state
 

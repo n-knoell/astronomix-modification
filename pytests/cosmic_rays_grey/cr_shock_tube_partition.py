@@ -113,6 +113,7 @@ from astronomix.option_classes.simulation_config import (
     BoundarySettings1D,
     DOUBLE_PRECISION,
     OPEN_BOUNDARY,
+    PERIODIC_BOUNDARY,
     REFLECTIVE_BOUNDARY,
     DOUBLE_MINMOD,
     HLL,
@@ -205,8 +206,10 @@ def reference_structure(tube):
 def run_shock_tube(tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HLL, cr_entropy=False):
     """Run a shock tube in float64. Returns ``x, rho, u, P_th, P_cr`` (numpy).
 
-    ``cr_entropy`` switches on the conservative CR entropy scheme
-    (``CosmicRayGreyConfig.cr_entropy``).
+    ``cr_entropy`` selects the conservative CR entropy scheme
+    (``CosmicRayGreyConfig.cr_entropy``). The library default is True since 2026-10-09; this
+    helper keeps False as its default so that A6.1-A6.3 keep measuring the energy scheme
+    (tracked controls).
     """
     config = SimulationConfig(
         solver_mode=FINITE_VOLUME,
@@ -600,7 +603,7 @@ def test_cr_entropy_shock_partition(
 ):
     """A6.1-A6.3 with ``CosmicRayGreyConfig.cr_entropy``: the CRs pass the shock adiabatically.
 
-    Acceptance test of the conservative CR entropy scheme (DESIGN.md "Open: conservative CR
+    Acceptance test of the conservative CR entropy scheme (DESIGN.md "Resolved: conservative CR
     entropy at shocks"). Same tubes and metrics as the energy-scheme tests above, with the flag
     on; the energy scheme runs alongside for the figure.
 
@@ -745,9 +748,105 @@ def test_cr_shock_tube_energy_conservation(num_cells=800, tol=1e-12):
             )
 
 
+def test_cr_entropy_cold_rarefaction(num_cells=400, p_th=1e-4, max_entropy_error=1e-2, tol=1e-12):
+    """``cr_entropy`` gas-positivity safeguard in cold, CR-dominated gas.
+
+    Periodic box, ``rho = 1``, ``P_cr = 1``, ``P_th = 1e-4``, ``u = -1.5 | +1.5``: a double
+    rarefaction (Einfeldt's 1-2-3 problem) in the middle, a colliding shock at the wrap,
+    ``t = 0.15``. The energy scheme turns ~9% of the rarefied CRs' energy into spurious gas
+    heat at start-up; ``cr_entropy`` takes it back, more than the cold gas has, so without the
+    safeguard (``cr_entropy_max_thermal_drain``) the gas pressure goes negative (NaN).
+
+    Checks with the flag on, with and without the gas ``dual_energy``: no NaN, the CR entropy
+    in the rarefaction (``|x - 0.5| < 0.15``) within ``max_entropy_error`` of its initial value
+    (measured 0.89% / 0.75% without / with dual energy; energy scheme 9.1% / 7.4%), mass
+    conserved to ``tol``, and total energy no worse than the energy scheme (both hit the gas
+    pressure floor at start-up).
+
+    Known trade-off (not gated): energy conservation moves the energy scheme's truncation-level
+    CR excess into the cold gas, ~1e-4 of the CR energy. With P_th/P_cr = 1e-6 and dual energy
+    that heats the start-up region 8x more than the energy scheme does; without dual energy
+    cr_entropy halves the spurious gas heating.
+
+    Args:
+        num_cells: Cell count.
+        p_th: Initial gas pressure.
+        max_entropy_error: Bound on ``|K_cr / K_cr,0 - 1|`` in the rarefaction.
+        tol: Bound on the relative mass drift.
+    """
+    results = {}
+    for dual in (False, True):
+        for flag in (False, True):
+            config = SimulationConfig(
+                solver_mode=FINITE_VOLUME,
+                dimensionality=1,
+                num_cells=num_cells,
+                box_size=1.0,
+                dual_energy=dual,
+                boundary_settings=BoundarySettings1D(
+                    left_boundary=PERIODIC_BOUNDARY, right_boundary=PERIODIC_BOUNDARY
+                ),
+                numerical_precision=DOUBLE_PRECISION,
+                cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, cr_entropy=flag),
+            )
+            registered_variables = get_registered_variables(config)
+            x = np.asarray(get_helper_data(config).geometric_centers)
+            state = jnp.zeros((registered_variables.num_vars, num_cells))
+            state = state.at[registered_variables.density_index].set(1.0)
+            state = state.at[registered_variables.velocity_index].set(jnp.where(x < 0.5, -1.5, 1.5))
+            state = state.at[registered_variables.pressure_index].set(p_th)
+            state = state.at[registered_variables.cosmic_ray_e_index].set(1.0 / (GAMMA_CR - 1.0))
+            config = finalize_config(config, state.shape)
+            params = SimulationParams(
+                t_end=0.15,
+                gamma=GAMMA,
+                cosmic_ray_grey_params=CosmicRayGreyParams(gamma_cr=GAMMA_CR, reduced_streaming_speed=0.0),
+            )
+            final = np.asarray(time_integration(state, config, params, registered_variables))
+
+            def totals(st):
+                rho = st[registered_variables.density_index]
+                u = st[registered_variables.velocity_index]
+                e = st[registered_variables.pressure_index] / (GAMMA - 1.0) + 0.5 * rho * u**2
+                return rho.sum(), (e + st[registered_variables.cosmic_ray_e_index]).sum()
+
+            rho = final[registered_variables.density_index]
+            k_cr = final[registered_variables.cosmic_ray_e_index] * (GAMMA_CR - 1.0) / rho**GAMMA_CR
+            middle = np.abs(x - 0.5) < 0.15
+            (m0, e0), (m1, e1) = totals(np.asarray(state)), totals(final)
+            results[dual, flag] = dict(
+                nan=bool(np.any(np.isnan(final))),
+                k_err=float(np.max(np.abs(k_cr[middle] - 1.0))),
+                d_mass=abs(m1 / m0 - 1.0),
+                d_energy=abs(e1 / e0 - 1.0),
+            )
+            r = results[dual, flag]
+            print(
+                f"dual_energy={dual!s:5} cr_entropy={flag!s:5}  NaN={r['nan']}  "
+                f"max|K_cr/K_cr,0 - 1| (rarefaction) {r['k_err']:.2e}  "
+                f"mass drift {r['d_mass']:.1e}  energy drift {r['d_energy']:.1e}"
+            )
+
+    for dual in (False, True):
+        r = results[dual, True]
+        assert not r["nan"], f"cr_entropy, dual_energy={dual}: NaN."
+        assert r["k_err"] < max_entropy_error, f"dual_energy={dual}: K_cr error {r['k_err']:.3e}."
+        assert r["k_err"] < results[dual, False]["k_err"], "cr_entropy is not better than the energy scheme."
+    # The start-up of the 1-2-3 problem hits the gas pressure floor in every variant, so the
+    # total energy is not exact here (energy scheme 4.6e-4); exact conservation is gated in
+    # test_cr_shock_tube_energy_conservation. Here: mass exact, energy no worse than without
+    # cr_entropy (measured 2.1e-4).
+    r = results[False, True]
+    assert r["d_mass"] < tol, f"cr_entropy: mass drift {r['d_mass']:.2e}."
+    assert r["d_energy"] <= results[False, False]["d_energy"], (
+        f"cr_entropy energy drift {r['d_energy']:.2e} > energy scheme {results[False, False]['d_energy']:.2e}."
+    )
+
+
 if __name__ == "__main__":
     test_cr_shock_tube_partition()
     test_cr_shock_tube_gupta()
     test_cr_shock_tube_mach_scan()
     test_cr_entropy_shock_partition()
     test_cr_shock_tube_energy_conservation()
+    test_cr_entropy_cold_rarefaction()
