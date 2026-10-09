@@ -1057,6 +1057,11 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
                 "time_integrator == RK2_SSP and riemann_solver in (HLL, HLLC, HLLC_LM); "
                 "set cosmic_ray_grey_config.cr_entropy=False for other schemes."
             )
+        if cr_grey_config.cr_entropy_transfer not in (0, 1):
+            raise ValueError(
+                "cosmic_ray_grey_config.cr_entropy_transfer must be CR_ENTROPY_TRANSFER_GLOBAL (0) "
+                "or CR_ENTROPY_TRANSFER_SHOCKS (1)."
+            )
         # Streaming is out of scope for the CR entropy scheme (diffusion limit
         # of Jiang & Oh 2018 only).
         if cr_grey_config.streaming:

@@ -1864,6 +1864,30 @@ row and two `pow` evaluations per cell per stage.
   - Open: accept, or limit the transfer relative to the gas thermal energy
     (PROGRESS_PHASEA.md 2026-10-09).
 
+- **Shock-only transfer implemented (2026-10-09, opt-in):**
+  - Setting: `CosmicRayGreyConfig.cr_entropy_transfer = CR_ENTROPY_TRANSFER_SHOCKS`.
+  - Mask: `cr_grey_sources.cr_entropy_shock_mask`, the Gupta, Sharma & Mignone (2021,
+    Sec. 4.4) detector: div u < 0, relative total-pressure jump
+    >= `cr_entropy_shock_threshold` (0.5) along an axis, contact filter grad T . grad rho > 0,
+    widened by `cr_entropy_shock_dilation` (2) cells.
+  - The gas takes the energy difference only inside the mask; elsewhere `e_cr := e(s_cr)` and
+    the difference is discarded. This is the Semenov, Kravtsov & Diemer (2021, Sec. 2.2) choice:
+    CRs always by entropy, energy exchange only at shocks, strict energy conservation given up.
+  - With gas `dual_energy`, the mask is and-ed with "not an entropy cell".
+  - 1D results (`cr_shock_tube_partition.test_cr_entropy_shock_only`, PROGRESS_PHASEA.md
+    2026-10-09):
+    - post-shock K_cr exact (<= 1.3e-10) in six tubes, CFL-independent;
+    - closed-box energy drift ~1e-4;
+    - item-2 squeeze: gas entropy error 4.5e-4 (global 0.34, off 1.5e-3) and the least ringing
+      at N = 256-2048;
+    - cold rarefaction K_cr exact.
+  - **M7 (3 runs):** no drain (halo P_th as with the flag off; eta, v_out and H_gas close to
+    off). But 11-15% of the CR injection (~1% of the SN energy) is created: in the expanding
+    halo the CRs are reset to the adiabat while the gas keeps the heat the energy scheme gave
+    it. So not a fix for M7 on its own.
+  - The complete Semenov et al. scheme would also take the gas thermal energy from its entropy
+    away from shocks.
+
 ### Steps
 
 1. Row + flag + steps 2, 3 and 5 (advection only, no closure source): check A6.1 with

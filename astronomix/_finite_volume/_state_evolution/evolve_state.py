@@ -43,8 +43,12 @@ from astronomix._finite_volume._riemann_solver._riemann_solver import _riemann_s
 from astronomix._finite_volume._magnetic_update._magnetic_field_update import magnetic_update
 from astronomix._integrators._explicit_rk import rk2_ssp
 from astronomix._modules._time_integrator_sources import _time_integrator_sources
+from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
+    CR_ENTROPY_TRANSFER_SHOCKS,
+)
 from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_entropy_closure_source,
+    cr_entropy_shock_mask,
     cr_entropy_sync,
     cr_entropy_to_energy,
     cr_flux_relaxation_update,
@@ -1084,13 +1088,21 @@ def _evolve_gas_state_unsplit(
         # entropy do not take part in the energy transfer (their total-energy
         # residue is already discarded as truncation error).
         gas_energy_cells = None
+        # Shock-only transfer (CR_ENTROPY_TRANSFER_SHOCKS): the gas takes the
+        # difference only in shock zones; elsewhere it is discarded.
+        if config.cosmic_ray_grey_config.cr_entropy_transfer == CR_ENTROPY_TRANSFER_SHOCKS:
+            gas_energy_cells = cr_entropy_shock_mask(
+                primitive_state, config, registered_variables, params
+            )
         if registered_variables.entropy_active:
             p_gas = primitive_state[registered_variables.pressure_index]
             _, _, use_entropy = _dual_energy_entropy_cells(
                 primitive_state, p_gas, p_gas, shock_mask, gamma, config, params,
                 registered_variables,
             )
-            gas_energy_cells = ~use_entropy
+            gas_energy_cells = (
+                ~use_entropy if gas_energy_cells is None else gas_energy_cells & ~use_entropy
+            )
         primitive_state = cr_entropy_to_energy(
             primitive_state, gamma, registered_variables, params, gas_energy_cells
         )

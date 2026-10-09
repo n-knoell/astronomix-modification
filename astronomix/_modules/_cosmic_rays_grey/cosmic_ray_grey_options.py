@@ -31,6 +31,20 @@ DSA_EFFICIENCY_CONSTANT = 0
 DSA_EFFICIENCY_KANG_RYU_2013 = 1
 
 
+#: CosmicRayGreyConfig.cr_entropy_transfer modes: where the difference between
+#: the energy-scheme e_cr and e(s_cr) is handed to the gas thermal energy.
+
+#: every cell, every step: total energy exact ("Et+Scr" of Gupta et al. 2021).
+#: Drains the thermal energy of CR-dominated gas (PROGRESS_PHASEA.md,
+#: 2026-10-09).
+CR_ENTROPY_TRANSFER_GLOBAL = 0
+
+#: only in shock zones (cr_grey_sources.cr_entropy_shock_mask); elsewhere
+#: e_cr := e(s_cr) and the difference is discarded, so total energy is exact
+#: only to truncation error. Semenov, Kravtsov & Diemer (2021, Sec. 2.2) style.
+CR_ENTROPY_TRANSFER_SHOCKS = 1
+
+
 class CosmicRayGreyConfig(NamedTuple):
 
     #: main switch for the grey two-moment cosmic-ray model. Currently
@@ -133,6 +147,17 @@ class CosmicRayGreyConfig(NamedTuple):
     #: transfer drains the thermal energy of CR-dominated gas (M7 halo P_th
     #: x1e-3..1e-4, item-2 gas entropy errors up to 84%).
     cr_entropy: bool = False
+
+    #: where the cr_entropy energy difference goes to the gas: one of
+    #: CR_ENTROPY_TRANSFER_GLOBAL (default) or CR_ENTROPY_TRANSFER_SHOCKS (only
+    #: in shock zones; DESIGN.md "Open: conservative CR entropy at shocks",
+    #: shock-only variant).
+    cr_entropy_transfer: int = CR_ENTROPY_TRANSFER_GLOBAL
+
+    #: cells by which the cr_entropy shock mask is widened along every axis
+    #: (CR_ENTROPY_TRANSFER_SHOCKS only), so that a shock smeared over a few
+    #: cells and moving during the step stays covered.
+    cr_entropy_shock_dilation: int = 2
 
 
 class CosmicRayGreyParams(NamedTuple):
@@ -262,3 +287,9 @@ class CosmicRayGreyParams(NamedTuple):
     #: cold, CR-dominated, strongly expanding gas (DESIGN.md "Open:
     #: conservative CR entropy at shocks", design step 6).
     cr_entropy_max_thermal_drain: float = 0.5
+
+    #: CR_ENTROPY_TRANSFER_SHOCKS: minimum relative total-pressure jump
+    #: abs(P_t,i+1 - P_t,i-1) / min(P_t,i+1, P_t,i-1) along an axis for a
+    #: converging cell to count as shocked (Gupta, Sharma & Mignone 2021,
+    #: Sec. 4.4, who find 0.5-1 works well).
+    cr_entropy_shock_threshold: float = 0.5

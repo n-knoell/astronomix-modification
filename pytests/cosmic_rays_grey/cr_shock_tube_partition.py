@@ -136,6 +136,8 @@ from astronomix.test_setups.reference_solutions.pfrommer_riemann_solver import (
 
 # astronomix modules
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
+    CR_ENTROPY_TRANSFER_GLOBAL,
+    CR_ENTROPY_TRANSFER_SHOCKS,
     CosmicRayGreyConfig,
     CosmicRayGreyParams,
 )
@@ -203,7 +205,10 @@ def reference_structure(tube):
     )
 
 
-def run_shock_tube(tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HLL, cr_entropy=False):
+def run_shock_tube(
+    tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HLL, cr_entropy=False,
+    cr_entropy_transfer=CR_ENTROPY_TRANSFER_GLOBAL,
+):
     """Run a shock tube in float64. Returns ``x, rho, u, P_th, P_cr`` (numpy).
 
     ``cr_entropy`` selects the conservative CR entropy scheme
@@ -220,7 +225,9 @@ def run_shock_tube(tube, num_cells, C_cfl=0.4, limiter=MINMOD, riemann_solver=HL
         numerical_precision=DOUBLE_PRECISION,
         limiter=limiter,
         riemann_solver=riemann_solver,
-        cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, cr_entropy=cr_entropy),
+        cosmic_ray_grey_config=CosmicRayGreyConfig(
+            grey_cosmic_rays=True, cr_entropy=cr_entropy, cr_entropy_transfer=cr_entropy_transfer
+        ),
     )
     registered_variables = get_registered_variables(config)
     x = get_helper_data(config).geometric_centers
@@ -841,6 +848,130 @@ def test_cr_entropy_cold_rarefaction(num_cells=400, p_th=1e-4, max_entropy_error
     )
 
 
+
+def _run_1d(variant, num_cells, state_fn, t_end, boundary, reduced_streaming_speed=0.0):
+    """1D float64 run for the shock-only test. ``variant``: "off", "global" or "shocks";
+    ``state_fn(x, registered_variables)`` returns the initial primitive state."""
+    cr_kwargs = dict(
+        off=dict(cr_entropy=False),
+        **{"global": dict(cr_entropy=True, cr_entropy_transfer=CR_ENTROPY_TRANSFER_GLOBAL)},
+        shocks=dict(cr_entropy=True, cr_entropy_transfer=CR_ENTROPY_TRANSFER_SHOCKS),
+    )[variant]
+    config = SimulationConfig(
+        solver_mode=FINITE_VOLUME,
+        dimensionality=1,
+        num_cells=num_cells,
+        box_size=1.0,
+        boundary_settings=BoundarySettings1D(left_boundary=boundary, right_boundary=boundary),
+        numerical_precision=DOUBLE_PRECISION,
+        cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, **cr_kwargs),
+    )
+    registered_variables = get_registered_variables(config)
+    x = np.asarray(get_helper_data(config).geometric_centers)
+    state = state_fn(x, registered_variables)
+    config = finalize_config(config, state.shape)
+    params = SimulationParams(
+        t_end=t_end,
+        gamma=GAMMA,
+        cosmic_ray_grey_params=CosmicRayGreyParams(
+            gamma_cr=GAMMA_CR, reduced_streaming_speed=reduced_streaming_speed
+        ),
+    )
+    final = np.asarray(time_integration(state, config, params, registered_variables))
+    assert not np.any(np.isnan(final)), f"{variant}: NaN."
+    return x, np.asarray(state), final, registered_variables
+
+
+def _total_energy(state, registered_variables):
+    rho = state[registered_variables.density_index]
+    u = state[registered_variables.velocity_index]
+    return (
+        state[registered_variables.pressure_index] / (GAMMA - 1.0)
+        + 0.5 * rho * u**2
+        + state[registered_variables.cosmic_ray_e_index]
+    ).sum()
+
+
+def test_cr_entropy_shock_only(
+    max_entropy_error=1e-6,
+    max_energy_drift=1e-3,
+    max_gas_entropy_error=1e-2,
+):
+    """``CR_ENTROPY_TRANSFER_SHOCKS``: the cr_entropy energy difference goes to the gas only in
+    shock zones (``cr_grey_sources.cr_entropy_shock_mask``, Gupta et al. 2021 detector), in the
+    style of Semenov, Kravtsov & Diemer (2021, Sec. 2.2). Checks against the energy scheme
+    ("off") and the global transfer:
+
+    1. Post-shock CR entropy exact, as with the global transfer: item-6, Gupta A, M = 10 tubes
+       (measured <= 1.3e-10; energy scheme 1-11%).
+    2. Total energy in the closed (reflecting) item-6 box: no longer exact, but bounded
+       (measured 9.9e-5; off and global 4e-14).
+    3. CR-dominated smooth squeeze (item-2 setup, P_cr/P_th = 33, N = 512): no transfer outside
+       shocks, so the gas entropy is not damaged (measured max abs(K_th - 1) 4.5e-4; global 0.34,
+       off 1.5e-3) and the ringing is below the energy scheme's (0.019 vs 0.044; global 0.136).
+    4. Cold, CR-dominated double rarefaction (P_th/P_cr = 1e-4, periodic): K_cr exact (6.8e-15).
+
+    Args:
+        max_entropy_error: Bound on the post-shock ``abs(dK_cr,2)``.
+        max_energy_drift: Bound on the closed-box total-energy drift.
+        max_gas_entropy_error: Bound on ``max abs(K_th / K_th,0 - 1)`` in the squeeze.
+    """
+    # 1. shocks
+    for label, tube, n in (("item 6", ITEM6, 800), ("Gupta A", GUPTA_A, 2000), ("M = 10", pfrommer_mach_tube(10.0), 1600)):
+        ref = reference_structure(tube)
+        x, rho, _, p_th, p_cr = run_shock_tube(
+            tube, n, cr_entropy=True, cr_entropy_transfer=CR_ENTROPY_TRANSFER_SHOCKS
+        )
+        m = partition_metrics(tube, x, rho, p_th, p_cr, ref)
+        print(f"{label:8s} N={n}: dK_cr,2 {m['dK_2']:+.2e}, dP_th,2 {m['dP_th_2']:+.2e}, drho_2 {m['drho_2']:+.2e}")
+        assert abs(m["dK_2"]) < max_entropy_error, f"{label}: dK_cr,2 = {m['dK_2']:.3e}."
+
+    # 2. closed box
+    def tube_state(tube):
+        def fn(x, rv):
+            left = x < X0
+            state = jnp.zeros((rv.num_vars, x.size))
+            for row, a, b in zip((rv.density_index, rv.velocity_index, rv.pressure_index), tube.left[:3], tube.right[:3]):
+                state = state.at[row].set(jnp.where(left, a, b))
+            return state.at[rv.cosmic_ray_e_index].set(jnp.where(left, tube.left[3], tube.right[3]) / (GAMMA_CR - 1.0))
+        return fn
+
+    _, s0, f, rv = _run_1d("shocks", 800, tube_state(ITEM6), 3 * ITEM6.t_end, REFLECTIVE_BOUNDARY)
+    drift = abs(_total_energy(f, rv) / _total_energy(s0, rv) - 1.0)
+    print(f"closed item-6 box: total-energy drift {drift:.2e}")
+    assert drift < max_energy_drift, f"shock-only energy drift {drift:.3e}."
+
+    # 3. CR-dominated smooth squeeze (item 2)
+    def squeeze(x, rv):
+        state = jnp.zeros((rv.num_vars, x.size)).at[rv.density_index].set(1.0)
+        state = state.at[rv.velocity_index].set(-0.2 * (x - 0.5)).at[rv.pressure_index].set(0.01)
+        return state.at[rv.cosmic_ray_e_index].set(1.0)
+
+    ringing, gas_error = {}, {}
+    for variant in ("off", "global", "shocks"):
+        x, _, f, rv = _run_1d(variant, 512, squeeze, 1.0, OPEN_BOUNDARY, reduced_streaming_speed=0.1)
+        rho = f[rv.density_index]
+        window = (x > 0.28) & (x < 0.42)
+        interior = (x > 0.1) & (x < 0.9)
+        ringing[variant] = float(rho[window].max() - rho[window].min())
+        gas_error[variant] = float(np.max(np.abs(f[rv.pressure_index][interior] / rho[interior] ** GAMMA / 0.01 - 1.0)))
+        print(f"squeeze {variant:6s}: rho ringing {ringing[variant]:.4f}, max abs(K_th - 1) {gas_error[variant]:.2e}")
+    assert gas_error["shocks"] < max_gas_entropy_error, f"shock-only gas entropy error {gas_error['shocks']:.3e}."
+    assert ringing["shocks"] <= ringing["off"], "shock-only ringing exceeds the energy scheme's."
+
+    # 4. cold rarefaction
+    def rarefaction(x, rv):
+        state = jnp.zeros((rv.num_vars, x.size)).at[rv.density_index].set(1.0)
+        state = state.at[rv.velocity_index].set(jnp.where(x < 0.5, -1.5, 1.5)).at[rv.pressure_index].set(1e-4)
+        return state.at[rv.cosmic_ray_e_index].set(1.0 / (GAMMA_CR - 1.0))
+
+    x, _, f, rv = _run_1d("shocks", 400, rarefaction, 0.15, PERIODIC_BOUNDARY)
+    k_cr = f[rv.cosmic_ray_e_index] * (GAMMA_CR - 1.0) / f[rv.density_index] ** GAMMA_CR
+    k_err = float(np.max(np.abs(k_cr[np.abs(x - 0.5) < 0.15] - 1.0)))
+    print(f"cold rarefaction: max abs(K_cr - 1) {k_err:.2e}")
+    assert k_err < max_entropy_error, f"cold rarefaction K_cr error {k_err:.3e}."
+
+
 if __name__ == "__main__":
     test_cr_shock_tube_partition()
     test_cr_shock_tube_gupta()
@@ -848,3 +979,4 @@ if __name__ == "__main__":
     test_cr_entropy_shock_partition()
     test_cr_shock_tube_energy_conservation()
     test_cr_entropy_cold_rarefaction()
+    test_cr_entropy_shock_only()

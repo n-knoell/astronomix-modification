@@ -502,3 +502,75 @@ def cr_entropy_closure_source(
     return conserved_change.at[registered_variables.cosmic_ray_entropy_index].add(
         weight * closure_change
     )
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables"])
+def cr_entropy_shock_mask(
+    primitive_state: STATE_TYPE,
+    config: SimulationConfig,
+    registered_variables: RegisteredVariables,
+    params: SimulationParams,
+):
+    """Shock zones for ``CR_ENTROPY_TRANSFER_SHOCKS``: where the ``cr_entropy``
+    energy difference is handed to the gas.
+
+    The detector of Gupta, Sharma & Mignone (2021, Sec. 4.4), on the given
+    state:
+
+    1. converging flow, ``div u < 0`` (central differences);
+    2. a relative total-pressure jump ``abs(P_t,i+1 - P_t,i-1) /
+       min(P_t,i+1, P_t,i-1) >= cr_entropy_shock_threshold`` along at least one
+       axis, with ``P_t = P_th + P_cr``;
+    3. no contact: ``grad T . grad rho > 0`` with ``T = P_th / rho`` (across a
+       contact in pressure balance T and rho change in opposite directions).
+
+    The mask is widened by ``cr_entropy_shock_dilation`` cells along every
+    axis, with non-periodic shifts so a shock at one open boundary is not
+    wrapped onto the other (as in ``evolve_state._dual_energy_shock_mask``).
+
+    Args:
+        primitive_state: The primitive state.
+        config: The simulation configuration.
+        registered_variables: The registered variables.
+        params: The simulation parameters.
+
+    Returns:
+        Boolean mask over the grid.
+    """
+    rho = primitive_state[registered_variables.density_index]
+    p_th = primitive_state[registered_variables.pressure_index]
+    p_t = p_th + pressure_from_e_cr(
+        primitive_state[registered_variables.cosmic_ray_e_index],
+        params.cosmic_ray_grey_params.gamma_cr,
+    )
+    temperature = p_th / rho
+    dims = config.dimensionality
+
+    def central(field, axis):
+        return _stencil_add(field, indices=(1, -1), factors=(1.0, -1.0), axis=axis)
+
+    div_u = sum(central(primitive_state[axis + 1], axis) for axis in range(dims))
+    jump = jnp.zeros_like(p_t, dtype=bool)
+    contact_dot = jnp.zeros_like(p_t)
+    for axis in range(dims):
+        p_next = jnp.roll(p_t, -1, axis=axis)
+        p_prev = jnp.roll(p_t, 1, axis=axis)
+        jump = jump | (
+            jnp.abs(p_next - p_prev) / jnp.minimum(p_next, p_prev)
+            >= params.cosmic_ray_grey_params.cr_entropy_shock_threshold
+        )
+        contact_dot = contact_dot + central(temperature, axis) * central(rho, axis)
+    mask = (div_u < 0) & jump & (contact_dot > 0)
+
+    def shift(field, offset, axis):
+        shifted = jnp.roll(field, offset, axis=axis)
+        edge = [slice(None)] * field.ndim
+        edge[axis] = slice(0, 1) if offset > 0 else slice(-1, None)
+        return shifted.at[tuple(edge)].set(False)
+
+    for _ in range(config.cosmic_ray_grey_config.cr_entropy_shock_dilation):
+        widened = mask
+        for axis in range(dims):
+            widened = widened | shift(mask, 1, axis) | shift(mask, -1, axis)
+        mask = widened
+    return mask

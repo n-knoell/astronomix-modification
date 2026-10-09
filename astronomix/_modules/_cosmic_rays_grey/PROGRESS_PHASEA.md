@@ -75,6 +75,74 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 ## Log (newest first)
 
+### 2026-10-09: M7 with the shock-only transfer -- no drain, but CR energy is created in the expanding halo
+
+Runs: `--cr-entropy=shocks`, `--res=0.5`, 250 Myr; the off and global runs are the earlier ones.
+Analysis: `/export/scratch/nknoell/phaseA/m7ab/ab3_analyze.py`. Late = 150-250 Myr.
+
+| run | mode | E_cr(250) | E_cr/inj | energy created (discarded) | CR adv. in through z | halo median P_th | eta | v_out | H_gas |
+|---|---|---|---|---|---|---|---|---|---|
+| v_red 1000, seed 42 | off | 4.27e11 | 1.41 | -- | 9.9e10 | 3.8e-2 | 0.28 | 3.1 | 351 |
+| | global | 3.48e11 | 1.15 | -- | 7.7e10 | 7.3e-5 | 0.38 | 3.9 | 358 |
+| | shocks | 5.72e11 | 1.89 | 3.6e10 (12% of CR inj.) | 1.7e11 | 3.6e-2 | 0.25 | 3.1 | 345 |
+| v_red 1000, seed 43 | off | 4.71e11 | 1.56 | -- | 1.3e11 | 3.7e-2 | 0.22 | 3.1 | 336 |
+| | global | 3.22e11 | 1.07 | -- | 6.3e10 | 6.9e-5 | 0.40 | 4.2 | 360 |
+| | shocks | 5.04e11 | 1.67 | 3.3e10 (11%) | 1.3e11 | 3.5e-2 | 0.26 | 3.0 | 367 |
+| v_red 1e4, seed 42 | off | 5.23e11 | 1.75 | -- | 1.7e11 | 2.7e-2 | 0.21 | 3.3 | 280 |
+| | global | 3.48e11 | 1.16 | -- | 7.1e10 | 3.3e-6 | 0.44 | 4.4 | 323 |
+| | shocks | 6.21e11 | 2.07 | 4.3e10 (14.5%) | 2.0e11 | 2.8e-2 | 0.24 | 3.3 | 323 |
+
+- **No drain:** shock-only keeps the halo gas intact, and eta, v_out and H_gas are close to
+  the energy scheme. H_gas differs by -6 / +31 / +43 pc against a seed scatter of ~15 pc, so
+  the v_red 1e4 difference is not settled with one seed.
+- **But energy is created:** 11-15% of the CR injection, ~1-1.3% of the total SN energy
+  (1e51 erg thermal + 1e50 erg CR per SN). In the expanding halo the energy scheme turns
+  ~10% of the CR energy into spurious gas heat. Shock-only resets the CRs to the exact adiabat
+  but leaves that heat in the gas, so the energy is counted twice.
+  - The CR budget gets worse (E_cr/inj 1.67-2.07 vs 1.41-1.75 off), and so does the boundary
+    inflow.
+- **Side result:** in M7's smooth expansion the energy scheme's own CR error is ~10% of the
+  CR injection, numerically moved into gas heat. That is larger than its shock error.
+- **Verdict for M7:** neither entropy variant beats the energy scheme as is. Global drains the
+  thin gas; shock-only double-counts.
+  - The literature's complete version (Semenov et al. 2021, Sec. 2.2) also evolves the gas by
+    its entropy away from shocks, so the spurious gas heat would not be kept either. Both
+    fluids would then be adiabatic in smooth flow, and the energy-scheme exchange would be
+    dropped as truncation error.
+  - That needs gas dual energy with the "entropy except in shock zones" selection (ours uses
+    entropy only in cold, supersonic cells). User decision.
+
+### 2026-10-09: cr_entropy shock-only transfer (opt-in) -- 1D results; M7 runs queued
+
+- **Code (uncommitted):**
+  - `CR_ENTROPY_TRANSFER_GLOBAL` / `CR_ENTROPY_TRANSFER_SHOCKS`;
+  - `CosmicRayGreyConfig.cr_entropy_transfer` and `cr_entropy_shock_dilation` (2);
+  - `CosmicRayGreyParams.cr_entropy_shock_threshold` (0.5);
+  - `cr_grey_sources.cr_entropy_shock_mask` (Gupta et al. 2021 detector, N-D);
+  - hook in `_evolve_gas_state_unsplit` through the existing `gas_energy_cells`;
+  - M7 pilot `--cr-entropy=shocks` (suffix `_crentshock`).
+  - Flag off: bitwise identical to `54c4655` (four setups).
+- **New test** `test_cr_entropy_shock_only` passes (CPU, about 1 min).
+- **1D results (off / global / shocks):**
+
+  | test | off | global | shocks |
+  |---|---|---|---|
+  | post-shock dK_cr,2: item 6 (C_cfl 0.1 / 0.4 / 0.8) | 1.21 / 1.06 / 0.83% | <= 4e-14 | <= 4e-14 |
+  | post-shock dK_cr,2: Gupta A / B, M 3 / 10 / 100 | 6.4% / 10.6%, 6.0 / 10.6 / 11.2% | <= 7e-6 | <= 5e-6 |
+  | plateau dP_th,2 (worst) | up to 10.5% | 9.6e-4 | 1.9e-3 |
+  | closed-box energy drift (item 6 / Gupta A) | 4e-14 / 2e-14 | 4e-14 / 3e-14 | -9.9e-5 / +8.3e-5 |
+  | item 2 at N 512 / 2048: rho ringing | 0.044 / 0.27 | 0.136 / 0.34 | 0.019 / 0.17 |
+  | item 2 at N 512 / 2048: max abs(K_th - 1) | 1.5e-3 / 0.09 | 0.34 / 0.82 | 4.5e-4 / 0.019 |
+  | cold rarefaction: max abs(K_cr - 1); energy drift | 9.1e-2; 4.6e-4 | 8.9e-3; 2.1e-4 | 7e-15; 2.7e-3 |
+  | finite-kappa tube (v_red 10, kappa 1/300): dK_cr,2 | 7.65% | 7.86% | 7.66% |
+
+  The finite-kappa row is CR diffusion across the shock, so the adiabatic reference does not
+  apply. The variants agree, so the shock-only mode does no harm with diffusion.
+- **M7:** three runs queued with `launch_when_free.sh` (v_red 1000 seeds 42 and 43, v_red 1e4
+  seed 42, all `--cr-entropy=shocks`). It waits for a GPU with no compute processes: another
+  user had all ten busy. The wrapper now logs the CR loss and the gas gain of the transfer
+  separately, so the discarded energy is measured. Analysis: `ab3_analyze.py`.
+
 ### 2026-10-09: cr_entropy default reverted to off (user decision)
 
 - `CosmicRayGreyConfig.cr_entropy = False` again; flag docstring updated.
