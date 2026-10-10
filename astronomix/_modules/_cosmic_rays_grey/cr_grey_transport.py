@@ -270,8 +270,8 @@ def cr_total_pressure_flux(
 ) -> bool:
     """Whether the gas Riemann flux carries the CR pressure ("P2", 2026-10-10).
 
-    True for grey CRs with the unsplit finite-volume scheme, hydro, and the
-    HLLC / HLLC-LM solver. Then (Gupta, Sharma & Mignone 2021, "Eg+Ecr
+    True for grey CRs with the unsplit finite-volume scheme and the HLLC /
+    HLLC-LM solver, hydro or MHD. Then (Gupta, Sharma & Mignone 2021, "Eg+Ecr
     Unsplit-pdv"):
 
     - ``P_th + P_cr`` enters the normal momentum flux, the gas energy flux
@@ -290,17 +290,22 @@ def cr_total_pressure_flux(
     so CR transport in gas at rest gets no extra dissipation. Literature and
     test results: PROGRESS_PHASEA.md (2026-10-09/10).
 
+    MHD (2026-10-10): the FV MHD scheme is a Strang split, gas half-step /
+    ``magnetic_update`` (induction + Lorentz force) / gas half-step
+    (``evolve_state._evolve_state_fv``). The gas half-steps are ordinary
+    hydro HLLC solves on the gas-only state, so ``P_cr`` joins ``P_th`` there
+    exactly as in hydro; the magnetic pressure never enters the gas Riemann
+    solver, unlike in a single HLLD solve (Thomas, Pfrommer & Pakmor 2021).
+
     Not used for HLL (it would also have to dissipate ``e_cr`` at the gas
-    speed to balance a static contact, which degrades CR transport), AM-HLLC,
-    the split scheme, or MHD (needs ``P_cr`` in the MHD solver's total
-    pressure); those keep the source-term coupling.
+    speed to balance a static contact, which degrades CR transport), AM-HLLC
+    or the split scheme; those keep the source-term coupling.
     """
     return bool(
         registered_variables.cosmic_ray_e_active
         and config.solver_mode == FINITE_VOLUME
         and config.split == UNSPLIT
         and config.riemann_solver in (HLLC, HLLC_LM)
-        and not config.mhd
     )
 
 

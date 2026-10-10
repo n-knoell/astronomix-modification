@@ -41,10 +41,11 @@ ambient + E_EXPLOSION vs. final thermal+kinetic+CR) independently holds to
 ~1.6e-5 (control) / ~1.7e-5 (DSA). (Old fixed 1-cell sampling: identity
 ~2.1e-5, conservation ~1.7e-5.)
 
-**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
-RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
-``E_cr / E_total`` 0.0434 [0.0434], energy-partition identity 3.0e-6 [3.3e-5], total-energy
-conservation 1.3e-5 (control) / 1.3e-5 (DSA) [1.6e-5 / 1.7e-5].
+**Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
+the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
+stage-wise source coupling in brackets):
+``E_cr / E_total`` 0.0401 [0.0434], energy-partition identity 1.0e-6 [3.0e-6], total-energy
+conservation 1.3e-5 (control) / 1.3e-5 (DSA) [same].
 """
 
 # ==== GPU selection ====
@@ -253,7 +254,8 @@ def test_cr_sedov_taylor(
     # energy budget at dsa_efficiency=0.1, dsa_mach_min=1.3 (calibrated
     # ~6.1% -- see module docstring; 18.7% after fix step 4 of 2026-10-04,
     # which was spurious injection; 4.3% at N = 48 with the DSA velocity
-    # check of 2026-10-07 -- see cr_dsa_mach_dependence.py).
+    # check of 2026-10-07 -- see cr_dsa_mach_dependence.py; 4.0% with the
+    # total-pressure HLLC flux of 2026-10-10).
     cr_fraction = dsa["E_cr"] / E_total_initial
     print(f"E_cr / E_total = {cr_fraction:.4f}")
     assert 0.01 < cr_fraction < 0.3, (

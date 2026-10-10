@@ -1712,7 +1712,7 @@ comparison rather than a tuned-to-pass one.
   - In the advected case the gas work `-v . grad(P_cr)` also differentiates the jump of `P_cr`:
     the "vdp" form that fails Gupta, Sharma & Mignone (2021)'s Fig. 3.
 - **Change** (`cr_grey_transport.cr_total_pressure_flux`: grey CRs, FV, unsplit, HLLC or
-  HLLC-LM, hydro). This is Gupta et al. (2021)'s "Eg+Ecr Unsplit-pdv", as in Kudoh & Hanawa
+  HLLC-LM; hydro, and MHD since 2026-10-10 evening). This is Gupta et al. (2021)'s "Eg+Ecr Unsplit-pdv", as in Kudoh & Hanawa
   (2016), Pfrommer et al. (2017) and the two-moment scheme of Thomas, Pfrommer & Pakmor (2021).
   - `hll._hllc_solver`:
     - `P_th + P_cr` in the normal momentum flux, in the gas energy flux `u (E_g + P_th +
@@ -1731,8 +1731,13 @@ comparison rather than a tuned-to-pass one.
   - HLL with the same flux also balances, but only if `e_cr` gets the HLL dissipation at the
     gas speed too. That degrades CR transport in gas at rest: item 1 L2 6.0e-3 -> 1.1e-2,
     item 4 D/kappa - 1 0.0155 -> 0.0206 (prototype P2 + HLL, PROGRESS_PHASEA.md).
-  - HLL, AM-HLLC, the split scheme and MHD keep the source coupling. MHD needs `P_cr` in the
-    MHD solver's total pressure (TPP21's HLLD), not done.
+  - HLL, AM-HLLC and the split scheme keep the source coupling.
+- **MHD.** The FV MHD scheme is a Strang split: gas half-step / `magnetic_update` (induction
+  and Lorentz force) / gas half-step (`evolve_state._evolve_state_fv`).
+  - The gas half-steps are ordinary hydro solves on the gas-only state, so P2 applies there
+    unchanged. The magnetic pressure never enters the gas Riemann solver, unlike TPP21's single
+    HLLD solve.
+  - Enabling it only meant lifting the `not config.mhd` exclusion.
 - **Results** (HLLC; prototype and repo agree, PROGRESS_PHASEA.md 2026-10-09/10):
   - A1.3: round-off in 1D (static 4e-15, advected 1e-13) and 3D hydro (slab, bubble).
   - Items 1, 3, 4 and A1.1 unchanged.

@@ -65,9 +65,10 @@ no-ops: `E_cr` is a clearly nonzero fraction of the budget when
 measurably changes the final state (confirms it does real work, not just
 exercising a dead code path).
 
-**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
-RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
-relative total-energy error 1.0e-10 [1.0e-10], mass 0 [1e-16], ``E_cr(t_end)`` 0.03517 [0.03510].
+**Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
+the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
+stage-wise source coupling in brackets):
+relative total-energy error 1.0e-10 [1.0e-10], mass 0 [0], ``E_cr(t_end)`` 0.03332 [0.03517].
 """
 
 # ==== GPU selection ====

@@ -25,10 +25,12 @@ et al. (2021, Fig. 3).
 
 - 1D: max abs(P_tot - 1) at most 5e-15 (static) and 1e-13 (advected), the same for ``u``.
 - 3D hydro: oblique slab 2e-16 / 3e-14 (static / advected), bubble 3e-16 (N = 64).
+- 3D MHD (incl. B^2/2): oblique slab 2e-16 / 6e-14. The gas half-steps of the Strang-split
+  MHD scheme are ordinary HLLC solves, and the uniform tangential field is untouched.
 - The diffusive variant (``v_red = 10``, reported only): ~2e-3 static, ~1.5e-2 advected, with
   max abs(u) ~1e-2. This is physical: the CRs diffuse out of the contact.
 
-**Source-term coupling (HLL, and MHD with any solver): the balance is NOT kept.** Measured
+**Source-term coupling (HLL; before 2026-10-10 also HLLC): the balance is NOT kept.** Measured
 2026-10-09 with the stage-wise CR coupling, HLL + minmod. The errors converge only at order
 ~0.5-0.75:
 
@@ -40,8 +42,8 @@ et al. (2021, Fig. 3).
 - 3D oblique slab (hydro, HLL), static: 4.0e-2 / 2.6e-2 / 1.7e-2 (N = 32 / 64 / 128), max
   abs(u) 5.6e-3 ... 4.6e-3; advected 1.4e-2 / 9.8e-3 / 6.1e-3, 1.6e-2 ... 1.1e-2. Bubble 4.4e-2
   / 2.2e-2 / 1.6e-2, max abs(u) 2.4e-2 ... 1.2e-2.
-- 3D MHD (incl. B^2/2): static 4.6e-2 / 3.3e-2 / 2.1e-2, advected 1.4e-2 / 9.2e-3 / 6.7e-3
-  (N = 32 / 64 / 128), the same as hydro.
+- 3D MHD (incl. B^2/2, HLL): static 4.6e-2 / 3.3e-2 / 2.1e-2, advected 1.4e-2 / 9.2e-3 /
+  6.7e-3 (N = 32 / 64 / 128), the same as hydro.
   - The field is uniform at t = 0. It stays exact with no contact, or with B along the normal.
   - The spurious flows compress the tangential field: max abs(dB) up to 0.2 next to the static
     contact.
@@ -66,8 +68,8 @@ Thomas, Pfrommer & Pakmor 2021, Sec. 4.3).
 - The adiabatic work uses the Riemann face velocities.
 - HLLC then sees a contact, not a pressure jump, and neither energy is diffused across it.
 
-The HLL and MHD runs below are tracked bounds: the errors must not exceed the measured values
-(with a margin) and must decrease with N.
+The 1D HLL runs below are tracked bounds: the errors must not exceed the measured values (with a
+margin) and must decrease with N.
 
 See ``PROGRESS_PHASEA.md`` (2026-10-09/10).
 """
@@ -281,42 +283,36 @@ def _run_3d(num_cells, geometry, advected=False, mhd=False, riemann_solver=HLLC)
 def test_cr_contact_pressure_balance_3d(
     resolutions=(32, 64),
     cases=(
-        ("slab", False, False, None),
-        ("slab", True, False, None),
-        ("bubble", False, False, None),
-        ("slab", False, True, 4.5e-2),
-        ("slab", True, True, 1.5e-2),
+        ("slab", False, False),
+        ("slab", True, False),
+        ("bubble", False, False),
+        ("slab", False, True),
+        ("slab", True, True),
     ),
-    max_error_hllc=1e-10,
-    max_du_mhd=3e-2,
+    max_error=1e-10,
 ):
-    """A1.3 in 3D: oblique slabs (static and advected) and a static CR bubble with HLLC and the
-    total-pressure flux; oblique MHD slabs with HLL and the source coupling (tracked; MHD has no
-    total-pressure flux yet).
+    """A1.3 in 3D with HLLC and the total-pressure flux: oblique slabs (static and advected; hydro
+    and MHD) and a static CR bubble.
 
     Args:
         resolutions: Cell counts (N = 128 adds ~4-6 min per case in float64).
-        cases: ``(geometry, advected, mhd, bound)``. Hydro (``bound`` None): max abs(P_tot -
-            P_ref) and max abs(u - u0) below ``max_error_hllc`` at every N (measured <= 3e-14).
-            MHD: max abs(P_tot - P_ref) below ``bound`` at the finest N and decreasing with N
-            (measured at N = 64: 3.3e-2 / 9.2e-3 static / advected).
-        max_error_hllc: See ``cases``.
-        max_du_mhd: Bound on the spurious velocity in MHD (measured <= 1.8e-2 at N = 64).
+        cases: ``(geometry, advected, mhd)``.
+        max_error: Bound on max abs(P_tot - P_ref) and max abs(u - u0), every case and N.
     """
     results = {}
-    for geometry, advected, mhd, _ in cases:
-        runs = [_run_3d(n, geometry, advected, mhd, HLL if mhd else HLLC) for n in resolutions]
+    for geometry, advected, mhd in cases:
+        runs = [_run_3d(n, geometry, advected, mhd) for n in resolutions]
         results[geometry, advected, mhd] = runs
         print(
-            f"{geometry:6s} {'advected' if advected else 'static':8s} {'MHD, HLL ' if mhd else 'hydro, HLLC'}: "
+            f"{geometry:6s} {'advected' if advected else 'static':8s} {'MHD' if mhd else 'hydro':5s}: "
             f"max|P_tot - P_ref| {' '.join(f'{r['max_dp']:.1e}' for r in runs)}, "
             f"max|u - u0| {' '.join(f'{r['max_du']:.1e}' for r in runs)}"
         )
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     for ax, key, title in (
-        (axes[0], ("slab", False, True), "oblique slab, static, MHD (HLL)"),
-        (axes[1], ("bubble", False, False), "CR bubble, static, hydro (HLLC)"),
+        (axes[0], ("slab", False, True), "oblique slab, static, MHD"),
+        (axes[1], ("bubble", False, False), "CR bubble, static, hydro"),
     ):
         image = ax.imshow(results[key][-1]["slice"].T, origin="lower", extent=(0, 1, 0, 1), cmap="RdBu_r")
         ax.set_title(f"{title}: P_tot - P_ref (z = 0.5), N = {resolutions[-1]}", fontsize=10)
@@ -325,28 +321,22 @@ def test_cr_contact_pressure_balance_3d(
         fig.colorbar(image, ax=ax)
     for (geometry, advected, mhd), runs in results.items():
         axes[2].loglog(resolutions, [max(r["max_dp"], 1e-17) for r in runs], "o-",
-                       label=f"{geometry}, {'advected' if advected else 'static'}, {'MHD (HLL)' if mhd else 'hydro (HLLC)'}")
+                       label=f"{geometry}, {'advected' if advected else 'static'}, {'MHD' if mhd else 'hydro'}")
     axes[2].set_xlabel("N")
     axes[2].set_ylabel("max |P_tot - P_ref|")
     axes[2].set_title("Pressure-balance error (exact: 0)")
     axes[2].legend(fontsize=8)
-    fig.suptitle("A1.3 (3D): CR-thermal contacts in pressure balance -- hydro HLLC to round-off, MHD source coupling not")
+    fig.suptitle("A1.3 (3D, HLLC total-pressure flux): CR-thermal contacts in pressure balance")
     fig.tight_layout()
     PICS_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(PICS_DIR / "cr_contact_pressure_balance_3d_test.svg")
     plt.close(fig)
 
-    for geometry, advected, mhd, bound in cases:
-        runs = results[geometry, advected, mhd]
+    for (geometry, advected, mhd), runs in results.items():
         label = f"{geometry} advected={advected} mhd={mhd}"
-        if bound is None:
-            for r in runs:
-                assert r["max_dp"] < max_error_hllc, f"{label}: max|P_tot - P_ref| {r['max_dp']:.2e}."
-                assert r["max_du"] < max_error_hllc, f"{label}: max|u - u0| {r['max_du']:.2e}."
-        else:
-            assert _decreasing([r["max_dp"] for r in runs]), f"{label}: P_tot error not decreasing with N."
-            assert runs[-1]["max_dp"] < bound, f"{label}: max|P_tot - P_ref| {runs[-1]['max_dp']:.2e}."
-            assert runs[-1]["max_du"] < max_du_mhd, f"{label}: max|u - u0| {runs[-1]['max_du']:.2e}."
+        for r in runs:
+            assert r["max_dp"] < max_error, f"{label}: max|P_tot - P_ref| {r['max_dp']:.2e}."
+            assert r["max_du"] < max_error, f"{label}: max|u - u0| {r['max_du']:.2e}."
 
 
 if __name__ == "__main__":

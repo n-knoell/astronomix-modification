@@ -42,9 +42,10 @@ tuning a tolerance to force a pass.
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md's Phase D section.
 
-**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
-RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
-AD-vs-FD at the initial guess 2.6e-3 [9.0e-4]; recovered ``mach_scale`` 1.06375 [1.06358]
+**Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
+the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
+stage-wise source coupling in brackets):
+AD-vs-FD at the initial guess 5.1e-3 [2.6e-3]; recovered ``mach_scale`` 1.06340 [1.06375]
 (true 1.0).
 """
 

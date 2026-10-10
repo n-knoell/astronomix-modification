@@ -71,11 +71,12 @@ runs share the same, biased, injected-energy budget -- ``dsa_efficiency``
 only redirects a couple of percent of it into ``e_cr``), calibrated to
 agree to ~4e-6 relative error.
 
-**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
-RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
-``E_cr / E_total`` (DSA run) 0.0438 [0.0438], energy-partition identity 1.8e-4 [4.4e-4],
-control-vs-DSA total energy 8.0e-6 [1.9e-5], Weaver forward shock 1.2% and interior pressure
-23.5% [same; CR-free control].
+**Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
+the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
+stage-wise source coupling in brackets):
+``E_cr / E_total`` (DSA run) 0.0430 [0.0438], energy-partition identity 1.4e-4 [1.8e-4],
+control-vs-DSA total energy 6.2e-6 [8.0e-6], Weaver forward shock 1.6% [1.2%] and interior
+pressure 22.7% [23.5%] (CR-free control; P2 widens its HLLC signal speeds by 1.1 too).
 """
 
 # ==== GPU selection ====

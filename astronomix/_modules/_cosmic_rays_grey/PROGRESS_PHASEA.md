@@ -46,7 +46,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A6.6 finite-`kappa` two-moment shock tube | 3 | todo | | | |
 | A6.7 remedy evaluation (decision) | -- | done | DESIGN.md | option a (CR entropy, Semenov et al. 2021 eq. 8 + Et+Scr energy bookkeeping); design note written | 2026-10-08 |
 | **Cross-cutting** | | | | | |
-| X1 baseline registry, stale docstrings | 1 | todo | | | |
+| X1 baseline registry, stale docstrings | 1 | todo (docstrings re-baselined to HLLC + P2 2026-10-10; registry open) | | | |
 | X2 tighten loose gates | 1 | todo | | | |
 | X3 multi-resolution runs | -- | todo | | covered per test | |
 | X4 production-config variants | -- | todo | | covered per test | |
@@ -74,6 +74,95 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-10 (late): stale docstring numbers re-baselined to HLLC + P2
+
+- Test docstrings whose quoted values came from the stage-wise source coupling now carry the
+  HLLC + P2 values, with the 2026-10-09 values in brackets. Sources are the as-configured runs in
+  `p2_repo/logs/` and `p2_mhd/logs/`:
+  - item 7 `cr_sedov_taylor.py`: E_cr/E_tot 0.0401 [0.0434], partition identity 1.0e-6 [3.0e-6];
+    the inline calibration comment is extended too;
+  - item 8 `cr_dsa_mach_dependence.py`: KR13 0.0810, CS14 0.0423, ratio 0.5217 (4.34%);
+  - item 10 `cr_wind_bubble.py`: E_cr/E_tot 0.0430, R_2 1.6%, interior P 22.7%, identity 1.4e-4,
+    control vs DSA 6.2e-6;
+  - item 11 `cr_snr_clumpy_medium.py` (N 128): uniform 0.0530, clumpy 0.0494, -6.72%, identity
+    2.3e-5 / 2.6e-5;
+  - item 18 `cr_energy_budget.py`: E_cr(t_end) 0.03332 [0.03517];
+    `cr_mhd_energy_budget.py`: energy 1.05e-10, single precision 2.88e-9, E_cr(t_end) 0.0405
+    [0.04295];
+  - Phase D `cr_phase_d_injection_efficiency_inference.py`: AD-vs-FD 5.1e-3, mach_scale 1.06340.
+- Docstring text only; no gates changed (all still pass with margin). The item 11 figure is not
+  regenerated: the committed file is 256^3, which does not fit 11 GB.
+- X1 "stale docstrings" part is done for P2; the baseline registry is still todo.
+
+### 2026-10-10 (evening): remaining MHD CR tests with HLLC + P2 forced -- no change
+
+- **Setup:** the files that leave the solver at the HLL default were run with HLLC as the
+  `SimulationConfig` default (P2 active), all tests per file, figures off:
+  - `cr_anisotropic_ring.py`;
+  - `cr_anisotropic_diffusion_oblique.py`;
+  - `cr_diffusion_rate.py` (its 2D/3D cases are MHD);
+  - `cr_divergence_b_preservation.py`.
+  - Logs: `/export/scratch/nknoell/phaseA/p2_mhd_forced/logs/`. Compared with today's
+    as-configured (HLL) run in `p2_repo/logs/`.
+- **Results:**
+  - All pass, as before; the flux-cap-alone ring test is the strict xfail, as before.
+  - Metrics agree to the printed 3-4 digits:
+    - oblique leak ratio 2.1818e-2 both;
+    - ring 3a L1/Linf/kappa_perp,num identical, 3c L1 2.00e-2 -> 1.99e-2;
+    - T2/T3 rates identical except the last digit of T2c and T3 D_z (9.5e-5 -> 1.02e-4).
+  - The spurious velocities (1e-11 ... 1e-9) are 5-20% larger with HLLC; still negligible.
+  - div B stays at round-off: 5.9-7.1e-15 vs 6.8-8.0e-15.
+- **Conclusion:** these tests measure CR transport through static or uniform gas, where P2 does
+  nothing (consistent with the hydro sweep). Among the MHD tests, only A1.3 (contact exact) gains.
+  `cr_mhd_energy_budget` is unchanged in quality: energy at round-off, and E_cr shifts by -5.7%
+  with no reference to judge it.
+
+### 2026-10-10 (afternoon): P2 extended to MHD; M7 changes -- gravity is not well-balanced with P2
+
+- **Code:** `cr_total_pressure_flux` no longer excludes MHD.
+  - The FV MHD scheme is a Strang split (gas half-step / `magnetic_update` / gas half-step);
+    the gas half-steps are ordinary HLLC solves on the gas-only state.
+  - A1.3's 3D MHD slabs now run with HLLC and the round-off gates.
+  - DESIGN.md is updated.
+- **A1.3 MHD** (`/export/scratch/nknoell/phaseA/p2_mhd/logs/`): static 2.2e-16, advected 5.7e-14
+  (N 64). Before: 3.3e-2 / 9.2e-3.
+- **M7 A/B** (`m7ab/logs/v1000_s4{2,3}_p2.log`, `--res=0.5`, MHD + HLLC; vs yesterday's
+  `stagewise`, identical code minus P2; `m7ab/p2_analyze.py`):
+
+  | | s42 stage-wise | s42 P2 | s43 stage-wise | s43 P2 |
+  |---|---|---|---|---|
+  | E_cr(250) / injected | 1.42 | 2.14 | 1.56 | 2.38 |
+  | CR advective inflow, open z | +1.0e11 | +2.6e11 | +1.3e11 | +3.1e11 |
+  | compression work | +2.9e10 | +8.9e10 | +4.1e10 | +1.1e11 |
+  | eta(1 kpc) | 0.27 | 0.10 | 0.24 | 0.11 |
+  | H_gas | 351 | 347 | 339 | 335 |
+
+  The divergence starts at ~100 Myr, and the injection history is identical.
+- **Cause (tested):** a CR-supported hydrostatic column (`stratified_hydrostatic_column.py`
+  potential, P_cr = 0.9 P_tot, v_red = 0, HLLC, t = 4; scratch `a1/cr_hydrostatic.py`).
+  Max core Mach:
+  - thermal-only 0.110 / 0.109 (N_z 128 / 256);
+  - CR, source coupling 0.011 / 0.015;
+  - CR, P2 0.147 / 0.142.
+  - The FV gravity source (SIMPLE_SOURCE) is not well-balanced against the Riemann flux (known
+    for thermal support: Mach ~0.1, resolution-independent; M0b docstring).
+  - The centred -grad P_cr source balances the centred gravity source to O(dx^2). With P2,
+    the CR pressure goes through the HLLC flux and inherits the thermal residual.
+  - M7's halo is CR-supported. So P2 adds spurious halo flows, more CR-loaded infall through
+    the open boundaries, and less outflow.
+- **Consequence:** P2 trades contact balance (exact) for hydrostatic balance of CR-supported
+  gas (10x worse) as long as gravity is not well-balanced. Proposed (needs user decision):
+  - (a) exclude gravity runs from P2 (M7 back to the source coupling); or
+  - (b) extend the well-balanced FV gravity reconstruction (opt-in, gas pressure only) to
+    P_th + P_cr and use it with P2.
+- **Not rerun:** `m7_frozen_field_probe.py` (exploratory, 16 per-variant runs, would overwrite
+  its baseline raw data; uniform static gas, P2 only changes the gas response).
+- **M7 v1e4 seed 42** (stage-wise -> P2): E_cr/inj 1.76 -> 3.04, CR inflow +1.7e11 -> +4.5e11,
+  compression work +5.8e10 -> +1.6e11, eta 0.20 -> 0.073, H_gas 283 -> 248 pc. Same direction as
+  v1000, stronger.
+- **`cr_mhd_energy_budget.py`** (MHD + HLLC, now P2): PASS, MHD+CR energy error 1.05e-10 (was
+  1.02e-10), mass 2.8e-15.
 
 ### 2026-10-10: P2 implemented in the repo (HLLC only, opt-in via `riemann_solver=HLLC`)
 
@@ -126,7 +215,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
     `memory_analysis`). It comes from recomputing the HLLC wave speeds for the face velocity;
     passing S* out of the solver would avoid it.
   - Stale docstrings or figures (quoted E_cr fractions): items 7, 8, 10, 11, 18, Phase D
-    (figures regenerated except item 11).
+    (figures regenerated except item 11). Docstrings re-baselined later the same day (see above).
 
 ### 2026-10-09: A1.3 fix prototype P2 (total pressure in the gas Riemann flux, pdv) -- recommended
 

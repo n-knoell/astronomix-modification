@@ -67,11 +67,12 @@ See ``astronomix/_modules/_cosmic_rays_grey/PROGRESS.md``'s 2026-09-11
 entry for exact calibrated numbers, tolerances, and the reasoning behind
 this test's specific parameter choices.
 
-**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
-RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
-(N = 128) ``E_cr / E_total`` uniform 0.0570, clumpy 0.0532 [same], clumpy-vs-uniform DSA
-``E_cr`` -6.67% [same], energy-partition identity 2.7e-5 / 2.5e-5 [6.2e-5 / 7.1e-5], total-energy
-conservation 3.7e-5-4.0e-5 [4.7e-5-5.4e-5].
+**Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
+the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
+stage-wise source coupling in brackets):
+(N = 128) ``E_cr / E_total`` uniform 0.0530 [0.0570], clumpy 0.0494 [0.0532], clumpy-vs-uniform
+DSA ``E_cr`` -6.72% [-6.67%], energy-partition identity 2.3e-5 / 2.6e-5 [2.7e-5 / 2.5e-5],
+total-energy conservation 3.7e-5-4.0e-5 [same].
 """
 
 # ==== GPU selection ====

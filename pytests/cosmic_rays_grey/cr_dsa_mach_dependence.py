@@ -69,10 +69,11 @@ check):
      proves the injection code is *using* the Mach-dependent formula and not
      something else, independent of the aggregate-energy checks above.
 
-**Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
-RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
-(N = 48) ``E_cr / E_total`` KR13 0.0876 [0.0877], CS14-like 0.0457 [0.0457]; CS14/KR13 ratio
-0.5215 [0.5214], rel. err 4.30% [4.28%]; surface Mach numbers unchanged.
+**Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
+the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
+stage-wise source coupling in brackets):
+(N = 48) ``E_cr / E_total`` KR13 0.0810 [0.0876], CS14-like 0.0423 [0.0457]; CS14/KR13 ratio
+0.5217 [0.5215], rel. err 4.34% [4.30%]; surface Mach numbers unchanged.
 """
 
 # ==== GPU selection ====
