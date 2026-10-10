@@ -32,7 +32,13 @@ import jax
 import jax.numpy as jnp
 
 # astronomix constants
-from astronomix.option_classes.simulation_config import STATE_TYPE
+from astronomix.option_classes.simulation_config import (
+    FINITE_VOLUME,
+    HLLC,
+    HLLC_LM,
+    STATE_TYPE,
+    UNSPLIT,
+)
 
 # astronomix containers
 from astronomix.option_classes.simulation_config import SimulationConfig
@@ -251,6 +257,50 @@ def cr_pressure_coupling_speed(
     e_cr = primitive_state[registered_variables.cosmic_ray_e_index]
     return jnp.sqrt(
         jnp.maximum(gamma_cr * (gamma_cr - 1.0) * e_cr / rho, 0.0) + speed_floor**2
+    )
+
+
+# Widening of the gas signal speeds in the total-pressure HLLC flux (Gupta,
+# Sharma & Mignone 2021, Eq. 37, phi = 1.1: "for robustness").
+CR_TOTAL_PRESSURE_SIGNAL_SPEED_FACTOR = 1.1
+
+
+def cr_total_pressure_flux(
+    config: SimulationConfig, registered_variables: RegisteredVariables
+) -> bool:
+    """Whether the gas Riemann flux carries the CR pressure ("P2", 2026-10-10).
+
+    True for grey CRs with the unsplit finite-volume scheme, hydro, and the
+    HLLC / HLLC-LM solver. Then (Gupta, Sharma & Mignone 2021, "Eg+Ecr
+    Unsplit-pdv"):
+
+    - ``P_th + P_cr`` enters the normal momentum flux, the gas energy flux
+      ``u (E_g + P_th + P_cr)`` and the HLLC star state
+      (``hll._hllc_solver``);
+    - the CR adiabatic work is ``-+P_cr,i (v_{i+1/2} - v_{i-1/2}) / dx`` on
+      ``e_cr`` / ``E_g``, with the face velocities of the same HLLC solve
+      (``cr_grey_sources.cr_face_velocity_work``);
+    - ``-grad(P_cr)``, ``-v . grad(P_cr)`` and the centred ``-P_cr div(v)``
+      sources are dropped (``_time_integrator_sources.cr_grey_feedback_sources``).
+
+    HLLC then resolves a CR-thermal contact in pressure balance as a contact:
+    static and advected contacts stay balanced to round-off (A1.3), where the
+    source-term coupling smeared ``P_th`` but not ``P_cr``. The ``e_cr`` /
+    ``F_cr`` rows are unchanged (mass flux x upwind ``q / rho`` + closure),
+    so CR transport in gas at rest gets no extra dissipation. Literature and
+    test results: PROGRESS_PHASEA.md (2026-10-09/10).
+
+    Not used for HLL (it would also have to dissipate ``e_cr`` at the gas
+    speed to balance a static contact, which degrades CR transport), AM-HLLC,
+    the split scheme, or MHD (needs ``P_cr`` in the MHD solver's total
+    pressure); those keep the source-term coupling.
+    """
+    return bool(
+        registered_variables.cosmic_ray_e_active
+        and config.solver_mode == FINITE_VOLUME
+        and config.split == UNSPLIT
+        and config.riemann_solver in (HLLC, HLLC_LM)
+        and not config.mhd
     )
 
 

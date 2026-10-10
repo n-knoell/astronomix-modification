@@ -39,7 +39,8 @@ isolation from the gas EOS.
   `v_cr,red` (`CosmicRayGreyParams.reduced_streaming_speed`, a tunable accuracy/cost knob --
   see Open questions). This is what makes the system explicit/hyperbolic (no stiff parabolic
   solve, no global linear system) and keeps it smooth/differentiable.
-- Feedback: `-grad(P_cr)` in gas momentum; `-P_cr * div(v)` adiabatic work on `e_cr`; streaming
+- Feedback (HLLC, unsplit, hydro: in the flux instead, see "Resolved: total-pressure HLLC
+  flux"): `-grad(P_cr)` in gas momentum; `-P_cr * div(v)` adiabatic work on `e_cr`; streaming
   heating deposits CR energy into gas thermal. Positivity floor on `e_cr`
   (`CosmicRayGreyParams.minimum_e_cr`). CR fast speed enters the adaptive CFL as
   `max(u_gas + c_gas, v_cr_fast)`, not folded into a single effective sound speed (unlike the
@@ -1700,6 +1701,49 @@ comparison rather than a tuned-to-pass one.
   - item 2: K_cr and K_th exact to 2e-6 / 1e-7.
   - The post-shock CR/thermal partition (A6.1-A6.3) is unchanged in kind (item 6 1.27%),
     and now only weakly CFL-dependent (1.26-1.31% over C_cfl 0.1-0.8).
+
+## Resolved: total-pressure HLLC flux, CR-thermal contacts in pressure balance (2026-10-10, Phase A A1.3)
+
+- **Problem (A1.3, `PROGRESS_PHASEA.md` 2026-10-09).** A contact with `P_th + P_cr = const`
+  did not stay balanced: max abs(P_tot - 1) = 5.9e-3 (static) and 2.0e-3 (advected) at
+  N = 512, converging at order ~0.5-0.75, with spurious flows up to 1e-2. In 3D it was 2-3e-2.
+  - The gas energy row is diffused by the Riemann solver; `e_cr` only moves with the mass
+    flux. So `P_th` smears and `P_cr` does not.
+  - In the advected case the gas work `-v . grad(P_cr)` also differentiates the jump of `P_cr`:
+    the "vdp" form that fails Gupta, Sharma & Mignone (2021)'s Fig. 3.
+- **Change** (`cr_grey_transport.cr_total_pressure_flux`: grey CRs, FV, unsplit, HLLC or
+  HLLC-LM, hydro). This is Gupta et al. (2021)'s "Eg+Ecr Unsplit-pdv", as in Kudoh & Hanawa
+  (2016), Pfrommer et al. (2017) and the two-moment scheme of Thomas, Pfrommer & Pakmor (2021).
+  - `hll._hllc_solver`:
+    - `P_th + P_cr` in the normal momentum flux, in the gas energy flux `u (E_g + P_th +
+      P_cr)` and in the star state (`hll._hllc_wave_speeds`);
+    - signal speeds `sqrt(c_th^2 + c_cr^2)` widened by 1.1 (Gupta Eq. 37).
+  - `cr_grey_sources.cr_face_velocity_work`: `-+P_cr,i (v_{i+1/2} - v_{i-1/2}) dt / dx` on
+    `e_cr` / `E_g` per axis, inside the flux loop of `_evolve_gas_state_unsplit_inner`. The
+    face velocities come from the same HLLC solve (`hll.cr_hllc_face_velocity`: `S*` in the
+    fan).
+  - `cr_grey_feedback_sources`: `-grad P_cr`, `-v . grad P_cr` and the centred `-P_cr div v`
+    dropped (only streaming heating remains).
+  - `e_cr` / `F_cr` rows unchanged.
+- **Why only HLLC.**
+  - At a contact HLLC has `S*` = contact speed and diffuses neither energy, so the balance is
+    exact.
+  - HLL with the same flux also balances, but only if `e_cr` gets the HLL dissipation at the
+    gas speed too. That degrades CR transport in gas at rest: item 1 L2 6.0e-3 -> 1.1e-2,
+    item 4 D/kappa - 1 0.0155 -> 0.0206 (prototype P2 + HLL, PROGRESS_PHASEA.md).
+  - HLL, AM-HLLC, the split scheme and MHD keep the source coupling. MHD needs `P_cr` in the
+    MHD solver's total pressure (TPP21's HLLD), not done.
+- **Results** (HLLC; prototype and repo agree, PROGRESS_PHASEA.md 2026-10-09/10):
+  - A1.3: round-off in 1D (static 4e-15, advected 1e-13) and 3D hydro (slab, bubble).
+  - Items 1, 3, 4 and A1.1 unchanged.
+  - A2.2: the error is independent of P_cr/P_th, i.e. identical to single-fluid hydro.
+  - A2.3: the CR-only run equals gamma = 4/3 hydro to 5e-7 at N 512; the squeeze ringing is at
+    hydro level.
+  - A6.1 post-shock K_cr error 1.27% -> 0.42%.
+  - Item 18: total energy is still exact.
+  - Shock tests deposit 2-8% less CR energy (item 7 E_cr/E_tot 0.0434 -> 0.0401).
+- **Default solver unchanged (HLL).** Runs that want the balanced contacts set
+  `riemann_solver=HLLC`.
 
 ## Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08, implemented opt-in, default off)
 

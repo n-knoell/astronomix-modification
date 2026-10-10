@@ -55,6 +55,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_pressure_gradient_source,
     cr_streaming_heating_source,
 )
+from astronomix._modules._cosmic_rays_grey.cr_grey_transport import cr_total_pressure_flux
 from astronomix._modules._gravity._gravity import (
     _compute_total_potential,
     _fd_gravity_source,
@@ -80,13 +81,21 @@ def cr_grey_feedback_sources(
     (``evolve_state._evolve_gas_state_unsplit_inner``, Gupta, Sharma & Mignone
     2021's "Unsplit-pdv"); the other paths get it through
     :func:`_time_integrator_sources`.
+
+    With the total-pressure HLLC flux
+    (``cr_grey_transport.cr_total_pressure_flux``) only the streaming heating
+    remains here.
     """
-    source_term = cr_pressure_gradient_source(
-        primitive_state, config, registered_variables, params
-    )
-    source_term += cr_adiabatic_work_source(
-        primitive_state, config, registered_variables, params
-    )
+    source_term = jnp.zeros_like(primitive_state)
+    # With the total-pressure HLLC flux the pressure force and the adiabatic
+    # work are in the flux and in cr_grey_sources.cr_face_velocity_work.
+    if not cr_total_pressure_flux(config, registered_variables):
+        source_term += cr_pressure_gradient_source(
+            primitive_state, config, registered_variables, params
+        )
+        source_term += cr_adiabatic_work_source(
+            primitive_state, config, registered_variables, params
+        )
     if config.cosmic_ray_grey_config.streaming:
         source_term += cr_streaming_heating_source(
             primitive_state, config, registered_variables, params

@@ -15,9 +15,9 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | ID | Prio | Status | Test file | Key result | Date |
 |---|---|---|---|---|---|
 | **Item 1: advection** | | | | | |
-| A1.1 passive blob advected by gas | 1 | todo | | | |
+| A1.1 passive blob advected by gas | 1 | done | `cr_advection_by_gas.py` (1D + 3D) | as expected: 1D Gaussian order 1.51, top-hat 0.66, TVD; 3D diagonal order 1.56 / 1.55, round to 4e-5, passive | 2026-10-09 |
 | A1.2 Galilean invariance of diffusion | 2 | todo | | | |
-| A1.3 CR-thermal contact in pressure balance | 1 | todo | | | |
+| A1.3 CR-thermal contact in pressure balance | 1 | done (tracked) | `cr_contact_pressure_balance.py` (1D + 3D, hydro + MHD) | **balance not kept**: max abs(P_tot - 1) ~1e-2, order ~0.5-0.75, spurious u ~1e-2; cause: gas energy HLL-diffused, e_cr not. Fix proposed | 2026-10-09 |
 | A1.4 free-wave convergence + eigenvector | 3 | todo | | | |
 | A1.5 free-streaming limit, production config | 3 | todo | | | |
 | **Item 2: adiabatic compression** | | | | | |
@@ -74,6 +74,208 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-10: P2 implemented in the repo (HLLC only, opt-in via `riemann_solver=HLLC`)
+
+- **Code:**
+  - `cr_grey_transport.cr_total_pressure_flux` (predicate: grey CRs, FV, unsplit, HLLC or
+    HLLC-LM, not MHD) and `CR_TOTAL_PRESSURE_SIGNAL_SPEED_FACTOR = 1.1`;
+  - `hll._hllc_wave_speeds` (factored out of `_hllc_solver`; total pressure + widened speeds)
+    and `hll.cr_hllc_face_velocity`;
+  - `_hllc_solver` adds P_cr to the momentum and gas-energy fluxes;
+  - `cr_grey_sources.cr_face_velocity_work` (pdv per axis, in the flux loop of
+    `_evolve_gas_state_unsplit_inner`);
+  - `cr_grey_feedback_sources` drops -grad P_cr / -v.grad P_cr / -P_cr div v under the
+    predicate.
+  - HLL, AM-HLLC, split, MHD: unchanged (source coupling).
+  - DESIGN.md "Resolved: total-pressure HLLC flux".
+- **Test:** `cr_contact_pressure_balance.py` now runs the hydro cases with HLLC.
+  - Gates: max abs(P_tot - 1) and max abs(u - u0) below 1e-10 at every N.
+  - The 1D HLL runs and the 3D MHD runs (HLL) stay as tracked bounds; the docstring is
+    rewritten.
+  - 1D measured with the repo code: HLLC static <= 4.4e-15, advected <= 1.2e-13; HLL
+    identical to before (5.9e-3 / 2.0e-3).
+- **Verification** (CPU, HLLC forced as default solver, `p2_repo/forced_hllc/`): matches the
+  prototype P2 + HLLC to the 3rd-4th digit, identically for 5 of 12 tests.
+  - A2.3 shows the same order-gate failure as the prototype (two-fluid equals hydro). Not
+    relevant as configured (A2.3 runs HLL).
+- **Full test set as configured** (`/export/scratch/nknoell/phaseA/p2_repo/logs/`; 1D files
+  on CPU this time, from now on GPU only):
+  - All files pass. `test_cr_ring_flux_cap_alone` "fails" as before: it is the strict xfail,
+    and the direct runner does not apply the mark.
+  - The ring and the MHD energy budget (HLL / MHD, untouched by P2) are identical to the
+    previous run: MHD+CR energy error 1.022e-10.
+  - HLL-configured tests are unchanged (A1.3's HLL runs are bit-identical to before).
+  - A1.3 (HLLC): 1D static <= 3.3e-16, advected <= 8.6e-14; 3D slab 2.2e-16 / 2.7e-14, bubble
+    3.3e-16. MHD (HLL) unchanged at 3.3e-2 / 9.2e-3.
+  - HLLC-configured tests, old -> new:
+    - item 7 Sedov: E_cr/E_tot 0.0434 -> 0.0401, energy error unchanged at 1.3e-5;
+    - item 8 DSA Mach: KR13 0.0876 -> 0.0810, CS14 0.0457 -> 0.0423, ratio 0.5215 -> 0.5217,
+      Ms unchanged;
+    - item 18 energy budget: 1e-10 (same), E_cr(t_end) 3.517e-2 -> 3.332e-2;
+    - item 10 wind bubble: R_2 error 1.2% -> 1.6%, interior P 23.5% -> 22.7%, E_cr/E_tot
+      0.0438 -> 0.0430;
+    - item 15 pion bump: unchanged to the printed digits;
+    - item 11 clumpy SNR (128^3 scratch copy as before; 256^3 never fits 11 GB):
+      - E_cr/E_tot uniform 0.0570 -> 0.0530, clumpy 0.0532 -> 0.0494;
+      - clumpy-vs-uniform -6.67% -> -6.72%;
+      - energy errors unchanged;
+    - Phase D injection inference: recovered mach_scale 1.0638 -> 1.0634; AD-vs-FD 2.6e-3 ->
+      5.1e-3.
+  - Memory: P2 adds +355 MB (+3.7%) of XLA temporaries at 256^3 (9.50 -> 9.86 GB, measured with
+    `memory_analysis`). It comes from recomputing the HLLC wave speeds for the face velocity;
+    passing S* out of the solver would avoid it.
+  - Stale docstrings or figures (quoted E_cr fractions): items 7, 8, 10, 11, 18, Phase D
+    (figures regenerated except item 11).
+
+### 2026-10-09: A1.3 fix prototype P2 (total pressure in the gas Riemann flux, pdv) -- recommended
+
+- **Prototype** (scratch `a1/p2_patch.py`, monkeypatch, hydro only; MHD falls back to repo code;
+  Gupta, Sharma & Mignone 2021 "Eg+Ecr Unsplit-pdv"):
+  - P_tot = P_th + P_cr in the normal momentum flux and in the gas energy flux u (E_g + P_tot);
+  - the HLLC star state uses P_tot; signal speeds are the existing sqrt(c_th^2 + c_cr^2) x 1.1;
+  - -grad P_cr, -v . grad P_cr and the centred -P_cr div v sources are removed. Instead
+    +-P_cr,i (v_{i+1/2} - v_{i-1/2}) / dx goes on E_g / e_cr, with the face velocities from the
+    same Riemann solve (HLLC: S*; HLL: Gupta Eq. 29);
+  - e_cr / F_cr rows are unchanged (mass flux x upwind + closure). Under HLL only, e_cr also gets
+    the HLL dissipation; otherwise HLL cannot balance a static contact.
+  - Logs: `/export/scratch/nknoell/phaseA/p2/{base,base_hllc,p2_hllc,p2_hll}/`, `p2/gpu/`.
+- **A1.3 contact:**
+  - P2 + HLLC and P2 + HLL both reach round-off: 1D static 5e-15, advected 1e-13.
+  - 3D oblique slab (static 2e-16, advected 3e-14) and bubble (3e-16), hydro, P2 + HLLC.
+  - Before: 5.9e-3 / 2.0e-3 (1D N 512) and 2.6e-2 / 9.8e-3 / 2.2e-2 (3D N 64).
+- **P2 + HLLC vs today (HLL, stage-wise) on the CPU set:**
+  - Unchanged to 4 digits: item 1, item 3 oblique leak, item 4 (D/kappa, convergence), A1.1.
+    CR transport in gas at rest is untouched, unlike P1 and P2 + HLL, which degrade it like P1.
+  - A2.2: the coupled acoustic mode now behaves exactly like single-fluid hydro. The L1 error is
+    independent of P_cr/P_th (2.03e-2 ... 4.31e-4, order 1.86, eigenvector 3e-10).
+  - A2.3:
+    - The two-fluid run now *equals* gamma 4/3 hydro: difference 2.4e-5 -> 4.6e-7 (N 64-512), was
+      8.4e-4 -> 1.9e-5. Its error vs exact (1.49e-3 ... 3.1e-5) equals hydro's.
+    - The squeeze ringing drops to the hydro level: 0.0014 vs hydro 0.0012, was 0.0026.
+    - The "two-fluid vs hydro order >= 1.8" gate fails (1.70) only because the difference
+      flattens at N 1024; gate needs changing.
+  - A6.1 post-shock K_cr error 1.27% -> 0.42% (3x smaller). Still method-dependent: C_cfl 0.8
+    0.19%, MC 0.47%, so the partition is still non-unique.
+  - Item 2 (e_cr ~ rho^gamma_cr): 9.8e-4 -> 8.8e-4.
+  - Item 6 shock tube MAE: similar (e_cr 3.7e-3 -> 3.0e-3).
+  - Item 9: within tolerance.
+  - The only failing gates are "decreasing with N" in A1.3, now at round-off, and the A2.3
+    order gate.
+- **GPU tests (HLLC as configured):**
+  - Item 18 energy budget: 1.0e-10, same as before. P2 is exactly conservative: the momentum has
+    no source, and the pdv terms cancel between E_g and e_cr.
+  - E_cr ends lower: item 7 E_cr/E_tot 0.0434 -> 0.0401, item 8 KR13 0.0876 -> 0.0810 (ratio
+    unchanged), item 18 E_cr(t_end) -5%. This matches the smaller spurious CR gain at shocks
+    seen in A6.1.
+  - Item 7 and item 8 Ms unchanged.
+  - Item 10 wind bubble passes: R_2 error 1.2% -> 1.6%, interior P 23.5% -> 22.7%, E_cr/E_tot
+    0.0438 -> 0.0430.
+- **Not covered:**
+  - MHD (needs P_cr in the MHD solver's total pressure, as in TPP21's HLLD);
+  - HLL users keep a choice: P2 + HLL balances contacts but diffuses CR at the gas speed;
+  - M7, other GPU tests;
+  - Gupta Eq. 30's face-averaged P_cr (cell P_cr used).
+
+### 2026-10-09: A1.3 fix prototype P1 (e_cr with the gas HLL dissipation) -- trade-off not acceptable
+
+- **Prototype** (scratch `a1/hll_cr_patch.py`, monkeypatch of `hll._grey_cr_hll_rows`): the
+  advective part of the e_cr / F_cr flux becomes the HLL flux
+  `(S_R u_L q_L - S_L u_R q_R + S_L S_R (q_R - q_L)) / (S_R - S_L)` with the gas rows' speeds,
+  instead of mass flux x upwind q/rho. 13 tests on CPU, all pass. Logs:
+  `/export/scratch/nknoell/phaseA/hllcr/`.
+- **Gains:**
+  - A1.3 static contact: max abs(P_tot - 1) at N 64 / 512 2.9e-2 / 5.9e-3 -> 3.8e-3 / 1.0e-3,
+    max abs(u) at 512 3.4e-3 -> 2.5e-4.
+  - The advected slab does *not* improve (2.0e-3 -> 2.5e-3).
+  - Item 2, A2.2, A2.3, item 6 and item 9 unchanged.
+- **Costs** (the CR energy now gets numerical diffusion at the gas sound speed even in gas at
+  rest):
+  - item 1 free CR wave: L2/amp 6.0e-3 -> 1.4e-2, peak loss 3.7% -> 7.8%;
+  - item 3 oblique anisotropic: cross-field leak ratio 0.022 -> 0.036 (+65%);
+  - item 4: D/kappa - 1 0.0155 / 0.0042 / 0.0012 -> 0.0202 / 0.0053 / 0.0015, convergence L2 at
+    N 128 1.7e-3 -> 2.3e-3;
+  - A1.1 Gaussian L1 at 512 2.1e-3 -> 2.6e-3;
+  - A6.1 dK_cr,2 1.27% -> 1.39%.
+- **Verdict:** not adopted. It trades a ~1e-2 contact pressure error for worse CR transport,
+  above all anisotropic, which M7 relies on.
+- **Better candidate (P2, not prototyped):** contact-preserving gas side instead of a
+  more-diffused CR side.
+  - HLLC with the total pressure P_th + P_cr in the momentum flux and the star state (Gupta
+    et al. 2021 Option 1/2), with e_cr kept on the mass flux.
+  - At a contact HLLC then neither diffuses the gas energy nor sees a pressure jump, so the
+    balance is exact. Today's HLLC sees only the gas pressure, treats the contact as a shock
+    tube, and was *worse* in A1.3 (static 4.7e-2 vs HLL 2.9e-2 at N 64).
+  - Needs P_cr moved from the momentum source into the flux (only for HLLC), which changes the
+    CR/gas coupling structure: larger, user decision.
+- **Literature check of P2 (2026-10-09):**
+  - **Supported.** P_cr in the gas Riemann flux, with the effective sound speed
+    sqrt(gamma P_th/rho + gamma_cr P_cr/rho), is the standard in:
+    - Gupta, Sharma & Mignone 2021 (all options; HLL);
+    - Kudoh & Hanawa 2016 (HLL/Roe);
+    - Pfrommer et al. 2017 (AREPO);
+    - Thomas, Pfrommer & Pakmor 2021, a *two-moment* scheme. Its Eq. 2 has P_tot in the
+      HLLD flux; only the parallel part b grad_par P_cr is handled as a source. Its contact
+      test (Sec. 4.3, B perpendicular) holds to machine precision.
+  - **Refinement needed.** The gas energy must change too.
+    - Gupta Eq. 23: e_g flux (e_g + P_th + P_cr) v with source +P_cr div v, and e_cr source
+      -P_cr div v ("pdv").
+    - Ours is "vdp" on the gas side (-v . grad P_cr, centered) plus a centered -grad P_cr in
+      momentum. Gupta Fig. 3 shows exactly vdp failing the *advected* pressure-balance mode,
+      because the derivative of the discontinuous P_cr creates spurious disturbances. That
+      explains why P1 fixed the static contact but not the advected slab.
+  - **Gupta details:**
+    - div v from the Riemann-solver interface velocities (their Eq. 29), the same value in
+      both energy rows;
+    - signal speeds widened by phi = 1.1 for robustness.
+  - **Kudoh & Hanawa caveat.** Evolving a nonlinear CR variable (E_cr^(3/4)) gives spurious
+    sound waves at advected contacts. Pdv with a linear e_cr does not. Our e_cr is linear, so
+    this is fine.
+  - **Not fixed by P2.** The shock partition stays non-unique (Gupta); A6 needs re-measuring.
+
+### 2026-10-09: A1.1 and A1.3 in 1D and 3D
+
+- **A1.1 (`cr_advection_by_gas.py`):** passive CR blob (amplitude 1e-6 on 1e-7, gas
+  rho = P = 1), one crossing, v_red = 0 (F_cr exactly 0), float64.
+  - 1D: Gaussian L1/amp 4.7e-2 ... 2.1e-3 (N 64-512), order 1.51; top-hat order 0.66, no new
+    extrema (1e-11); centroid <= 0.012 dx; max abs(u - u0) 1.3e-7. A relaxation variant
+    (v_red 1, kappa 1e-6) is identical to 4 digits.
+  - 3D, along (1, 1, 1): Gaussian 6.8e-3 / 2.3e-3 / 7.9e-4 (N 32 / 64 / 128), order 1.56 / 1.55;
+    second moments along / across the diagonal 1.00004 / 1.00000 / 1.00000; centroid
+    <= 0.025 cells. Top-hat sphere (N 64): min -5.8e-9, max 0.98.
+  - Both pass. The advective `u_n e_cr` flux behaves as expected for HLL + minmod.
+- **A1.3 (`cr_contact_pressure_balance.py`):** rho = 1, [P_th, P_cr] = [1/8, 7/8] | [3/4, 1/4],
+  v_red = 0, float64, t = 1. **The pressure balance is not kept.**
+
+  | case | max abs(P_tot - P_ref), N = 64 -> 512 (1D) / 32 -> 128 (3D) | max abs(u - u0) |
+  |---|---|---|
+  | 1D static | 2.9e-2 ... 5.9e-3 | 1.3e-2 ... 3.4e-3 |
+  | 1D advected | 6.8e-3 ... 2.0e-3 | 7.4e-3 ... 1.7e-3 |
+  | 3D oblique slab, static | 4.0e-2 / 2.6e-2 / 1.7e-2 | 5.6e-3 ... 4.6e-3 |
+  | 3D oblique slab, advected | 1.4e-2 / 9.8e-3 / 6.1e-3 | 1.6e-2 ... 1.1e-2 |
+  | 3D MHD slab (incl. B^2/2), static / advected | 4.6e-2 ... 2.1e-2 / 1.4e-2 ... 6.7e-3 | <= 1.6e-2 |
+  | 3D CR bubble, static | 4.4e-2 / 2.2e-2 / 1.6e-2 | 2.4e-2 ... 1.2e-2 |
+
+  - In 1D the static contact is far worse early on: 0.16 and |u| 0.055 at t = 0.01.
+  - HLLC is no better. A pure-gas density contact at uniform P is exact (1e-15) with both
+    solvers.
+  - MHD: uniform B stays exact without a contact and with B along the normal. A tangential B
+    is compressed by the spurious flows (max abs(dB) up to 0.21 next to the static contact).
+    1D FV MHD is not supported, which is why the magnetized case is 3D only.
+  - Diffusive variant (v_red 10, kappa 1/300): CRs diffuse out of the contact, so the
+    imbalance (~1.5e-2) is physical; reported only.
+- **Cause:** the gas energy row gets the HLL dissipation `S_L S_R (E_R - E_L) / (S_R - S_L)`,
+  and E jumps at the contact. The e_cr row only moves with the mass flux (zero here).
+  - P_th smears over 2 cells within t = 1e-3 while P_cr stays sharp.
+  - u grows ~t^2 (3.2e-5 at 1e-4, 3.2e-3 at 1e-3), so a growing imbalance, not an initial
+    force.
+- **Gates:** tracked bounds (measured + margin, decreasing with N); all 4 tests pass.
+  Figures `pics/01_advection/cr_{advection_by_gas,contact_pressure_balance}_{1d,3d}_test.svg`.
+- **Proposed fix (literature-backed, needs the user's OK):** give the e_cr row the same HLL(C)
+  dissipation as the gas energy row (Gupta et al. 2021 Et+Ecr: the CR energy inside the Riemann
+  flux, so all energy components smear by the same linear operator and P_tot stays constant).
+  It must be checked against item 2's e_cr ~ rho^gamma_cr consistency, which motivated the
+  mass-flux upwinding.
 
 ### 2026-10-09: re-baseline for the stage-wise coupling (docstrings + figures)
 

@@ -32,11 +32,14 @@ from astronomix.option_classes.simulation_config import SimulationConfig
 from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
+from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import pressure_from_e_cr
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    CR_TOTAL_PRESSURE_SIGNAL_SPEED_FACTOR,
     cr_closure_signal_speed,
     cr_flux_rows,
     cr_passive_row_flux,
     cr_pressure_coupling_speed,
+    cr_total_pressure_flux,
 )
 from astronomix._stencil_operations._stencil_operations import _stencil_add
 from astronomix._fluid_equations._equations import (
@@ -202,6 +205,93 @@ def _grey_cr_hll_rows(
     return fluxes
 
 
+def _hllc_wave_speeds(
+    primitives_left, primitives_right, gamma, config, params,
+    registered_variables, flux_direction_index,
+):
+    """Sound speeds, pressures and the signal speeds ``S_L``, ``S_R``, ``S*``
+    of :func:`_hllc_solver` (Einfeldt estimates from Roe averages).
+
+    With grey CRs the sound speeds include the CR-pressure coupling speed in
+    quadrature. With the total-pressure flux
+    (``cr_grey_transport.cr_total_pressure_flux``) the returned pressures are
+    ``P_th + P_cr`` and the sound speeds are widened by
+    ``CR_TOTAL_PRESSURE_SIGNAL_SPEED_FACTOR``.
+
+    Returns:
+        ``(c_L, c_R, p_L, p_R, S_L, S_R, S_star)``.
+    """
+    rho_L = primitives_left[registered_variables.density_index]
+    u_L = primitives_left[flux_direction_index]
+
+    rho_R = primitives_right[registered_variables.density_index]
+    u_R = primitives_right[flux_direction_index]
+
+    p_L = primitives_left[registered_variables.pressure_index]
+    p_R = primitives_right[registered_variables.pressure_index]
+
+    # calculate the sound speeds
+    c_L = speed_of_sound(rho_L, p_L, gamma)
+    c_R = speed_of_sound(rho_R, p_R, gamma)
+
+    # Grey two-moment cosmic rays: see _hll_solver.
+    if registered_variables.cosmic_ray_e_active:
+        c_L = jnp.sqrt(c_L**2 + cr_pressure_coupling_speed(primitives_left, params, registered_variables) ** 2)
+        c_R = jnp.sqrt(c_R**2 + cr_pressure_coupling_speed(primitives_right, params, registered_variables) ** 2)
+
+    if cr_total_pressure_flux(config, registered_variables):
+        gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+        p_L = p_L + pressure_from_e_cr(primitives_left[registered_variables.cosmic_ray_e_index], gamma_cr)
+        p_R = p_R + pressure_from_e_cr(primitives_right[registered_variables.cosmic_ray_e_index], gamma_cr)
+        c_L = c_L * CR_TOTAL_PRESSURE_SIGNAL_SPEED_FACTOR
+        c_R = c_R * CR_TOTAL_PRESSURE_SIGNAL_SPEED_FACTOR
+
+    # Roe average of the velocity
+    u_hat = (jnp.sqrt(rho_L) * u_L + jnp.sqrt(rho_R) * u_R) / (
+        jnp.sqrt(rho_L) + jnp.sqrt(rho_R)
+    )
+
+    # Roe average of the sound speed
+    c_hat_squared = (c_L**2 * jnp.sqrt(rho_L) + c_R**2 * jnp.sqrt(rho_R)) / (
+        jnp.sqrt(rho_L) + jnp.sqrt(rho_R)
+    ) + 0.5 * (
+        jnp.sqrt(rho_L) * jnp.sqrt(rho_R) / (jnp.sqrt(rho_L) + jnp.sqrt(rho_R)) ** 2
+    ) * (u_R - u_L) ** 2
+    c_hat = jnp.sqrt(c_hat_squared)
+
+    # Einfeldt estimates of maximum left and right signal speeds
+    S_L = jnp.minimum(u_L - c_L, u_hat - c_hat)
+    S_R = jnp.maximum(u_R + c_R, u_hat + c_hat)
+
+    # contact wave signal speed
+    S_star = (p_R - p_L + rho_L * u_L * (S_L - u_L) - rho_R * u_R * (S_R - u_R)) / (
+        rho_L * (S_L - u_L) - rho_R * (S_R - u_R)
+    )
+
+    return c_L, c_R, p_L, p_R, S_L, S_R, S_star
+
+
+def cr_hllc_face_velocity(
+    primitives_left, primitives_right, gamma, config, params,
+    registered_variables, flux_direction_index,
+):
+    """Interface velocity of the HLLC solve: ``S*`` inside the wave fan, the
+    upwind state's normal velocity outside it.
+
+    Used for the CR adiabatic work of the total-pressure flux
+    (``cr_grey_sources.cr_face_velocity_work``; Gupta, Sharma & Mignone 2021,
+    Eq. 29 for HLL). At a contact in pressure balance ``S*`` is the contact
+    speed on both faces, so the work vanishes exactly.
+    """
+    _, _, _, _, S_L, S_R, S_star = _hllc_wave_speeds(
+        primitives_left, primitives_right, gamma, config, params,
+        registered_variables, flux_direction_index,
+    )
+    u_L = primitives_left[flux_direction_index]
+    u_R = primitives_right[flux_direction_index]
+    return jnp.where(S_L >= 0, u_L, jnp.where(S_R <= 0, u_R, S_star))
+
+
 # @jaxtyped(typechecker=typechecker)
 @partial(
     jax.jit,
@@ -261,17 +351,10 @@ def _hllc_solver(
     rho_R = primitives_right[registered_variables.density_index]
     u_R = primitives_right[flux_direction_index]
 
-    p_L = primitives_left[registered_variables.pressure_index]
-    p_R = primitives_right[registered_variables.pressure_index]
-
-    # calculate the sound speeds
-    c_L = speed_of_sound(rho_L, p_L, gamma)
-    c_R = speed_of_sound(rho_R, p_R, gamma)
-
-    # Grey two-moment cosmic rays: see _hll_solver.
-    if registered_variables.cosmic_ray_e_active:
-        c_L = jnp.sqrt(c_L**2 + cr_pressure_coupling_speed(primitives_left, params, registered_variables) ** 2)
-        c_R = jnp.sqrt(c_R**2 + cr_pressure_coupling_speed(primitives_right, params, registered_variables) ** 2)
+    c_L, c_R, p_L, p_R, S_L, S_R, S_star = _hllc_wave_speeds(
+        primitives_left, primitives_right, gamma, config, params,
+        registered_variables, flux_direction_index,
+    )
 
     # get the left and right states and fluxes
     F_L = _euler_flux(
@@ -281,27 +364,20 @@ def _hllc_solver(
         primitives_right, gamma, config, params, registered_variables, flux_direction_index
     )
 
-    # Roe average of the velocity
-    u_hat = (jnp.sqrt(rho_L) * u_L + jnp.sqrt(rho_R) * u_R) / (
-        jnp.sqrt(rho_L) + jnp.sqrt(rho_R)
-    )
-
-    # Roe average of the sound speed
-    c_hat_squared = (c_L**2 * jnp.sqrt(rho_L) + c_R**2 * jnp.sqrt(rho_R)) / (
-        jnp.sqrt(rho_L) + jnp.sqrt(rho_R)
-    ) + 0.5 * (
-        jnp.sqrt(rho_L) * jnp.sqrt(rho_R) / (jnp.sqrt(rho_L) + jnp.sqrt(rho_R)) ** 2
-    ) * (u_R - u_L) ** 2
-    c_hat = jnp.sqrt(c_hat_squared)
-
-    # Einfeldt estimates of maximum left and right signal speeds
-    S_L = jnp.minimum(u_L - c_L, u_hat - c_hat)
-    S_R = jnp.maximum(u_R + c_R, u_hat + c_hat)
-
-    # contact wave signal speed
-    S_star = (p_R - p_L + rho_L * u_L * (S_L - u_L) - rho_R * u_R * (S_R - u_R)) / (
-        rho_L * (S_L - u_L) - rho_R * (S_R - u_R)
-    )
+    # Grey CRs with the total-pressure flux (cr_grey_transport.
+    # cr_total_pressure_flux): P_cr in the normal momentum flux and in the gas
+    # energy flux u (E_g + P_th + P_cr). The star state below then uses the
+    # total pressure p_L, p_R from _hllc_wave_speeds; its energy formula
+    # follows from the jump condition for any energy row whose flux is
+    # u (E + p), here E = E_g, p = P_th + P_cr.
+    if cr_total_pressure_flux(config, registered_variables):
+        gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+        p_cr_L = pressure_from_e_cr(primitives_left[registered_variables.cosmic_ray_e_index], gamma_cr)
+        p_cr_R = pressure_from_e_cr(primitives_right[registered_variables.cosmic_ray_e_index], gamma_cr)
+        F_L = F_L.at[flux_direction_index].add(p_cr_L)
+        F_L = F_L.at[registered_variables.pressure_index].add(u_L * p_cr_L)
+        F_R = F_R.at[flux_direction_index].add(p_cr_R)
+        F_R = F_R.at[registered_variables.pressure_index].add(u_R * p_cr_R)
 
     # intermediate states
     U_L = conserved_state_from_primitive(

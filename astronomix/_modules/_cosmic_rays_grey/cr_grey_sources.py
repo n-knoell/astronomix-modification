@@ -53,7 +53,9 @@ def cr_pressure_gradient_source(
     params: SimulationParams,
 ) -> STATE_TYPE:
     """``-grad(P_cr)`` added to the gas momentum equation -- the CR-driven
-    wind/outflow forcing term (plan Sec. 2).
+    wind/outflow forcing term (plan Sec. 2). Not used with the total-pressure
+    HLLC flux (``cr_grey_transport.cr_total_pressure_flux``), which carries
+    ``P_cr`` in the momentum flux instead.
 
     Args:
         primitive_state: The primitive state of the fluid on all cells.
@@ -121,7 +123,9 @@ def cr_adiabatic_work_source(
     registered_variables: RegisteredVariables,
     params: SimulationParams,
 ) -> STATE_TYPE:
-    """Adiabatic ``-P_cr * div(v)`` work term on ``e_cr`` (plan Sec. 2).
+    """Adiabatic ``-P_cr * div(v)`` work term on ``e_cr`` (plan Sec. 2). Not
+    used with the total-pressure HLLC flux, which takes ``div(v)`` from the
+    Riemann face velocities (:func:`cr_face_velocity_work`).
 
     Args:
         primitive_state: The primitive state of the fluid on all cells.
@@ -156,6 +160,56 @@ def cr_adiabatic_work_source(
     )
 
     return source_term
+
+
+def cr_face_velocity_work(
+    primitive_state: STATE_TYPE,
+    face_velocity,
+    dt: Union[float, Float[Array, ""]],
+    config: SimulationConfig,
+    params: SimulationParams,
+    registered_variables: RegisteredVariables,
+    axis: int,
+) -> STATE_TYPE:
+    """CR adiabatic work along one axis for the total-pressure flux
+    (``cr_grey_transport.cr_total_pressure_flux``), as a conserved-state
+    *change* (already times ``dt``, unlike the rates above):
+    ``-P_cr,i (v_{i+1/2} - v_{i-1/2}) dt / dx`` on ``e_cr`` and the opposite
+    on the gas energy.
+
+    Args:
+        primitive_state: The primitive state of the fluid on all cells.
+        face_velocity: The normal velocity on the faces of ``axis``
+            (``hll.cr_hllc_face_velocity``), indexed like the fluxes: entry
+            ``i`` is the left face of cell ``i``.
+        dt: The (stage) time step.
+        config: The simulation configuration.
+        params: The simulation parameters.
+        registered_variables: The registered variables.
+        axis: The state axis of the faces (1 = x).
+
+    Returns:
+        The conserved-state change.
+
+    This is Gupta, Sharma & Mignone 2021's "pdv" form (their Eqs. 23-24 and
+    28-29): with the gas energy flux carrying ``u P_cr``, the gas energy
+    equation needs ``+P_cr div(v)`` and ``e_cr`` ``-P_cr div(v)``. Using the
+    same face velocities in both keeps the total energy exactly conserved;
+    taking them from the Riemann solve makes the work vanish at a contact
+    (``S*`` equal on both faces). The vdp form of the source coupling
+    (``-v . grad(P_cr)`` on the gas) differentiates the jump in ``P_cr``
+    across a contact and is what fails their (and our A1.3) advected contact.
+    """
+    gamma_cr = params.cosmic_ray_grey_params.gamma_cr
+    p_cr = pressure_from_e_cr(primitive_state[registered_variables.cosmic_ray_e_index], gamma_cr)
+    div_v = (
+        _stencil_add(face_velocity, indices=(1, 0), factors=(1.0, -1.0), axis=axis - 1)
+        / config.grid_spacing
+    )
+    work = dt * p_cr * div_v
+    change = jnp.zeros_like(primitive_state)
+    change = change.at[registered_variables.pressure_index].set(work)
+    return change.at[registered_variables.cosmic_ray_e_index].set(-work)
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])

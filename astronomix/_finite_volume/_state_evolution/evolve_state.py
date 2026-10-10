@@ -40,6 +40,7 @@ from astronomix.option_classes.simulation_params import SimulationParams
 
 # astronomix functions
 from astronomix._finite_volume._riemann_solver._riemann_solver import _riemann_solver
+from astronomix._finite_volume._riemann_solver.hll import cr_hllc_face_velocity
 from astronomix._finite_volume._magnetic_update._magnetic_field_update import magnetic_update
 from astronomix._integrators._explicit_rk import rk2_ssp
 from astronomix._modules._time_integrator_sources import (
@@ -54,11 +55,13 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_entropy_shock_mask,
     cr_entropy_sync,
     cr_entropy_to_energy,
+    cr_face_velocity_work,
     cr_flux_relaxation_update,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     cr_flux_realizability_cap,
     cr_monotonicity_guard,
+    cr_total_pressure_flux,
     cr_wave_speed_factors,
 )
 from astronomix._stencil_operations._stencil_operations import _stencil_add
@@ -721,7 +724,9 @@ def _evolve_gas_state_unsplit_inner(
     )
 
     # Grey-CR feedback (-grad P_cr with its work, -P_cr div u, streaming
-    # heating) inside every RK stage, evaluated on the stage-start state
+    # heating; with the total-pressure HLLC flux only the streaming heating,
+    # the rest is in the fluxes and the face-velocity work below) inside every
+    # RK stage, evaluated on the stage-start state
     # (Gupta, Sharma & Mignone 2021, "Unsplit-pdv"). Applied once after the whole
     # RK2 instead (operator split, before 2026-10-09) it was a forward-Euler step
     # of an oscillatory subsystem: first order in time and unstable above
@@ -877,6 +882,26 @@ def _evolve_gas_state_unsplit_inner(
                 primitives_left_interface,
                 primitives_right_interface,
                 primitive_state,
+                dt,
+                config,
+                params,
+                registered_variables,
+                axis,
+            )
+        # Total-pressure HLLC flux: the CR adiabatic work from this solve's
+        # face velocities (cr_grey_sources.cr_face_velocity_work).
+        if cr_total_pressure_flux(config, registered_variables):
+            conserved_change += cr_face_velocity_work(
+                primitive_state,
+                cr_hllc_face_velocity(
+                    primitives_left_interface,
+                    primitives_right_interface,
+                    gamma,
+                    config,
+                    params,
+                    registered_variables,
+                    axis,
+                ),
                 dt,
                 config,
                 params,
