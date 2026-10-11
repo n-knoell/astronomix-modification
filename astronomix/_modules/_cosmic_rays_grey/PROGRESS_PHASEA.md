@@ -17,7 +17,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | **Item 1: advection** | | | | | |
 | A1.1 passive blob advected by gas | 1 | done | `cr_advection_by_gas.py` (1D + 3D) | as expected: 1D Gaussian order 1.51, top-hat 0.66, TVD; 3D diagonal order 1.56 / 1.55, round to 4e-5, passive | 2026-10-09 |
 | A1.2 Galilean invariance of diffusion | 2 | todo | | | |
-| A1.3 CR-thermal contact in pressure balance | 1 | done (tracked) | `cr_contact_pressure_balance.py` (1D + 3D, hydro + MHD) | **balance not kept**: max abs(P_tot - 1) ~1e-2, order ~0.5-0.75, spurious u ~1e-2; cause: gas energy HLL-diffused, e_cr not. Fix proposed | 2026-10-09 |
+| A1.3 CR-thermal contact in pressure balance | 1 | done; fixed for HLLC by P2 (total-pressure HLLC flux) | `cr_contact_pressure_balance.py` (1D + 3D, hydro + MHD) | HLLC + P2: **exact** (gate 1e-10; 1D <= 1e-13, 3D hydro / MHD <= 6e-14). HLL (default, no P2): still ~1e-2 at N 64, order ~0.5-0.75, tracked bounds (1D). Cause was the vdp source coupling at the discontinuous P_cr (Gupta+21 Fig. 3) | 2026-10-10 |
 | A1.4 free-wave convergence + eigenvector | 3 | todo | | | |
 | A1.5 free-streaming limit, production config | 3 | todo | | | |
 | **Item 2: adiabatic compression** | | | | | |
@@ -32,13 +32,13 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A3.4 production (guard off) tracking | 3 | todo | | | |
 | A3.5 `v_red` dependence of `D_perp,num` | 3 | todo | | | |
 | **Item 4: isotropic diffusion** | | | | | |
-| A4.1 exact telegrapher reference | 1 | todo | | | |
-| A4.2 `v_red` scan of the model floor | 1 | todo | | | |
+| A4.1 exact telegrapher reference | 1 | done (1D); F_cr relaxation fixed (ETD2RK, 2026-10-10) | `cr_telegrapher_reference.py`, `linear_theory.py` | Gaussian vs telegrapher order 1.93 (N 128-2048), pairwise 2.00 to N 4096 (1.98e-6), no floor; item-4 floor = model (1.08e-4, slope -2.008 in v_red); single modes second order (1.89-2.00 at 1024 -> 2048), C_cfl-independent; stage-wise relaxation (old) was first order, kept as a comparison test | 2026-10-10 |
+| A4.2 `v_red` scan of the model floor | 1 | done; finding: MINMOD makes CR diffusion first order in optically thick cells | `cr_telegrapher_reference.py` (`test_vred_scan_*`) | error vs diffusion = floor (v_red^-2) + scheme error; slope -1.975 at N 8192 (gate -2 +- 0.3), -1.31 at N 2048 (scheme error ~v_red overtakes floor near v_red 16: the old "v_red^-1 floor", Sec. 4.3 step 3 closed); MINMOD scheme error ~v_red dx^2 (thin) / ~kappa dx, first order (tau >~ 2); MC: second order, 15x smaller, ~v_red-independent; limiter = user decision | 2026-10-11 |
 | A4.3 multi-D isotropic Gaussian | 3 | todo | | | |
 | A4.4 steady-state diffusion with source | 2 | todo | | | |
 | A4.5 passive energy conservation | 3 | todo | | | |
 | **Item 6: shock tube** | | | | | |
-| A6.1 post-shock `K_cr` diagnostic + convergence | 1 | done | `cr_shock_tube_partition.py` | `K_cr,2` +1.06% at every N (100-3200), 0.82-1.21% over methods: **not converging** | 2026-10-08 |
+| A6.1 post-shock `K_cr` diagnostic + convergence | 1 | done | `cr_shock_tube_partition.py` | `K_cr,2` +1.27% at every N (100-3200; stage-wise coupling), 1.26-1.31% over C_cfl/limiter, HLLC + P2 0.42%: **not converging**, method-dependent | 2026-10-10 |
 | A6.2 Gupta et al. (2021) tubes A and B | 2 | done | `cr_shock_tube_partition.py` | A (CR-dominated, M 2.6): `K_cr,2` +6.3%, `P_th,2` -10.5%, spurious 19% of e_th; B (M 9.9): +10.6% | 2026-10-08 |
 | A6.3 Mach-number scan (Pfrommer et al. 2006) | 2 | done | `cr_shock_tube_partition.py` | `K_cr,2` error 0.4% (M 1.4) -> saturates 11.2% (M >= 30); spurious/e_th peaks 4.2% at M 3, ~M^-2 above | 2026-10-08 |
 | A6.4 reference-solver regression tests | 2 | todo | | | |
@@ -69,11 +69,150 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] Test-only `e_cr` source hook (A3.1, A4.4)
 - [ ] Static-heavy-gas helper, factored out of `cr_anisotropic_ring.py` (X6)
 - [ ] `test_setups/reference_solutions/linear_theory.py`: 5x5 dispersion matrix, eigenvectors,
-      spectral telegrapher solver (A1.4, A2.2, A2.4, A4.1)
+      spectral telegrapher solver (A1.4, A2.2, A2.4, A4.1). Telegrapher solver done 2026-10-10
+      (1D/2D/3D, verified against expm to 1e-15); the rest open.
 - [ ] Convergence-fit helper: least-squares and pairwise orders
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-11: A4.2 `v_red` scan -- floor explained, MINMOD limits CR diffusion accuracy
+
+- **Tests:** `cr_telegrapher_reference.py` gained 4 A4.2 tests. They use item 4's Gaussian at
+  v_red 4-64 and N 128-8192 (ETD2RK, float64, C_cfl 0.4), against diffusion and the exact
+  telegrapher solution. The file runs 9/9 pass (GPU, `a42/logs/test_run1.log`). Figure:
+  `pics/04_isotropic_diffusion/cr_telegrapher_vred_scan_test.svg`.
+- **Floor:** the error vs diffusion is the model floor (exactly v_red^-2) plus the scheme
+  error.
+  - Slope -1.975 at N 8192 (plan gate -2 +- 0.3 passes).
+  - At the plan's N 2048 it is -1.31, because the scheme error (4.2e-6 ... 3.0e-5, ~v_red)
+    overtakes the floor near v_red 16. This closes plan Sec. 4.3 step 3 (the "v_red^-1
+    floor").
+- **Scheme error:** spatial; C_cfl 0.1 and 0.4 agree to < 1%.
+  - MINMOD, thin cells: ~v_red dx^2.
+  - MINMOD, thick cells (tau >~ 2): ~kappa dx, first order, v_red-independent.
+  - Cause: minmod's O(dx^2) face jumps times the HLL dissipation R(tau) c.
+  - MC / van Albada: second order everywhere, 15x smaller at v_red 8 / N 2048, and nearly
+    v_red-independent (the plan's expectation).
+- **Production:** M5-M7 run MINMOD; M7 at v_red 1e4 km/s has tau ~ 3. DESIGN.md "Open: CR
+  diffusion accuracy and the slope limiter", options a/b/c: **user decision**.
+
+### 2026-10-11: MHD energy-budget cavity change explained (streaming leak across B)
+
+- **What changed:** the ETD2RK switch moved the printed cavity widths of `cr_mhd_energy_budget.py`
+  (along / across B 0.086 / 0.164 -> 0.102 / 0.195). The cause is the *old* scheme.
+- **Mechanism:**
+  - Its RK average kept 1/2 of F_perp (relaxation factor -> 1/2 at a -> inf).
+  - The isotropic streaming target is set once per step, so the second MHD gas half-step
+    streamed that remnant across B.
+- **Verification:** stage-wise + a B-projection at the end of each half-step reproduces ETD2RK
+  exactly, and with streaming off both integrators agree.
+- **Out of scope:** streaming is outside Phase A (item 5 excluded); it appears only because
+  ladder item 18's MHD test turns it on. The remaining leak (stage 1 uses the unprojected
+  streaming target) is left for a later streaming phase.
+- Details: DESIGN.md "F_cr relaxation time accuracy: ETD2RK", follow-up. Figure:
+  `pics/18_energy_budget/cr_mhd_cavity_investigation.png`.
+
+### 2026-10-10 (night, 3): ETD2RK F_cr relaxation implemented (user decision)
+
+- **New option** `CosmicRayGreyConfig.flux_relaxation_integrator`:
+  - default `CR_RELAXATION_ETD2RK`, implemented in `cr_grey_sources.cr_flux_relaxation_etd2rk`:
+    ETD2RK on the F_cr rows, Heun on all other rows, the realizability cap after the stage and
+    after the step;
+  - `CR_RELAXATION_STAGEWISE_IMPLICIT` keeps the old per-stage backward Euler.
+- **Rewired:** `_evolve_gas_state_unsplit` uses it. Its `rhs` stays explicit with ETD2RK.
+- **A4.1:** the strict xfail is now a regular test, and it passes (orders 2.00 / 1.95 / 1.89 / 1.95).
+  - New `test_cr_relaxation_integrators` (m = 24): the old scheme has order 0.69; ETD2RK is
+    5.5x more accurate at N 2048.
+  - The baselines were re-measured: modes 3-7x smaller at N 2048 and C_cfl-independent; Gaussian
+    7.94e-6 at N 2048 (gate 1.2e-5), pairwise 2.00 to N 4096.
+  - The figures were regenerated.
+- **Regression:** all 12 CR test files that use the relaxation pass (GPU, logs
+  `/export/scratch/nknoell/phaseA/regress_etd/logs/`):
+  - telegrapher, item 4, diffusion rate, ring, oblique, gradient check, modified shock,
+    kappa inference, div B, advection by gas, contact balance, MHD energy budget.
+  - Changed docstring values: modified shock Test B (du/dx 23.0%, dP_cr/dx 1.30%, dF_cr/dx
+    0.47%), gradient-check guard (2.1e-6), div B (6.8e-15 aniso), item 4 (L2 1.67e-3 ...
+    1.19e-4).
+  - Diffusion-rate values are unchanged to 4 digits.
+  - Ring: matches to 3-4 digits; the cap-alone test is still the strict xfail.
+  - MHD energy budget: 1.27e-10 [1.05e-10], gate 1e-9. The printed (ungated) cavity widths of
+    the anisotropic run changed: along B 0.102 [0.086], across B 0.195 [0.164] at N 128
+    (explained 2026-10-11, entry above).
+- **Not rerun:** M5-M7 (production setups).
+
+### 2026-10-10 (night, 2): second-order F_cr relaxation coupling -- literature and prototypes
+
+- **Literature:**
+  - Our scheme is PLUTO's "IMEX1" (Melon Fuksman & Mignone 2019).
+  - Arepo's two-moment CR solver (Thomas+ 2021) is formally first order too.
+- **IMEX-SSP2(2,2,2) (Pareschi & Russo 2005) is not a good fix here.** Its cell F_cr is wrong in
+  the stiff regime (final layer: -2.3x / -62x at nu dt = 10 / 100), and it is unstable with
+  upwind fluxes at large nu dt.
+- **Strang and integrating-factor splittings lose the diffusion limit** (D_eff ~ nu dt / 2 x
+  kappa).
+- **Recommended: ETD2RK on the F_cr rows, Heun on the rest.** Prototyped by scratch monkeypatch
+  (GPU):
+  - single modes become second order (1.89-2.00 at 1024 -> 2048, C 0.4);
+  - 3-7x smaller error at N 2048;
+  - nearly C_cfl-independent;
+  - the item-4 Gaussian improves to 7.9e-6 at N 2048 (order 2.0);
+  - stiff case (kappa 1e-3) unchanged.
+- A Heun-compatible GSA IMEX works equally well, but its stages overshoot.
+- Side finding: at kappa 1e-3 (dx >> kappa / c) all schemes converge at first order. This is
+  spatial (HLL dissipation), not temporal.
+- Details are in DESIGN.md, "F_cr relaxation time accuracy: ETD2RK". The user chose ETD2RK
+  (entry above).
+
+### 2026-10-10 (night): A4.1 exact telegrapher reference (1D) -- relaxation is first order in time
+
+- **New:** `test_setups/reference_solutions/linear_theory.py`. It is the exact spectral solution of
+  the isotropic two-moment system in gas at rest, on a periodic box, in 1D/2D/3D: the per-mode 2x2
+  propagator, in cancellation-free form, with a series near critical damping. It matches
+  `scipy.linalg.expm` per mode to 1e-15 (including an exactly critical mode, a 3D oblique mode and a
+  3D slab vs 1D) and d'Alembert for nu -> 0 to 7e-14.
+- **Test:** `pytests/cosmic_rays_grey/cr_telegrapher_reference.py`. It uses item 4's parameters,
+  float64 and static heavy gas (rho 1e4, P 1e-4, e_cr = 1e-7 (0.1 + profile); max abs(u)
+  2.7e-12). Figures are in `pics/04_isotropic_diffusion/cr_telegrapher_reference_*`. Logs:
+  `/export/scratch/nknoell/phaseA/a41/logs/`. Result: 3 pass, 1 strict xfail.
+  - **Model floor:** telegrapher - diffusion at t = 0.24 is 4.41e-4 / 1.08e-4 / 2.69e-5 /
+    6.71e-6 / 1.68e-6 at v_red 4 ... 64, slope -2.008. At v_red 8 this *is* item 4's ~1.2e-4
+    floor.
+  - **Gaussian vs telegrapher:** 1.66e-3 ... 3.42e-6 (N 128 ... 4096), least-squares order 1.86
+    (128-2048), pairwise 1.74 / 1.92 / 1.91 / 1.79 / 1.55. There is no floor. The error vs
+    diffusion at N 4096 is 1.026x the model floor. Gate: order >= 1.8 (plan), N 2048 <= 1.5e-5.
+  - **Single modes** m = 2, 8, 18, 24, 48 (k/k_c 0.11 ... 2.61), max-in-time error over three
+    e-folds:
+    - at C_cfl 0.4 (default), first order at fine N (pairwise 0.4-1.0 at 1024 -> 2048);
+    - at C_cfl 0.1, ~2nd order, 4-5x smaller at N 2048 (e.g. m 24: 4.7e-3 vs 9.4e-4).
+    - A C_cfl scan at N 1024 shows the error ~linear in C_cfl above ~0.1. Tracked bounds; the
+      plan's "second order" expectation is `test_cr_single_mode_second_order`,
+      xfail(strict).
+- **Plan question "v_red^-1 floor" (Sec. 4.3) answered:**
+  - The model floor scales as v_red^-2 exactly.
+  - At fixed N the scheme error against the telegrapher reference *grows* with v_red: N 2048
+    gives 1.2e-5 / 1.0e-5 / 1.6e-5 / 3.0e-5 at v_red 4 / 8 / 16 / 32 (prototype,
+    `a41/logs/proto_vred.log`). This is pre-asymptotic: tau = (gamma_cr - 1) v_red dx / kappa.
+  - Together they mimicked a slower decrease of the item-4 floor. A4.2 makes this the test.
+- **Finding: the F_cr relaxation is first order in time** (not a test artefact):
+  - `evolve_state` applies `F <- F / (1 + nu dt)` at the end of each SSP-RK2 stage and
+    averages the stages. Pure relaxation then gets the step factor
+    (1 + 1/(1+a)^2)/2 = 1 - a + 1.5 a^2 (a = nu dt), vs exp(-a) = 1 - a + a^2/2. That is a local
+    error a^2, a global error O(nu dt) = O(dx) at fixed C_cfl.
+  - A steady, gradient-slaved F_cr stays an exact fixed point, so the diffusion limit is fine
+    (Gaussian at t_end: order 1.86). Transients and every mode not << k_c see the error.
+  - M7 estimate (kappa 1e28, v_red 1000 km/s, dx 31 pc), if dt is set by the CR signal speed:
+    nu dt ~ 0.2, and scales below 2 pi / k_c ~ 700 pc are damped waves. So it can matter in
+    production.
+  - Fixed the same night with ETD2RK (log entry above; DESIGN.md "F_cr relaxation time
+    accuracy: ETD2RK").
+
+### 2026-10-10 (late): tracker rows A1.3 and A6.1 updated
+
+- A1.3: done; exact with HLLC + P2 (hydro and MHD); HLL (the default) keeps the tracked bounds.
+- A6.1: the row now shows the stage-wise values (1.27%, from the 2026-10-09 re-baseline) and the
+  HLLC + P2 method variant (0.42%, `p2_repo/logs/cr_shock_tube_partition.log`). The test
+  docstring said HLLC 1.24% and now quotes both. A6.2/A6.3 run HLL only, so they are unchanged.
 
 ### 2026-10-10 (late): stale docstring numbers re-baselined to HLLC + P2
 

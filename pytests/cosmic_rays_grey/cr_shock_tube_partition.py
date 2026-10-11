@@ -42,7 +42,10 @@ A6.1, item-6 tube (Sod-like, 40% CR pressure both sides; Mach 1.64, compression 
 
   [operator-split: dK_cr,2 1.06% at every N, dK_cr,L 5.4e-4 ... 4.8e-5.] ``C_cfl`` 0.1 / 0.4 / 0.8:
   dK_cr,2 = 1.26 / 1.27 / 1.31% [1.21 / 1.06 / 0.82%]; MC (``DOUBLE_MINMOD``) 1.30%,
-  ``VAN_ALBADA`` 1.28%, HLLC 1.24%, each the same at N = 400 and 1600. The smooth control now
+  ``VAN_ALBADA`` 1.28%, each the same at N = 400 and 1600. HLLC 0.42% (N = 400) with the
+  total-pressure HLLC flux of 2026-10-10 (DESIGN.md "Resolved: total-pressure HLLC flux"), 1.24%
+  with the stage-wise source coupling: P2 shrinks the error 3x but leaves it non-zero, so the
+  partition stays method-dependent. The smooth control now
   converges at order ~1.1 [0.85]. The shock lags by a fixed ~5e-4 in x (more CR energy makes the
   post-shock gas softer, hence denser and slower).
 

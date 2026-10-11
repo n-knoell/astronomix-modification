@@ -264,9 +264,9 @@ def _time_integrator_sources(
 
     # Grey two-moment cosmic-ray feedback (astronomix._modules._cosmic_rays_grey):
     # -grad(P_cr) momentum coupling, adiabatic -P_cr * div(v) work, and
-    # streaming heating. The F_cr relaxation is not here: it is applied
-    # implicitly inside every RK stage (cr_flux_relaxation_update, called from
-    # _evolve_gas_state_unsplit). registered_variables.cosmic_ray_e_active is only ever
+    # streaming heating. The F_cr relaxation is not here: it is part of the
+    # RK2 step itself (cr_flux_relaxation_etd2rk, or per stage with
+    # cr_flux_relaxation_update; both from _evolve_gas_state_unsplit). registered_variables.cosmic_ray_e_active is only ever
     # set by the FV branch of get_registered_variables (see that module's
     # DESIGN.md "FD limitation"), so this is a no-op under FD for now.
     if include_cr and registered_variables.cosmic_ray_e_active:

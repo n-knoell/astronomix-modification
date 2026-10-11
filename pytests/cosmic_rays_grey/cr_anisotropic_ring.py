@@ -467,6 +467,9 @@ def test_cr_ring_flux_cap_alone(
       but does not remove them.
     - The guard alone passes both (see 3a / 3b), so the realizability
       violations were a symptom near empty cells, not the cause.
+    - With the ETD2RK F_cr relaxation (2026-10-10; values above are the
+      stage-wise backward Euler): 3a ``e_min`` 9.961036 / 9.953968, 3b
+      -0.00265 / -0.00412; the other ring tests match to 3-4 digits.
 
     Args:
         resolutions: The grid sizes.

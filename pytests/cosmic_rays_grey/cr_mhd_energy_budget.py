@@ -34,8 +34,8 @@ configuration with the default `SINGLE_PRECISION` tolerance to pin that
 explanation down.
 
 **How the CR module couples to B, and so what this test exercises.** CR-grey
-only reads B in the anisotropic F_cr update (`cr_flux_relaxation_update`,
-after every RK stage with B passed into the gas half-steps; until
+only reads B in the anisotropic F_cr relaxation (`cr_flux_relaxation_etd2rk`,
+or `cr_flux_relaxation_update` after every RK stage; B passed into the gas half-steps; until
 2026-10-04 a once-per-step `anisotropic_flux_projection`), which rewrites
 F_cr but moves no energy. Streaming (`streaming_flux_target`/
 `cr_streaming_heating_source`) uses the isotropic `reduced_streaming_speed`,
@@ -59,6 +59,30 @@ half-steps, pdv work from the face velocities; DESIGN.md "Resolved: total-pressu
 values of 2026-10-09 with the stage-wise source coupling in brackets):
 MHD+CR relative energy error 1.05e-10 [1.02e-10], isotropic 9.81e-11 [same], CR-off control
 7.5e-14 [same], single-precision tolerance 2.88e-9 [2.90e-9]; ``E_cr(t_end)`` 0.0405 [0.04295].
+
+**Re-measured 2026-10-11 with the ETD2RK F_cr relaxation** (DESIGN.md "F_cr relaxation time
+accuracy: ETD2RK"; the HLLC values of 2026-10-10 above in brackets): MHD+CR relative energy
+error 1.27e-10 [1.05e-10], isotropic 9.81e-11 [same], CR-off 7.5e-14 [same], single-precision
+tolerance 2.89e-9 [2.88e-9]. The printed (not gated) cavity widths of the anisotropic run
+changed: along B 0.102 [0.086], across B 0.195 [0.164] (2 / 4 cells at N = 128).
+
+Cause (investigated 2026-10-11, `pics/18_energy_budget/cr_mhd_cavity_investigation.png`):
+cross-field *streaming* leak, not the time accuracy.
+- Streaming overwrites F_cr with an isotropic target once per full step. The anisotropic
+  relaxation (kappa_perp = 0) removes F_perp inside every RK stage.
+- The stage-wise scheme's final RK average kept 1/2 F_perp(n) (its relaxation factor tends to
+  1/2 for nu dt -> inf, not 0). The second MHD gas half-step then streamed that remnant across B.
+  ETD2RK stores F_perp = 0.
+- Checks:
+  - Stage-wise plus a B-projection at the end of every gas half-step reproduces the ETD2RK run
+    (same widths, E_cr to 5e-5).
+  - With streaming off, the two integrators agree (E_cr to 4e-6, same widths 0.164 / 0.227).
+  - With no cross-field streaming at all (projection at the start of every half-step), the
+    widths are 0.133 / 0.227.
+- So ETD2RK is closer to the anisotropic limit. The remaining leak is the first RK stage of
+  each step using the unprojected streaming target. Streaming is outside Phase A, so this is
+  left for a later streaming phase (DESIGN.md "F_cr relaxation time accuracy: ETD2RK",
+  follow-up).
 """
 
 # ==== GPU selection ====

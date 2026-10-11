@@ -45,6 +45,23 @@ CR_ENTROPY_TRANSFER_GLOBAL = 0
 CR_ENTROPY_TRANSFER_SHOCKS = 1
 
 
+#: CosmicRayGreyConfig.flux_relaxation_integrator: how the stiff F_cr
+#: relaxation (diffusive_relaxation / anisotropic_transport) is coupled to the
+#: SSP-RK2 hydro step (DESIGN.md "F_cr relaxation time accuracy: ETD2RK").
+
+#: backward Euler at the end of every RK stage, then the usual SSP-RK2 average
+#: (PLUTO's "IMEX1", Melon Fuksman & Mignone 2019). The behavior until
+#: 2026-10-10: first order in time for F_cr off its diffusive equilibrium
+#: (global error O(nu dt)); the diffusion limit itself is exact.
+CR_RELAXATION_STAGEWISE_IMPLICIT = 0
+
+#: exponential time differencing (ETD2RK, Cox & Matthews 2002) on the F_cr
+#: rows, the unchanged SSP-RK2 (Heun) on all other rows
+#: (cr_grey_sources.cr_flux_relaxation_etd2rk): second order, exact for the
+#: relaxation itself, exact diffusive fixed point, L-stable.
+CR_RELAXATION_ETD2RK = 1
+
+
 class CosmicRayGreyConfig(NamedTuple):
 
     #: main switch for the grey two-moment cosmic-ray model. Currently
@@ -52,9 +69,8 @@ class CosmicRayGreyConfig(NamedTuple):
     #: reconstruction cannot yet carry e_cr/F_cr.
     grey_cosmic_rays: bool = False
 
-    #: anisotropic CR transport along the local B direction: the implicit
-    #: per-RK-stage F_cr update (cr_grey_sources.cr_flux_relaxation_update)
-    #: relaxes the components along and across b_hat separately, with
+    #: anisotropic CR transport along the local B direction: the F_cr
+    #: relaxation (flux_relaxation_integrator) relaxes the components along and across b_hat separately, with
     #: CosmicRayGreyParams.diffusion_coefficient along B and
     #: perpendicular_diffusion_coefficient across it (0: F_cr confined to B).
     #: Requires config.mhd (2D/3D) and the unsplit FV RK2 scheme.
@@ -64,7 +80,7 @@ class CosmicRayGreyConfig(NamedTuple):
     #: (Rosdahl et al. 2025, Sec. 2.3, as in M1 radiation transport): the
     #: F_cr vector is rescaled wherever it exceeds the cap, on the
     #: reconstructed interface states before every Riemann solve and on the
-    #: cell states at the end of every RK stage
+    #: cell states at the end of every RK stage and of the step
     #: (cr_grey_transport.cr_flux_realizability_cap). Applied only together
     #: with diffusive_relaxation or anisotropic_transport (which already
     #: require the unsplit FV RK2 scheme); the pure-wave mode of ladder items
@@ -85,6 +101,13 @@ class CosmicRayGreyConfig(NamedTuple):
     #: equation (verified in ladder items 1-3) -- this flag exists so that
     #: behavior is unchanged for configs/tests that don't ask for it.
     diffusive_relaxation: bool = False
+
+    #: time coupling of the F_cr relaxation (diffusive_relaxation /
+    #: anisotropic_transport): CR_RELAXATION_ETD2RK (default since
+    #: 2026-10-10, second order) or CR_RELAXATION_STAGEWISE_IMPLICIT (the
+    #: first-order per-stage backward Euler used before). See the constants
+    #: above.
+    flux_relaxation_integrator: int = CR_RELAXATION_ETD2RK
 
     #: turn on diffusive shock acceleration: inject cosmic-ray energy into
     #: e_cr at shocks detected by the Pfrommer shock finder (PR #4,
@@ -208,7 +231,8 @@ class CosmicRayGreyParams(NamedTuple):
     #: values can be passed in directly. Only used when
     #: CosmicRayGreyConfig.diffusive_relaxation is set. Sets the F_cr
     #: relaxation rate nu = (gamma_cr - 1) reduced_streaming_speed^2 /
-    #: diffusion_coefficient (cr_grey_sources.cr_flux_relaxation_update); at
+    #: diffusion_coefficient (cr_grey_sources.cr_flux_relaxation_etd2rk /
+    #: cr_flux_relaxation_update); at
     #: steady state this relaxes F_cr toward -diffusion_coefficient *
     #: grad(e_cr). Until 2026-10-04 nu had no (gamma_cr - 1) factor and the
     #: e_cr diffusivity was diffusion_coefficient / 3: runs from before then
@@ -220,9 +244,9 @@ class CosmicRayGreyParams(NamedTuple):
     #: CR diffusivity across B, kappa_perp (length^2 / time, e_cr
     #: diffusivity like diffusion_coefficient), only used with
     #: CosmicRayGreyConfig.anisotropic_transport. 0 (default) keeps F_cr
-    #: exactly along B, the projection used until 2026-10-04. Applied
-    #: implicitly (cr_grey_sources.cr_flux_relaxation_update), so small
-    #: values cost no time steps.
+    #: exactly along B, the projection used until 2026-10-04. The relaxation
+    #: is unconditionally stable (exponential or implicit, see
+    #: flux_relaxation_integrator), so small values cost no time steps.
     perpendicular_diffusion_coefficient: float = 0.0
 
     #: shape sensor range of the CR rows' monotonicity guard

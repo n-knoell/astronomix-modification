@@ -291,9 +291,10 @@ def _cfl_time_step(
         dt_visc = C_CFL * grid_spacing**2 / (2.0 * config.dimensionality * nu_max)
         dt = jnp.minimum(dt, dt_visc)
 
-    # No CR-grey F_cr relaxation constraint: cr_flux_relaxation_update is
-    # implicit (backward Euler inside every RK stage), so it is stable for
-    # any nu dt.
+    # No CR-grey F_cr relaxation constraint: the relaxation is exponential
+    # (cr_flux_relaxation_etd2rk, default) or implicit (backward Euler inside
+    # every RK stage, cr_flux_relaxation_update), so it is stable for any
+    # nu dt.
 
     # SN-driving trigger constraint: _inject_supernovae runs
     # max_sn_per_step independent trials per step, each with probability

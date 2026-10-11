@@ -49,6 +49,7 @@ from astronomix._modules._time_integrator_sources import (
 )
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     CR_ENTROPY_TRANSFER_SHOCKS,
+    CR_RELAXATION_ETD2RK,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_entropy_closure_source,
@@ -56,6 +57,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_entropy_sync,
     cr_entropy_to_energy,
     cr_face_velocity_work,
+    cr_flux_relaxation_etd2rk,
     cr_flux_relaxation_update,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
@@ -1037,6 +1039,18 @@ def _evolve_gas_state_unsplit(
     )
 
     if config.time_integrator == RK2_SSP:
+        # Grey-CR F_cr relaxation / anisotropy: either ETD2RK on the F_cr rows
+        # around the explicit stages (default, cr_flux_relaxation_etd2rk) or
+        # backward Euler at the end of every stage (cr_flux_relaxation_update).
+        cr_relaxation = registered_variables.cosmic_ray_e_active and (
+            config.cosmic_ray_grey_config.diffusive_relaxation
+            or config.cosmic_ray_grey_config.anisotropic_transport
+        )
+        cr_relaxation_etd = cr_relaxation and (
+            config.cosmic_ray_grey_config.flux_relaxation_integrator
+            == CR_RELAXATION_ETD2RK
+        )
+
         # Generic SSP-RK2 (Heun) over the conserved state.  The stage
         # increment is one forward-Euler hydro step expressed in conserved
         # variables: dt * L(u) = conserved(inner(primitive(u))) - u.
@@ -1055,30 +1069,21 @@ def _evolve_gas_state_unsplit(
                 dual_energy_shock_mask=shock_mask,
                 cr_wave_speed_factors=cr_factors,
             )
-            # Grey-CR F_cr relaxation / anisotropy, implicit at the end of
-            # every stage (not on the operator-split source path below): see
-            # cr_flux_relaxation_update for why the placement matters.
-            if registered_variables.cosmic_ray_e_active and (
-                config.cosmic_ray_grey_config.diffusive_relaxation
-                or config.cosmic_ray_grey_config.anisotropic_transport
-            ):
+            # Stage-wise variant: grey-CR F_cr relaxation / anisotropy,
+            # implicit at the end of every stage (not on the operator-split
+            # source path below): see cr_flux_relaxation_update for why the
+            # placement matters, then the realizability cap on the cell states
+            # after the stage's source step (Rosdahl et al. 2025). With ETD2RK
+            # both happen in cr_flux_relaxation_etd2rk and rhs stays explicit.
+            if cr_relaxation and not cr_relaxation_etd:
                 p_stepped = cr_flux_relaxation_update(
                     p_stepped, dt_step, config, registered_variables, params,
                     magnetic_field,
                 )
-            # Realizability cap on the cell states after the stage's source
-            # step (Rosdahl et al. 2025).
-            if (
-                registered_variables.cosmic_ray_e_active
-                and config.cosmic_ray_grey_config.flux_realizability_cap
-                and (
-                    config.cosmic_ray_grey_config.diffusive_relaxation
-                    or config.cosmic_ray_grey_config.anisotropic_transport
-                )
-            ):
-                p_stepped = cr_flux_realizability_cap(
-                    p_stepped, params, registered_variables
-                )
+                if config.cosmic_ray_grey_config.flux_realizability_cap:
+                    p_stepped = cr_flux_realizability_cap(
+                        p_stepped, params, registered_variables
+                    )
             du = (
                 conserved_state_from_primitive(
                     p_stepped, gamma, config, registered_variables
@@ -1095,7 +1100,14 @@ def _evolve_gas_state_unsplit(
         u0 = conserved_state_from_primitive(
             primitive_state, gamma, config, registered_variables
         )
-        u_final = rk2_ssp(u0, dt, rhs=rhs)
+        if cr_relaxation_etd:
+            u_final = cr_flux_relaxation_etd2rk(
+                u0, dt, rhs=rhs, config=config,
+                registered_variables=registered_variables, params=params,
+                magnetic_field=magnetic_field,
+            )
+        else:
+            u_final = rk2_ssp(u0, dt, rhs=rhs)
         primitive_state = primitive_state_from_conserved(
             u_final, gamma, config, registered_variables
         )

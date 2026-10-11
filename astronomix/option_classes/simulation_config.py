@@ -1026,10 +1026,10 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
             "solver_mode == FINITE_VOLUME."
         )
 
-    # The grey-CR F_cr relaxation and anisotropic transport are applied
-    # implicitly inside every RK stage of the unsplit FV scheme
-    # (_evolve_gas_state_unsplit); the other integrator paths have no stages
-    # to apply them in and would silently run without them.
+    # The grey-CR F_cr relaxation and anisotropic transport are part of the
+    # RK2 step of the unsplit FV scheme (_evolve_gas_state_unsplit: ETD2RK or
+    # per stage); the other integrator paths do not apply them and would
+    # silently run without them.
     cr_grey_config = config.cosmic_ray_grey_config
     if (cr_grey_config.diffusive_relaxation or cr_grey_config.anisotropic_transport) and not (
         config.solver_mode == FINITE_VOLUME
@@ -1040,6 +1040,11 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
             "cosmic_ray_grey_config.diffusive_relaxation and anisotropic_transport "
             "require solver_mode == FINITE_VOLUME, split == UNSPLIT and "
             "time_integrator == RK2_SSP (flux_realizability_cap acts only with them)."
+        )
+    if cr_grey_config.flux_relaxation_integrator not in (0, 1):
+        raise ValueError(
+            "cosmic_ray_grey_config.flux_relaxation_integrator must be "
+            "CR_RELAXATION_STAGEWISE_IMPLICIT (0) or CR_RELAXATION_ETD2RK (1)."
         )
     # cr_entropy is ignored without grey CRs (no s_cr row is allocated).
     if cr_grey_config.grey_cosmic_rays and cr_grey_config.cr_entropy:

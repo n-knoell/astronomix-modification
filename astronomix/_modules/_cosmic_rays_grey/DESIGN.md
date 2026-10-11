@@ -1750,6 +1750,231 @@ comparison rather than a tuned-to-pass one.
 - **Default solver unchanged (HLL).** Runs that want the balanced contacts set
   `riemann_solver=HLLC`.
 
+## F_cr relaxation time accuracy: ETD2RK (2026-10-10, Phase A A4.1)
+
+**Status: fixed 2026-10-10 (user decision): ETD2RK is the default `flux_relaxation_integrator`;
+the stage-wise backward Euler stays available as `CR_RELAXATION_STAGEWISE_IMPLICIT`.** See
+"Implementation" at the end of this section.
+
+- **Found by:** `pytests/cosmic_rays_grey/cr_telegrapher_reference.py`. It compares single Fourier
+  modes with the exact two-moment solution (`test_setups/reference_solutions/linear_theory.py`).
+  At the default C_cfl 0.4 the max-in-time error converges at first order at fine N, and is
+  ~linear in C_cfl above ~0.1. At C_cfl 0.1 it is ~second order.
+- **Cause:** `cr_grey_sources.cr_flux_relaxation_update` (backward Euler, `F <- F / (1 + nu dt)`)
+  runs at the end of each SSP-RK2 stage (`_evolve_gas_state_unsplit.rhs`), and the stages are
+  averaged. For dF/dt = -nu F the step factor is (1 + 1/(1+a)^2)/2 = 1 - a + 1.5 a^2 (a = nu dt)
+  instead of exp(-a): local error a^2, global O(nu dt), i.e. O(dx) at fixed C_cfl.
+- **Not affected:** the diffusion limit. A steady, gradient-slaved F_cr is an exact fixed point of
+  every stage (Problem 3 above), and the item-4 Gaussian converges at 1.86 against the exact
+  reference.
+- **Affected:** transients (F_cr building up) and modes with k not << k_c = nu / (2 c): damped
+  waves and the slow mode near k_c.
+  - In M7 (kappa 1e28, v_red 1000 km/s, dx ~31 pc), nu dt ~ 0.2 if dt is set by the CR signal
+    speed, and scales below ~700 pc are damped waves.
+- **Literature note:** the current scheme is exactly PLUTO's "IMEX1" (Melon Fuksman & Mignone 2019,
+  ApJS 242, 20: Heun stages with the implicit source in each stage, then `(U^n + U^(2)) / 2`).
+  Those authors kept it next to IMEX-SSP2(2,2,2) because it behaved better when the
+  interaction terms are stiff. Arepo's two-moment CR solver (Thomas, Pfrommer & Pakmor 2021,
+  Sec. 3, 4.5.3) is operator split and formally first order too; they measure 1.72 on their
+  telegrapher wave.
+- **Candidates checked (2026-10-10).** Per-mode amplification-factor analysis of the linear
+  model (scratch `lit/schemes.py`), then the two best candidates prototyped in the real code via
+  a scratch monkeypatch of `evolve_state` (no repo change, `lit/proto_etd.py`, GPU, A4.1 setups).
+  - **IMEX-SSP2(2,2,2) (Pareschi & Russo 2005): rejected.**
+    - Its explicit part is our Heun, but the tableau is type A and not globally stiffly
+      accurate (c_E != c_I).
+    - The slow-mode diffusion rate is right, but the cell-state F_cr is the "final layer" PR05
+      warn about (their Remark ii): F_cr / F_diffusive = 0.94 / -2.3 / -62 at nu dt = 1 / 10 / 100.
+      That interacts with the realizability cap.
+    - With upwind fluxes it is unstable at large nu dt: max |G| = 1.11 at nu dt = 30 and C 0.4,
+      2.4 at C 0.8.
+    - PR05's AP theory covers the eps -> 0 equilibrium limit, not the O(eps) Chapman-Enskog
+      (diffusive) dynamics that is our physics. BPR 2013 (SISC 35, A22) treat the diffusive
+      scaling, but there c -> infinity, which is not our regime (v_red fixed, hyperbolic CFL).
+  - **Strang half-steps with exact exp(-nu dt / 2) and Lawson / integrating-factor SSP-RK2:
+    rejected.** Neither is asymptotic-preserving: the forcing is not relaxed inside the stages.
+    The effective diffusion coefficient comes out as 1.66 / 5.0 / 50 x kappa (Strang) at
+    nu dt = 3 / 10 / 100, the same failure as Problem 3 above.
+  - **Heun-compatible GSA IMEX:** the explicit tableau is our Heun (c = 0, 1), the implicit
+    tableau has c_I = c_E. Order 2 plus L-stability give a 2-parameter family. Example:
+    `a11 = 1/3`, `a10 = 2/3`, `a20 = 1/2`, `a21 = a22 = 1/4`.
+    - Works: second order, exact fixed point, exact cell flux.
+    - Drawbacks: L-stability forces `a11 < 1/2`, so the intermediate stage overshoots
+      off-equilibrium F_cr (-2x in the stiff limit). The fast-mode factor is negative (-0.2 at
+      nu dt = 10).
+  - **ETD2RK (Cox & Matthews 2002; the c2 = 1 exponential RK of Hochbruck & Ostermann 2005, stiff
+    order 2) on the F_cr rows, plain Heun on all other rows: recommended.**
+    - With `a = nu dt`, `N` the explicit (un-relaxed) stage rate, `phi1 = (1 - e^-a) / a` and
+      `phi2 = (e^-a - 1 + a) / a^2`:
+
+          F1      = e^-a F^n + phi1 dt N_F(U^n)
+          F^(n+1) = F1 + phi2 dt (N_F(U1) - N_F(U^n))
+
+      Every other row is unchanged Heun, so the hydro keeps its SSP form.
+    - Exact for the relaxation itself; exact fixed point; L-stable. The fast-mode factor is e^-a
+      (no sign flip).
+    - F^(n+1) is the convex combination
+      `e^-a F^n + w0 F_eq(U^n) + w1 F_eq(U1)` with `F_eq = N_F / nu` and `w0, w1 >= 0`, which
+      is realizability-friendly (the Huang & Shu 2018 / Du et al. 2021 argument).
+    - Same cost: two hydro evaluations and one extra stored F_cr increment.
+    - Tensor form: `e^-a` and the phi functions are diagonal in the B frame (a_par, a_perp),
+      like the current factors. At kappa_perp = 0, `phi1 dt -> 0` and `phi2 dt -> 0` (write them
+      in the kappa form, `phi1 dt = kappa (1 - e^-a) / ((gamma_cr - 1) v_red^2)`, to stay smooth).
+- **Prototype results** (scratch monkeypatch, double precision, GPU; logs
+  `/export/scratch/nknoell/phaseA/a41/logs/etd_*.log`):
+
+  | | current | ETD2RK | Heun-GSA |
+  |---|---|---|---|
+  | modes, C 0.4, error at N 2048, m = 8 / 18 / 24 / 48 | 1.09e-3 / 3.59e-3 / 4.75e-3 / 9.91e-3 | 1.56e-4 / 5.06e-4 / 8.64e-4 / 3.11e-3 | 1.56e-4 / 5.22e-4 / 8.88e-4 / 3.18e-3 |
+  | modes, C 0.4, order 1024 -> 2048 | 0.92 / 0.71 / 0.69 / 0.44 | 2.00 / 1.95 / 1.89 / 1.95 | 2.00 / 1.93 / 1.88 / 1.98 |
+  | C 0.8 vs C 0.4 error at N 2048 | ~2x | +7-19% | +7-23% |
+  | item-4 Gaussian, kappa 0.02, error at N 256 ... 2048 | -- | 4.87e-4, 1.26e-4, 3.18e-5, 7.94e-6 (orders 1.95 / 1.99 / 2.00) | about the same as ETD2RK |
+  | stiff Gaussian, kappa 1e-3 (nu dt 4.2 ... 0.5), error at N 256 ... 2048 | 2.67e-3 ... 2.66e-4 | identical to <1% | identical to <1% |
+
+  Notes:
+  - For the current scheme's item-4 Gaussian, see the A4.1 numbers above: 1.005e-5 at N 2048,
+    pairwise orders 1.74-1.92.
+  - At N 256 the new schemes are up to 2x worse for m >= 18 (spatial error no longer partly
+    cancelled by the extra time damping).
+  - The stiff-Gaussian convergence is first order for all three schemes. This is spatial: with
+    dx >> kappa / c the HLL numerical diffusion dominates. It is a separate issue that a time
+    integrator cannot fix. Traced to the MINMOD limiter in A4.2 (2026-10-11): see "Open: CR
+    diffusion accuracy and the slope limiter".
+- **Fix (chosen by the user, implemented 2026-10-10, see below):** ETD2RK on the F_cr rows. Requirements:
+  - keep the fixed-point property;
+  - keep L-stability for nu dt >> 1 (v_red 1e4 km/s gives nu dt ~ 2);
+  - keep the anisotropic (tensor) form.
+
+  It replaces `rk2_ssp` by a CR-aware two-stage loop in `_evolve_gas_state_unsplit` and keeps
+  the per-stage realizability cap. Open implementation points:
+  - The stage-wise CR coupling and P2 live inside the explicit rate N and are untouched.
+  - The phi functions need series branches for small `a` (float32: `phi2` for `a < ~1e-2`).
+  - Re-baselines are needed (A4.1 baselines, item 4, the CR budget tests).
+- **Acceptance:** `test_cr_single_mode_second_order` (a strict xfail before the fix) passes:
+  orders 2.00 / 1.95 / 1.89 / 1.95.
+
+### Implementation (2026-10-10, user decision)
+
+- **Option:** `CosmicRayGreyConfig.flux_relaxation_integrator`. The default is
+  `CR_RELAXATION_ETD2RK`; `CR_RELAXATION_STAGEWISE_IMPLICIT` is the old per-stage backward Euler,
+  kept for comparison and for reproducing older runs. `simulation_config` validates the value.
+- **Code:**
+  - `cr_grey_sources.cr_flux_relaxation_etd2rk` is the whole RK2 step. It is not jitted itself,
+    because `rhs` is a closure; it runs inside the jitted `_evolve_gas_state_unsplit`.
+  - `_evolve_gas_state_unsplit.rhs` stays explicit with ETD2RK (no relaxation, no cap inside).
+    `rk2_ssp` is used only for the stage-wise variant and for runs without relaxation.
+  - `_exponential_relaxation_factors` gives `exp(-a)`, `phi1` and `phi2`. It uses Taylor series
+    below `a = 1e-3` (phi1) and `a = 0.1` (phi2), and returns 0 for `kappa = 0` with no NaN in
+    values or gradients.
+  - `_apply_relaxation_tensor` applies `f_par b b + f_perp (I - b b)`; the backward-Euler update
+    uses the same helper.
+- **Realizability cap:** applied after the stage and after the final update. F^(n+1) is not an
+  average of capped states.
+- **Weak B:** at cells where `|b_hat| < 1` (B near `b_field_floor`), the three factors are not
+  exactly functions of one rate tensor, so the fixed point holds only to `O(1 - |b_hat|^2)`.
+  This is the same interpolation as the old backward-Euler factors.
+- **Verified (GPU, logs `/export/scratch/nknoell/phaseA/regress_etd/logs/`):**
+  - A4.1: 5/5 pass, including the former strict xfail. The integrator comparison test
+    `test_cr_relaxation_integrators` keeps the old scheme's order 0.69 visible (ETD2RK is 5.5x
+    more accurate at N 2048, m = 24).
+  - The Gaussian is second order down to N 4096 (1.98e-6), and the error vs diffusion is the
+    model floor to +0.4%.
+  - The modes are C_cfl-independent to 1-3%.
+  - All 12 CR test files that use the relaxation pass.
+  - Changed numbers:
+    - item 2.1 shock structure, Test B: du/dx 23.0% [20.9%], dP_cr/dx 1.30% [1.60%],
+      dF_cr/dx 0.47% [0.74%];
+    - gradient-check guard: AD-vs-FD 2.1e-6 [5.6e-6];
+    - kappa inference: 1.271e-2 [1.282e-2];
+    - diffusion-rate D/kappa: unchanged to 4 digits;
+    - ring: matches to 3-4 digits;
+    - MHD energy budget: rel. energy error 1.27e-10 [1.05e-10]. Its printed, ungated cavity
+      widths changed: along B 0.102 [0.086], across B 0.195 [0.164] (2 / 4 cells). Explained
+      below.
+- **Follow-up: the MHD cavity change is a cross-field streaming leak (2026-10-11).**
+  - Logs and npz: `/export/scratch/nknoell/phaseA/cavity/`.
+  - Figure: `pytests/cosmic_rays_grey/pics/18_energy_budget/cr_mhd_cavity_investigation.png`.
+  - Script: scratch `lit/cavity.py`.
+  - Setup: `cr_mhd_energy_budget.py` runs streaming with `anisotropic_transport`,
+    kappa_perp = 0 and no `diffusive_relaxation`.
+    - `streaming_flux_target` overwrites F_cr with an *isotropic* target once per full step.
+    - The relaxation removes F_perp in every RK stage (a_perp = inf).
+  - **Mechanism:**
+    - The stage-wise scheme's final average `(U^n + U2) / 2` keeps `F_perp(n) / 2` (its
+      amplification tends to 1/2, not 0, for a -> inf).
+    - FV MHD takes two gas half-steps per step, so the second half-step started from that
+      remnant and streamed it across B.
+    - The cross-field e_cr transport per step was `(dt/2) (1/2 + 1/4) F_perp`; with ETD2RK it
+      is `(dt/2) (1/2) F_perp`. The remaining half comes from stage 1 of the first half-step,
+      which uses the unprojected target.
+  - **Verification** (128^3, GPU):
+
+    | Variant | Cavity along B | Cavity across B | E_cr(t_end) | Rel. energy error |
+    |---|---|---|---|---|
+    | B: stage-wise | 0.086 | 0.164 | 0.04052 | 1.05e-10 |
+    | A: ETD2RK | 0.102 | 0.195 | 0.03893 | 1.27e-10 |
+    | E: stage-wise + projection at the end of every half-step | 0.102 | 0.195 | 0.03893 | 1.27e-10 |
+    | F: no cross-field streaming (projection at the start of every half-step) | 0.133 | 0.227 | 0.03543 | 4.4e-9 |
+    | C / D: streaming off (ETD2RK / stage-wise) | 0.164 / 0.164 | 0.227 / 0.227 | 0.05777 / 0.05777 | 9.8e-11 |
+
+    - E = A: the remnant is the whole difference.
+    - C = D: without streaming the integrators agree (E_cr to 4e-6).
+    - The stored F of the stage-wise run is mostly perpendicular inside the bubble; that of the
+      ETD2RK run is aligned to 3e-7.
+  - **Assessment:** an improvement, not a regression. The test's gates are unaffected.
+  - **Not pursued:** streaming is outside Phase A (plan "Scope": item 5 excluded). Only
+    `cr_mhd_energy_budget.py` (ladder item 18, which accounts for streaming) turns it on, and
+    that is why it shows up here. A variant run that projects the streaming target onto B
+    (variant F) removes the remaining leak, which comes from stage 1 using the unprojected
+    target, but gives an unexplained energy error of 4.4e-9. Both are left for a later
+    streaming phase.
+  - Not rerun: the stratified-ISM production setups M5-M7 (pytests/stratified_ism). Their
+    results predate this change.
+
+## Open: CR diffusion accuracy and the slope limiter (2026-10-11, Phase A A4.2)
+
+- **Found by:** A4.2 (`pytests/cosmic_rays_grey/cr_telegrapher_reference.py`,
+  `test_vred_scan_*`). Item 4's Gaussian was run at v_red 4-64 and N 128-8192 against the
+  exact two-moment solution; logs are in `/export/scratch/nknoell/phaseA/a42/logs/`.
+- **Finding:** with MINMOD (the default, and what M5-M7 and most CR tests use) the CR diffusion
+  error is set by the HLL dissipation of the CR rows times minmod's face jumps.
+  - Minmod's one-sided slopes give jumps `O(dx^2 q'')`, so the error is `O(R(tau) c dx^2)`, with
+    `tau = (gamma_cr - 1) v_red dx / kappa` (cells in CR mean free paths) and `R` the JO18
+    optical-depth reduction.
+  - Thin cells (`R ~ 1`): second order, but `~ v_red dx^2`.
+  - Thick cells (`R ~ 1 / tau`): `~ kappa dx`, i.e. **first order** and independent of v_red.
+    Measured at v_red 64: orders 1.02 / 1.04 at tau 8.3 -> 2.1.
+  - The error is spatial: C_cfl 0.1 and 0.4 agree to < 1%.
+- **MC (`DOUBLE_MINMOD`) and van Albada** use central slopes (jumps `O(dx^3)`) and stay second
+  order in thick cells (2.01 / 2.14).
+  - At the same N they are 15x (thin, v_red 8, N 2048) and 7-52x (thick, v_red 64, N 128-1024)
+    more accurate, and nearly v_red-independent: the error ratio v_red 64 / 8 at N 2048 is
+    1.4, vs 7.2 for MINMOD.
+- **Relevance:** M7 has tau ~ 3 at v_red 1e4 km/s (kappa 1e28, dx 31 pc) and ~0.3 at
+  1000 km/s, so at the higher v_red its CR diffusion is in the first-order MINMOD regime.
+  (Its kappa_perp issue, T3, is separate.)
+- **Riemann solver (checked 2026-10-12):** HLL, HLLC and AM-HLLC all compute the CR rows with
+  the same `hll._grey_cr_hll_rows` (passive advection plus Rusanov closure flux at
+  `R(tau) v_red sqrt(gamma_cr - 1)`), so the finding does not depend on the solver. Rerun with
+  HLLC (the production solver): identical to HLL to all printed digits (MINMOD v_red 8 N 2048
+  7.9402e-6; MINMOD v_red 64 N 128-512 1.980e-3 / 9.768e-4 / 4.758e-4; MC v_red 64 N
+  256-1024 6.535e-5 / 1.624e-5 / 3.677e-6). Logs: `a42/logs/rs_*.log`.
+- **van Albada is not a real limiter for e_cr here:** `limiters._van_albada_limiter` adds
+  `epsilon = 3 dx` to the *squared slopes* without scaling it by the variable. For e_cr in code
+  units (test: amplitude 1e-7, slopes ~5e-6, slope^2 ~ 1e-11 << 3 dx ~ 1e-3) it reduces to the
+  unlimited central (Fromm) slope. That is why it matched MC in the smooth A4.2 test, but it
+  gives no TVD protection at sharp CR fronts (SN deposits, rings), and its behaviour changes
+  with the unit system. MC is scale-invariant and TVD, so it is the candidate for option b/c.
+- **Options (user decision, not done):**
+  - a. **Leave MINMOD** and document it.
+  - b. **A less dissipative limiter for the CR rows only** (MC on e_cr and F_cr), with the gas
+    keeping MINMOD. This needs a per-row limiter in the reconstruction. Recommended
+    (2026-10-12): the gas keeps MINMOD's positivity paths and shock robustness.
+  - c. **Change the global limiter** in production.
+  - For b and c, the sharp-front tests (rings 3a/3b, positivity, monotonicity guard) and the
+    shock tests must be re-checked: less dissipative slopes can bring back the undershoots the
+    guard was built for.
+
 ## Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08, implemented opt-in, default off)
 
 Not implemented. The user picked option a of `astronomix_CR_phaseA_test_plan.md` A6.7 on

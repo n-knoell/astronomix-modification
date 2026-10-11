@@ -362,9 +362,9 @@ def _iteration_level_continuous_updates(
                 )
 
     # Grey two-moment CR anisotropic transport is not applied here any more:
-    # since 2026-10-04 it is part of the implicit per-RK-stage F_cr update
-    # (cr_grey_sources.cr_flux_relaxation_update, with B passed into the
-    # gas-only half-steps by _evolve_state_fv).
+    # since 2026-10-04 it is part of the F_cr relaxation inside the RK2 step
+    # (cr_grey_sources.cr_flux_relaxation_etd2rk / cr_flux_relaxation_update,
+    # with B passed into the gas-only half-steps by _evolve_state_fv).
 
     # Grey-CR positivity floor, whenever grey CRs are active (until 2026-10-05
     # only under per_step_mode = HARD_FLOOR, which M5-M7 never set): a safety

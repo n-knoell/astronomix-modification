@@ -54,6 +54,9 @@ pairwise 1.95 / 1.78 / 0.94.
   6.7e-5 at N = 2048). The diffusion *rate* itself converges at second order
   (``cr_diffusion_rate.py`` T1b: ``D/kappa - 1`` = 0.029 / 0.0073 / 0.0020 at
   N = 256 / 512 / 1024).
+- 2026-10-10, ETD2RK F_cr relaxation (DESIGN.md "F_cr relaxation time accuracy: ETD2RK"):
+  L2 errors (this test's print) 1.67e-3 / 5.22e-4 / 1.81e-4 / 1.19e-4, order (N <= 512) 1.60;
+  the floor is unchanged (it is the model, ``cr_telegrapher_reference.py``).
 - Before step 2 the errors were 8.9e-3 -> 4.2e-3 -> 2.0e-3 -> 9.9e-4 (order
   ~1.0-1.1). That first order was the operator-split relaxation's
   ``+nu dt / 2`` bias in D (``nu dt`` scales with ``dx`` in these

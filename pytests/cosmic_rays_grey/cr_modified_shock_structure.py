@@ -121,6 +121,10 @@ See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
 RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
 Test A post-shock rho / u / P errors 0.17 / 0.21 / 0.22% [0.13 / 0.15 / 0.15%]; Test B du/dx
 20.9% [26.1%], dP_cr/dx 1.60% [1.61%], dF_cr/dx 0.74% [0.77%].
+
+**Re-measured 2026-10-10 with the ETD2RK F_cr relaxation** (DESIGN.md "F_cr relaxation time
+accuracy: ETD2RK"; stage-wise backward Euler of 2026-10-09 in brackets): Test A 0.17 / 0.21 /
+0.22% [same]; Test B du/dx 23.0% [20.9%], dP_cr/dx 1.30% [1.60%], dF_cr/dx 0.47% [0.74%].
 """
 
 # ==== GPU selection ====

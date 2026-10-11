@@ -156,11 +156,11 @@ def grey_cr_flux_terms(
     # rows have already been split off into a separate array
     # (evolve_state._split_gas_and_magnetic_state) and are not part of
     # ``primitive_state`` here -- so this function structurally cannot read
-    # B. The anisotropy instead lives in the implicit F_cr update applied
-    # after every RK stage (cr_grey_sources.cr_flux_relaxation_update, with
-    # B passed in separately): each stage starts from a B-aligned F_cr (up to
-    # kappa_perp) if anisotropic_transport is on, so the isotropic-looking
-    # flux below is correct either way.
+    # B. The anisotropy instead lives in the F_cr relaxation of the RK2 step
+    # (cr_grey_sources.cr_flux_relaxation_etd2rk, or after every stage with
+    # cr_flux_relaxation_update; B passed in separately): each stage starts
+    # from a B-aligned F_cr (up to kappa_perp) if anisotropic_transport is
+    # on, so the isotropic-looking flux below is correct either way.
     flux_vector = u_n * primitive_state
     flux_vector = flux_vector.at[registered_variables.cosmic_ray_e_index].add(
         primitive_state[f_cr_index_along_flux_direction]
@@ -591,8 +591,9 @@ def streaming_flux_target(
     -- this does not require ``config.mhd`` (matches the plan's own "1D
     streaming" staging for this ladder item). If both ``streaming`` and
     ``anisotropic_transport`` are enabled, this correction runs first and the
-    per-RK-stage F_cr update then projects it onto B
-    (``cr_grey_sources.cr_flux_relaxation_update``), so the combination is
+    F_cr relaxation of the RK2 step then projects it onto B
+    (``cr_grey_sources.cr_flux_relaxation_etd2rk`` /
+    ``cr_flux_relaxation_update``), so the combination is
     "isotropic streaming target, then projected onto B" --
     a reasonable but **not separately verified** approximation (no ladder
     item tests the combination); flagged here rather than assumed correct.

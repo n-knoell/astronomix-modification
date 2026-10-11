@@ -72,6 +72,7 @@ to fix.
 RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
 max|div B| at t = 5: CR on (isotropic) 7.5e-15 [6.1e-15], CR on + anisotropic 8.0e-15
 [7.1e-15], CR off 6.8e-15 [same]: round-off in all cases.
+With the ETD2RK F_cr relaxation (2026-10-10): 7.5e-15 / 6.8e-15 / 6.8e-15, round-off.
 """
 
 # ==== GPU selection ====

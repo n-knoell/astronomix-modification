@@ -6,8 +6,10 @@ Each function returns a conserved-state-shaped **rate** (not yet multiplied
 by ``dt``), matching the convention of the existing FD source terms in
 ``astronomix._modules._time_integrator_sources`` (e.g. ``fd_viscosity_source``),
 so callers there compose them as ``source_term += cr_xxx_source(...) * dt``.
-Exception: :func:`cr_flux_relaxation_update` returns the updated state, applied
-implicitly inside every RK stage (see its docstring).
+Exceptions: :func:`cr_flux_relaxation_update` returns the updated state, applied
+implicitly inside every RK stage (``CR_RELAXATION_STAGEWISE_IMPLICIT``), and
+:func:`cr_flux_relaxation_etd2rk` is the whole RK2 step with the ETD2RK
+relaxation (``CR_RELAXATION_ETD2RK``, the default); see their docstrings.
 Phase A scaffolding: typed signatures, ``NotImplementedError`` bodies.
 """
 
@@ -37,6 +39,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_fluid_equations import (
     pressure_from_e_cr,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_flux_realizability_cap,
     cr_flux_rows,
     cr_passive_row_flux,
     magnetic_unit_vector,
@@ -276,6 +279,13 @@ def cr_flux_relaxation_update(
     ``diffusion_coefficient / 3`` (DESIGN.md "Open: CR diffusion
     correctness", Problem 1).
 
+    Used only with ``flux_relaxation_integrator ==
+    CR_RELAXATION_STAGEWISE_IMPLICIT`` (the behavior until 2026-10-10; the
+    default is now :func:`cr_flux_relaxation_etd2rk`, which uses the same
+    rate tensor). This placement is first order in time for ``F_cr`` off its
+    diffusive equilibrium (DESIGN.md "F_cr relaxation time accuracy:
+    ETD2RK").
+
     Called by ``_evolve_gas_state_unsplit`` after *every* forward-Euler hydro
     stage of the SSP-RK2 step (Jiang & Oh 2018 likewise add the source
     implicitly in each stage of their integrator). Placement matters:
@@ -313,27 +323,209 @@ def cr_flux_relaxation_update(
         damping_par = 1.0
 
     flux_rows = cr_flux_rows(registered_variables)
+    flux = [primitive_state[row] for row in flux_rows]
 
     if not cr_config.anisotropic_transport:
-        for row in flux_rows:
-            primitive_state = primitive_state.at[row].multiply(damping_par)
-        return primitive_state
+        flux = _apply_relaxation_tensor(flux, damping_par)
+    else:
+        kappa_perp = cr_params.perpendicular_diffusion_coefficient
+        damping_perp = kappa_perp / (kappa_perp + kappa_step)
+        b_hat = magnetic_unit_vector(magnetic_field, params)
+        flux = _apply_relaxation_tensor(flux, damping_par, damping_perp, b_hat)
 
-    kappa_perp = cr_params.perpendicular_diffusion_coefficient
-    damping_perp = kappa_perp / (kappa_perp + kappa_step)
-
-    # flux_rows is in x/y/z order. 2D MHD carries F_z as well (B_z is
-    # evolved): with B_z != 0 part of the field-aligned flux is F_z, and
-    # dropping it would shrink the in-plane parallel flux every stage
-    # (DESIGN.md "Open: CR diffusion follow-up", F1).
-    b_hat = magnetic_unit_vector(magnetic_field, params)
-    f_dot_b = sum(primitive_state[row] * b_hat[i] for i, row in enumerate(flux_rows))
-    for i, row in enumerate(flux_rows):
-        primitive_state = primitive_state.at[row].set(
-            damping_perp * primitive_state[row]
-            + (damping_par - damping_perp) * f_dot_b * b_hat[i]
-        )
+    for row, f in zip(flux_rows, flux):
+        primitive_state = primitive_state.at[row].set(f)
     return primitive_state
+
+
+def _apply_relaxation_tensor(flux, factor_par, factor_perp=None, b_hat=None):
+    """Apply ``factor_par b b + factor_perp (I - b b)`` to the ``F_cr`` vector.
+
+    Isotropic (``b_hat`` None): ``factor_par F``. Every function of the
+    relaxation rate tensor (the backward-Euler damping, ``exp(-nu dt)``, the
+    ETD weights) has this form, with the scalar function evaluated at the
+    parallel and the perpendicular rate.
+
+    Args:
+        flux: The ``F_cr`` components, a list in ``cr_flux_rows`` (x/y/z)
+            order.
+        factor_par: The factor along B (or the isotropic factor).
+        factor_perp: The factor across B (anisotropic only).
+        b_hat: ``magnetic_unit_vector``, all three components (anisotropic
+            only).
+
+    Returns:
+        The transformed components, same order.
+    """
+    if b_hat is None:
+        return [factor_par * f for f in flux]
+    # flux is in x/y/z order. 2D MHD carries F_z as well (B_z is evolved):
+    # with B_z != 0 part of the field-aligned flux is F_z, and dropping it
+    # would shrink the in-plane parallel flux every stage (DESIGN.md "Open: CR
+    # diffusion follow-up", F1).
+    f_dot_b = sum(f * b_hat[i] for i, f in enumerate(flux))
+    return [
+        factor_perp * f + (factor_par - factor_perp) * f_dot_b * b_hat[i]
+        for i, f in enumerate(flux)
+    ]
+
+
+def _exponential_relaxation_factors(kappa, kappa_step):
+    """``(exp(-a), phi1(a), phi2(a))`` for the relaxation exponent
+    ``a = nu dt = kappa_step / kappa``, with ``phi1(a) = (1 - exp(-a)) / a``
+    and ``phi2(a) = (exp(-a) - 1 + a) / a^2`` (the ETD2RK weights).
+
+    Written so that ``kappa = 0`` (``a = inf``: ``F_cr`` removed completely,
+    the B-projection at ``kappa_perp = 0``) gives ``(0, 0, 0)`` without NaNs
+    in values or gradients, and small ``a`` uses Taylor series (``phi2``
+    cancels catastrophically below ``a ~ 0.1`` in float32).
+
+    Args:
+        kappa: The diffusivity (``diffusion_coefficient`` or
+            ``perpendicular_diffusion_coefficient``), ``>= 0``.
+        kappa_step: ``(gamma_cr - 1) v_red^2 dt``.
+
+    Returns:
+        ``(decay, phi1, phi2)``.
+    """
+    positive = kappa > 0
+    a = kappa_step / jnp.where(positive, kappa, 1.0)
+
+    phi1_series = a < 1e-3
+    a1 = jnp.where(phi1_series, 1.0, a)
+    phi1 = jnp.where(phi1_series, 1.0 - a / 2.0 + a**2 / 6.0, -jnp.expm1(-a1) / a1)
+
+    phi2_series = a < 1e-1
+    a2 = jnp.where(phi2_series, 1.0, a)
+    phi2 = jnp.where(
+        phi2_series,
+        0.5 - a / 6.0 + a**2 / 24.0 - a**3 / 120.0 + a**4 / 720.0,
+        (jnp.expm1(-a2) + a2) / a2**2,
+    )
+
+    return (
+        jnp.where(positive, jnp.exp(-a), 0.0),
+        jnp.where(positive, phi1, 0.0),
+        jnp.where(positive, phi2, 0.0),
+    )
+
+
+def cr_flux_relaxation_etd2rk(
+    u0: STATE_TYPE,
+    dt: Union[float, Float[Array, ""]],
+    *,
+    rhs,
+    config: SimulationConfig,
+    registered_variables: RegisteredVariables,
+    params: SimulationParams,
+    magnetic_field: Union[Float[Array, "3 ..."], None] = None,
+) -> STATE_TYPE:
+    """One SSP-RK2 step with the ``F_cr`` relaxation integrated by ETD2RK
+    (``CR_RELAXATION_ETD2RK``, the default ``flux_relaxation_integrator``).
+
+    ``rhs(u, dt)`` is the explicit stage increment ``dt N(u)`` (the hydro and
+    CR transport fluxes and sources, *without* the relaxation). With the
+    relaxation rate tensor ``nu`` (the one of :func:`cr_flux_relaxation_update`)
+    and ``a = nu dt``:
+
+        U1      = U^n + dt N(U^n)                       (all other rows)
+        F1      = exp(-a) F^n + phi1(a) dt N_F(U^n)
+        U^(n+1) = (U^n + U1 + dt N(U1)) / 2             (all other rows)
+        F^(n+1) = F1 + phi2(a) (dt N_F(U1) - dt N_F(U^n))
+
+    i.e. the unchanged SSP-RK2 (Heun) on every row but ``F_cr``, and the
+    exponential Runge-Kutta method of Cox & Matthews (2002, "ETD2RK"; the
+    ``c2 = 1`` scheme of Hochbruck & Ostermann 2005, stiff order 2) on
+    ``F_cr``. Without relaxation (``a = 0``) both lines reduce to Heun.
+
+    Why (DESIGN.md "F_cr relaxation time accuracy: ETD2RK"):
+    - The stage-wise backward Euler (``CR_RELAXATION_STAGEWISE_IMPLICIT``) is
+      first order in time (step factor ``1 - a + 1.5 a^2`` for pure
+      relaxation; A4.1's single modes converge at first order at C_cfl 0.4).
+      ETD2RK is second order (A4.1 orders 1.9-2.0).
+    - It is exact for the relaxation itself, and a steady gradient-slaved
+      ``F_cr`` (``N_F = nu F``) is an exact fixed point, so the diffusion
+      limit stays exact (the property that made the stage-wise placement
+      necessary, DESIGN.md Problem 3).
+    - L-stable: off-equilibrium ``F_cr`` decays by ``exp(-a)`` per step (the
+      stage-wise scheme: ``1/2`` for ``a -> inf``), with no sign flip.
+    - ``F^(n+1) = exp(-a) F^n + w0 F_eq(U^n) + w1 F_eq(U1)`` with
+      ``F_eq = N_F / nu`` and ``w0 = a (phi1 - phi2) >= 0``,
+      ``w1 = a phi2 >= 0``: a convex combination.
+    - Pareschi & Russo's IMEX-SSP2(2,2,2) and Strang / integrating-factor
+      splittings were rejected: wrong cell ``F_cr`` in the stiff limit and
+      unstable with upwind fluxes, resp. no diffusion limit (``D ~ nu dt / 2
+      kappa``).
+
+    The realizability cap (``flux_realizability_cap``) acts on the stage and
+    on the final state: ``F^(n+1)`` is not a convex combination of capped
+    stage states, unlike the SSP-RK2 average.
+
+    Anisotropic: ``exp(-a)``, ``phi1`` and ``phi2`` are taken along and across
+    ``b_hat`` like the backward-Euler factors (:func:`_apply_relaxation_tensor`).
+    Not jitted itself (``rhs`` is a closure); called inside the jitted
+    ``_evolve_gas_state_unsplit``.
+
+    Args:
+        u0: The conserved state at the step start (the ``e_cr`` / ``F_cr``
+            rows are the same in the primitive and conserved layouts).
+        dt: The time step.
+        rhs: ``rhs(u, dt) -> dt N(u)``, the explicit stage increment.
+        config: The simulation configuration.
+        registered_variables: The registered variables.
+        params: The simulation parameters.
+        magnetic_field: The cell-centered ``(B_x, B_y, B_z)``; required with
+            ``anisotropic_transport``.
+
+    Returns:
+        The conserved state at ``t + dt``.
+    """
+    cr_config = config.cosmic_ray_grey_config
+    cr_params = params.cosmic_ray_grey_params
+    kappa_step = (
+        (cr_params.gamma_cr - 1.0) * cr_params.reduced_streaming_speed**2 * dt
+    )
+    if cr_config.diffusive_relaxation:
+        par = _exponential_relaxation_factors(cr_params.diffusion_coefficient, kappa_step)
+    else:
+        # Undamped along B: exp(0) = 1, phi1(0) = 1, phi2(0) = 1/2 (Heun).
+        par = (1.0, 1.0, 0.5)
+    if cr_config.anisotropic_transport:
+        perp = _exponential_relaxation_factors(
+            cr_params.perpendicular_diffusion_coefficient, kappa_step
+        )
+        b_hat = magnetic_unit_vector(magnetic_field, params)
+    else:
+        perp = (None, None, None)
+        b_hat = None
+
+    def tensor(k, flux):
+        return _apply_relaxation_tensor(flux, par[k], perp[k], b_hat)
+
+    def cap(u):
+        if cr_config.flux_realizability_cap:
+            return cr_flux_realizability_cap(u, params, registered_variables)
+        return u
+
+    flux_rows = cr_flux_rows(registered_variables)
+
+    d0 = rhs(u0, dt)
+    flux_d0 = [d0[row] for row in flux_rows]
+    flux1 = [
+        x + y
+        for x, y in zip(tensor(0, [u0[row] for row in flux_rows]), tensor(1, flux_d0))
+    ]
+    u1 = u0 + d0
+    for row, f in zip(flux_rows, flux1):
+        u1 = u1.at[row].set(f)
+    u1 = cap(u1)
+
+    d1 = rhs(u1, dt)
+    correction = tensor(2, [d1[row] - f for row, f in zip(flux_rows, flux_d0)])
+    u2 = 0.5 * u0 + 0.5 * (u1 + d1)
+    for row, c in zip(flux_rows, correction):
+        u2 = u2.at[row].set(u1[row] + c)
+    return cap(u2)
 
 
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
