@@ -26,16 +26,16 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A2.3 CR-dominated fluid vs gamma=4/3 hydro | 1 | done; fixed by the stage-wise coupling | `cr_adiabatic_coupling.py` | item-2 ringing is **not** in gamma=4/3 hydro (0.0012), only in the operator-split two-fluid run (0.36 at N 2048). Stage-wise: 0.0026, and the simple wave matches hydro at order 1.85 | 2026-10-09 |
 | A2.4 two-moment linear dispersion relation | 2 | todo | | | |
 | **Item 3: anisotropic diffusion** | | | | | |
-| A3.1 Sovinec steady state | 2 | todo | | | |
+| A3.1 Sovinec steady state | 2 | todo; spec revised 2026-10-12 (two literature checks, merged with A3.5; see log) | | | |
 | A3.2 anisotropic Gaussian, full profile | 2 | todo | | | |
 | A3.3 absolute gates + early-time ring | 3 | todo | | | |
 | A3.4 production (guard off) tracking | 3 | todo | | | |
-| A3.5 `v_red` dependence of `D_perp,num` | 3 | todo | | | |
+| A3.5 `v_red` dependence of `D_perp,num` | 2 (with A3.1) | todo; merged into the A3.1 spec 2026-10-12 | | | |
 | **Item 4: isotropic diffusion** | | | | | |
 | A4.1 exact telegrapher reference | 1 | done (1D); F_cr relaxation fixed (ETD2RK, 2026-10-10) | `cr_telegrapher_reference.py`, `linear_theory.py` | Gaussian vs telegrapher order 1.93 (N 128-2048), pairwise 2.00 to N 4096 (1.98e-6), no floor; item-4 floor = model (1.08e-4, slope -2.008 in v_red); single modes second order (1.89-2.00 at 1024 -> 2048), C_cfl-independent; stage-wise relaxation (old) was first order, kept as a comparison test | 2026-10-10 |
 | A4.2 `v_red` scan of the model floor | 1 | done; finding: MINMOD makes CR diffusion first order in optically thick cells; limiter: option a (MINMOD kept, 2026-10-12) | `cr_telegrapher_reference.py` (`test_vred_scan_*`) | error vs diffusion = floor (v_red^-2) + scheme error; slope -1.975 at N 8192 (gate -2 +- 0.3), -1.31 at N 2048 (scheme error ~v_red overtakes floor near v_red 16: the old "v_red^-1 floor", Sec. 4.3 step 3 closed); MINMOD scheme error ~v_red dx^2 (thin) / ~kappa dx, first order (tau >~ 2); MC: second order, 15x smaller, ~v_red-independent; HLLC identical to HLL; limiter: option a, MINMOD kept (relative error 0.6-2.4% in thick cells, << D1/D2) | 2026-10-12 |
 | A4.3 multi-D isotropic Gaussian | 3 | todo | | | |
-| A4.4 steady-state diffusion with source | 2 | todo | | | |
+| A4.4 steady-state diffusion with source | 2 | done | `cr_steady_state_source.py` (1D + 2D) | steady state dt-independent to <= 4e-13 (C_cfl 0.4/0.2/0.1; ETD2RK and stage-wise; thin and thick); MINMOD second order in thin cells (2.00 at N 512->1024, all v_red), first order thick (1.14 at tau 3.3->1.7); error ~v_red^0.92 at fixed N; MC 2.1-2.4, 4-20x smaller; v_red dependence converges at 1.99; 2D diagonal mode 1.99 | 2026-10-12 |
 | A4.5 passive energy conservation | 3 | todo | | | |
 | **Item 6: shock tube** | | | | | |
 | A6.1 post-shock `K_cr` diagnostic + convergence | 1 | done | `cr_shock_tube_partition.py` | `K_cr,2` +1.27% at every N (100-3200; stage-wise coupling), 1.26-1.31% over C_cfl/limiter, HLLC + P2 0.42%: **not converging**, method-dependent | 2026-10-10 |
@@ -66,7 +66,9 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 ## Infrastructure
 
-- [ ] Test-only `e_cr` source hook (A3.1, A4.4)
+- [x] Test-only `e_cr` source hook (A4.4, A3.1 steady-state anchor): inside the RK stage RHS, not
+      in `_time_integrator_sources` (spec in the 2026-10-12 A3.1/A4.4 log entry). Done 2026-10-12:
+      `CosmicRayGreyParams.test_e_cr_source` (see log)
 - [ ] Static-heavy-gas helper, factored out of `cr_anisotropic_ring.py` (X6)
 - [ ] `test_setups/reference_solutions/linear_theory.py`: 5x5 dispersion matrix, eigenvectors,
       spectral telegrapher solver (A1.4, A2.2, A2.4, A4.1). Telegrapher solver done 2026-10-10
@@ -75,6 +77,247 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-12: A4.4 steady-state diffusion with a source -- done (uncommitted)
+
+`pytests/cosmic_rays_grey/cr_steady_state_source.py`, 5 tests (4 gated + figure
+`pics/04_isotropic_diffusion/cr_steady_state_source_test.svg`); logs
+`/export/scratch/nknoell/phaseA/a44/logs/`; baselines registered (3 test ids, 37 metrics).
+
+- Setup: `Q = Q0 sin(2 pi x)` through `test_e_cr_source`, `kappa = 0.1` (5x item 4, so the
+  slowest mode relaxes at `kappa k^2 = 3.95` and a steady state costs <= 2.6e5 steps at N 1024,
+  `v_red` 32), amplitude 0.5 on offset 1, static heavy gas, float64, start from the cell-averaged
+  analytic state, run 22 e-folds. Errors: L2 / amplitude against the analytic cell averages.
+- **Fixed point (spec item 4 confirmed):** `C_cfl` 0.4 vs 0.2 / 0.1 differ by <= 3.7e-13 of the
+  amplitude (`e_cr` and `F_cr`), thin (`v_red` 8, N 128, `tau` 0.21) and thick (`v_red` 32, N 32,
+  `tau` 3.3), with ETD2RK and with the old stage-wise relaxation alike; 2D: 3e-14.
+- **Steady-state error (MINMOD), N 32 ... 1024:**
+
+  | `v_red` | N 32 | N 128 | N 1024 | orders |
+  |---|---|---|---|---|
+  | 4 | 2.02e-2 | 1.28e-3 | 1.99e-5 | 1.98, 2.00 ... |
+  | 8 | 3.51e-2 | 2.38e-3 | 3.68e-5 | 1.89, 1.99, 2.00 ... |
+  | 16 | 4.76e-2 | 4.43e-3 | 7.01e-5 | 1.54, 1.89, 1.98, 2.00 ... |
+  | 32 | 4.91e-2 | 7.75e-3 | 1.36e-4 | 1.14, 1.53, 1.87, 1.97, 2.00 |
+
+  Second order once `tau <~ 0.4`, first order at `tau` 3.3 -> 1.7; at N 1024 the error grows
+  as `v_red^0.92`. Same structure as A4.2's transient scheme error: it is the HLL dissipation
+  in the steady operator, not a time error.
+- **MC** (`v_red` 32, N 32 ... 256): 1.18e-2 / 2.74e-3 / 5.62e-4 / 1.09e-4, orders 2.10 / 2.29 /
+  2.37, MINMOD / MC = 4.2 / 8.1 / 13.8 / 19.5.
+- **`v_red` dependence** `L2(e(32) - e(4))`: 2.9e-2 ... 1.16e-4, orders 0.75 / 1.41 / 1.84 /
+  1.97 / 1.99: a discretization error, gone at second order (the plan's "independent of
+  `v_red`" holds only in the limit).
+- **2D diagonal mode** `sin(k (x + y))`, `v_red` 8, N 32 / 64 / 128: 3.46e-2 / 9.38e-3 / 2.36e-3,
+  orders 1.88 / 1.99 (about the 1D error at the same N; the 2D path with two `F_cr` rows works).
+- Drift over the last 10%: 6e-11 to 2e-10, not round-off: nothing balances `grad P_cr` on the
+  heavy gas, which accelerates at ~1e-11; its `-P_cr div u` work explains the drift
+  (estimate, not separately measured). It is identical at every `C_cfl`, so the dt gate is
+  unaffected; drift gate 1e-9.
+- Gates: dt <= 1e-10; thin order >= 1.8; thick order in [0.8, 1.3]; MC order >= 1.8; `v_red`
+  difference order >= 1.8, thin slope vs `v_red` in [0.8, 1.2]; 2D order >= 1.8; registry 1.5x.
+
+### 2026-10-12: test-only `e_cr` source hook implemented (uncommitted)
+
+- `CosmicRayGreyParams.test_e_cr_source`: `Q(x)` on the interior grid (the shape of the state
+  passed to `time_integration`), or None (default, off). Added as `dt * Q` to the `e_cr` row of
+  the stage RHS in `evolve_state._evolve_gas_state_unsplit_inner`, right after
+  `cr_grey_feedback_sources`, so it is inside every Heun / ETD2RK stage and in both gas
+  half-steps of FV MHD. Padded with zeros to the ghost halo (overwritten by the boundary handler).
+  `NotImplementedError` with the split scheme (`_evolve_gas_state_split`) and with `cr_entropy`.
+- Verification (scratch script, float64, GPUs 3/5/6 idle at launch, PIDs checked by UUID):
+  - hook off: 1D isotropic relaxation (N 128) and 2D MHD anisotropic + relaxation (64^2,
+    30 deg) **bitwise identical** to HEAD 420cdee (git worktree).
+  - uniform `Q = q0`: total `e_cr` grows by `q0 t` to 6e-14 (1D) and 9e-16 (2D MHD, so both
+    Strang half-steps apply it once each, dt/2 + dt/2).
+  - A4.4 preview, 1D: `Q = sin(2 pi x)` (cell averages), `kappa = 0.1`, `v_red = 8`, N 128
+    (`tau` 0.21), from the analytic state to `t = 30/(kappa k^2)`: the steady states at
+    C_cfl 0.4 and 0.2 differ by **3.1e-14** of the amplitude (dt-independent fixed point, as
+    the spec predicts); both 2.4e-3 from the analytic profile (scheme error, the A4.4 subject).
+  - split scheme: raises as intended.
+- Not yet: the A4.4 test file itself (`v_red` scan, N convergence, baselines).
+
+### 2026-10-12: second literature check of the A3.1 spec -- Riemann dissipation and limiters
+
+Question: does the A3.1 / A3.5 spec (entry below) promise an improvement of the cross-field leak?
+Answer: it is the right instrument, not a fix; the literature names two cheap levers it can A/B.
+The spec entry below is updated accordingly.
+
+**Other two-moment codes (what was read).**
+- Athena++ CR module (the JO18 code; `src/cr/integrators/cr_transport.cpp`, `cr_flux.cpp`, read
+  from the public repo). The HLLE speed of the CR rows is computed in the field-aligned frame,
+  `v_diff = v_red/sqrt(3) (R(tau_par), R(tau_perp), R(tau_perp))` with
+  `R = sqrt((1 - exp(-tau'))/tau')`, `tau' = 3/2 (taufact sigma dx)^2`, then rotated into the lab
+  frame and `|.|` per axis: at `kappa_perp = 0` the face-normal speed is ~`|b_n| R(tau_par)`,
+  capped at `v_red/sqrt(3)`. Same speed on the `e_cr` and `F_cr` rows.
+- Thomas, Pfrommer & Pakmor (2021, MNRAS 503, 2242), eq. 44: `S = c sqrt(gamma_cr - 1)
+  max(|b_n,L|, |b_n,R|)`, local Lax-Friedrichs, no optical-depth reduction (stiff sources are
+  integrated separately). Sec. 4.3 / Fig. 5: without the `|b_n|` weighting ("naive" solver) the
+  perpendicular contact diffuses. Sec. 4.4 (wedge on a ring field, 128^2-512^2): numerical
+  diffusion "increases with the speed of light", decreases with resolution; qualitative only.
+- Rosdahl et al. (2025, arXiv:2509.19447, RAMSES): scalar `tau` reduction of the signal speed
+  (their eqs. 17-19), van Leer limiter, `|F| <= c e` cap; which diffusivity enters `tau` for
+  anisotropic transport is not stated (not resolved). Looped-field test (Sec. 3.3, Fig. 3):
+  "some diffusion perpendicular" at 512^2, less at 1024^2; no number.
+- CR-MHD two-moment framework (2025, arXiv:2509.04387): optical-depth-dependent HLLE speed from
+  the summed scattering rate, no cross-field test.
+- Not checked: RAMSES-MCR (arXiv:2602.21147); Hopkins (2017, arXiv:1602.07703) seen, not read.
+
+**Comparison with ours (`cr_wave_speed_reduction`, `R(n . K . n)`, `n . K . n = kappa_par b_n^2`
+at `kappa_perp = 0`; constants in `tau` aside).**
+- Thin regime (`tau_par << 1`, M7 along B: 0.16-0.32): ours ~`v_red/sqrt(3)` at any oblique
+  face, Athena++ / Thomas `|b_n|` times that: ours is `1/|b_n|` larger (1.41x at 45 deg).
+- Thick regime (`R ~ 1/tau`): ours `~ b_n^2 kappa_par/dx`, Athena++ `~ |b_n| kappa_par/dx`: ours
+  is `|b_n|` smaller.
+- So the field-aligned weighting is at most a ~1.4x lever at 45 deg, and only in thin cells.
+  Any per-face scalar dissipation on `e_cr` jumps still diffuses across B at oblique angles;
+  a change of order would need transverse-gradient limiting (Sharma & Hammett 2007), a scheme
+  change for D1.
+- Limiter: JO18 (Sec. 4.1.5, van Leer per direction) and Rosdahl et al. use van Leer; ours is
+  MINMOD, which A4.2 found first order in thick cells (MC 15x smaller). Prediction (not
+  measured): the leak is mostly HLL dissipation x MINMOD clipping, largest at the O-point
+  extremum; the A3.5 `v_red` scan decides it.
+
+**Confirmed as planned.** No two-moment CR paper runs the Sovinec test (all published Sovinec
+numbers are implicit / semi-implicit solvers). The A3.5 merge matches Thomas et al.'s
+`c_red` dependence. The in-stage source hook is the standard well-balanced placement (the
+other codes integrate their stiff sources implicitly / IMEX, no counterexample).
+
+**Spec changes (applied to the entry below).** Decay rate marked unpublished, with the
+`kappa_perp = 0` null-space caveat; the steady-state anchor is required at both `kappa_perp`
+values. MINMOD and MC as equal main variants; a test-only Athena++-style wave-speed flag as a
+second axis (2x2 matrix); expectations lowered to order ~1 with a `v_red`-dependent leak.
+Correction: `kappa_n` at 45 deg is `kappa_par/2`, not ~`kappa_par`.
+
+### 2026-10-12: A3.1 / A3.5 / A4.4 and the source hook -- spec revised after a literature check (not started)
+
+Updated the same day after a second literature check (Riemann dissipation and limiters in other
+two-moment codes; entry above). Changed: the decay-rate caveat at `kappa_perp = 0` (item 3), the
+leak attribution (item 5), the variants (last section).
+
+The plan's A3.1, A3.5 and A4.4 (Sec. 3.4 / 4.4) were checked against the papers that define or
+use the Sovinec test, and the hook design against the code. The plan file stays frozen; this
+entry is the spec to implement. Nothing is implemented yet (user: "don't start yet").
+
+**Literature (what the plan gets right).**
+- Sovinec et al. (2004, JCP 195, 355, Sec. 4.2): unit square [-0.5, 0.5]^2, homogeneous Dirichlet
+  `T = 0`, source `Q = 2 pi^2 cos(pi x) cos(pi y)` "to drive the lowest eigenmode", field tangent
+  to the contours of `psi = cos(pi x) cos(pi y)`, "an extremely large mass density prevents MHD
+  motions". Finite `chi_perp = 1`, `chi_par/chi_perp` = 1e3, 1e6, 1e9; error measure
+  `|1/T(0,0) - 1|` = `chi_perp,num/chi_perp`. Run to steady state (semi-implicit FE).
+- Sharma & Hammett (2011, arXiv:1008.0861, Sec. 3.2): the same with `chi_perp = 0`,
+  `chi_perp,num = 1/T(0,0)` from the asymptotic maximum; close to second order, independent of
+  the time step up to 1e4x the explicit limit (semi-implicit).
+- Pakmor et al. (2016, Sec. 3.4): the plan's field and source, `kappa_par = 1`, `kappa_perp = 0`,
+  outflow boundaries with zero outside, fixed mesh, no hydro; `< 1e-2` at 16^2, "almost second
+  order".
+- Dubois & Commerçon (2016, **Sec. 3.6**; the plan gives no section): Dirichlet `T = 0`,
+  `kappa_iso = 1`, `kappa_Sp = 100` (`kappa_par = 99`), 16^2-256^2, `kappa_num ~ dx^2`, and the
+  normalization `kappa_num = T_iso(0,0)/T_meas(0,0) - 1` with `T_iso` from an isotropic run on the
+  same grid (after Sharma & Hammett 2007).
+- No two-moment CR paper runs this test (Jiang & Oh 2018 and Thomas, Pfrommer & Pakmor 2021
+  checked). All published numbers come from implicit / semi-implicit diffusion solvers, so they
+  compare as `kappa_perp,num/kappa_par`, read off their figures (Pakmor Fig. 10, S&H 2011 Fig. 6,
+  D&C Fig. 7).
+
+**Corrections to the plan.**
+1. *Finite-`kappa_perp` gate.* The plan's "`kappa_perp/kappa_par = 1e-3`: `e(0,0)` within 5%"
+   needs `kappa_perp,num < 5e-5 kappa_par`; the ring test gives 3e-3 to 4e-2, so it would fail by
+   ~100x. Replace with Sovinec's measure `kappa_perp,num/kappa_perp` at `kappa_perp/kappa_par =
+   1e-2` (M7 / Girichidis et al. 2016) and 1e-3, tracked; it answers D1 directly (is the leak
+   small against the physical `kappa_perp`?). Use the D&C isotropic normalization to cancel the
+   Laplacian's own discretization error.
+2. *Boundaries: use the periodic variant.* `FIXED_BOUNDARY` writes one uniform state per boundary
+   face and raises `NotImplementedError` for MHD on the conservative path; the Sovinec field varies
+   along the boundary. The periodic box [-1, 1]^2 (four Sovinec cells, `Q = Q0 psi`,
+   `e = e_off + psi/kappa_tot`) is exactly the Dirichlet problem with odd-reflection ghost cells
+   (the standard second-order FV Dirichlet) if (a) N is divisible by 4, so the separatrices
+   x, y = +-1/2 are cell faces, and (b) the scheme is odd-symmetric in `e - e_off` (MINMOD, the
+   HLL rows, the shape-based guard: yes; realizability cap: inactive at a large offset; to check:
+   the guard's absolute smoothing `eps` must stay far below the `E_SCALE`-scaled jumps). Check
+   (b) in the run: `e = e_off` on the separatrix faces to round-off. `b b^T` is unchanged when
+   `psi -> -psi`, so the diffusion tensor is the same in all four cells.
+   - Plan typo: the offset must exceed `Q0/(2 pi^2 (kappa_perp + kappa_perp,num))`, not
+     `Q0/(2 pi^2 kappa_perp)` (undefined at `kappa_perp = 0`).
+   - Field nulls: B = 0 at the O-points (where `e(0,0)` is measured) and at the X-points
+     (+-1/2, +-1/2). With N divisible by 4 all of them are cell corners, so no cell centre sits on
+     a null; `b_field_floor = 1e-10` << `B0 pi dx` for `B0 = 1e-5` (ring-test value).
+   - Measurement: the amplitude from a projection onto the cell-averaged `psi`, not the corner
+     value at (0,0).
+3. *Cost (estimate, not measured).* With `kappa_par = 1`, Courant 0.4 on `v_red/sqrt(3)` and
+   fixed `tau = (gamma_cr - 1) v_red dx / kappa_par`, reaching steady state to 1e-3
+   (`t ~ 0.35/kappa_tot`, `kappa_tot = kappa_perp + kappa_perp,num`) takes
+   `~1.5 tau / (kappa_tot dx^2)` steps: ~6e5 at 64 cells per unit length and ~4e6 at 128
+   (256^2 periodic box) for M7-like `tau ~ 3`; more with `kappa_perp = 0`. The published runs are
+   implicit and do not have this cost.
+   - **Primary measurement: decay rate (our variant, not published).** `psi` is an exact
+     eigenfunction of the continuous anisotropic operator (`b . grad psi = 0`):
+     `div(K grad psi) = -2 pi^2 kappa_perp psi`. For `kappa_perp > 0` it is the lowest one
+     (Rayleigh quotient >= the isotropic value). For `kappa_perp = 0` the continuous operator has
+     a null space (every `f(psi)` is steady), so the fitted rate only measures how fast the
+     discrete operator damps the `psi` projection, and the profile may drift towards other
+     `f(psi)` shapes: record the residual of the projection. Start
+     from `e = e_off + A psi`, `F = -K grad e`, no source, and fit `lambda = 2 pi^2 kappa_tot` from
+     the projected amplitude after the parallel / two-moment transients (~L/v_red, ~1/(kappa_par
+     k^2)). About 0.5/lambda of run time instead of ~7/lambda, roughly 10x cheaper. Telegrapher
+     correction `kappa_tot k^2 / nu` is negligible.
+   - **Anchor (required, not optional):** one steady-state run with the source hook at 32 and 64
+     cells per unit length, at `kappa_perp = 0` and at `kappa_perp/kappa_par = 1e-2`; the
+     decay-rate and steady-state `kappa_tot` must agree within 10% (both should see the same
+     lowest discrete mode; at `kappa_perp = 0` this is the only check of that). If they do not
+     agree, the steady state is the reference (it is the published measure).
+   - Resolutions 16-128 cells per unit length (Pakmor and D&C start at 16^2); 256 per unit length
+     (512^2 periodic) is not affordable.
+4. *A4.4 gate.* The plan says the steady state is independent of `v_red` and dt to 1e-6. Only the
+   dt part holds (exact fixed point of the stage-wise source and the ETD2RK relaxation). The
+   `e_cr`-row HLL dissipation `R(tau) v_red/sqrt(3) (q_R - q_L)` is part of the discrete steady
+   operator, so the steady state carries the A4.2 scheme error (~`v_red dx^2` thin, ~`kappa dx`
+   thick with MINMOD). New gates: dt-independence to round-off (~1e-10, float64); the `v_red`
+   dependence converges with N (rate tracked against A4.2's).
+5. *Merge A3.5 into A3.1.* The same `v_red` dependence in A3.1 is A3.5's quantity. A `v_red` scan
+   at fixed N splits `kappa_perp,num` into a part from the HLL dissipation (depends on `tau`; the
+   face-normal `kappa_n = kappa_par b_n^2` in `cr_wave_speed_reduction` is `kappa_par/2` on both
+   axes at 45 deg) and a part from the gradient projection in the relaxation target (independent
+   of `v_red`). That tells which part a fix has to target.
+   - Prediction (second check, not measured): the HLL part dominates, through limiter clipping.
+     The projection uses centred cell gradients, second order in smooth regions (Sharma & Hammett
+     2007), while MINMOD x HLL is first order in thick cells (A4.2) and clips at the O-point
+     extremum where the amplitude peaks. This would explain the ring's order ~1.0-1.4.
+   - Metric: `d ln kappa_perp,num / d ln v_red` at 32 and 64 cells per unit length,
+     `v_red` = 4, 8, 16, 32 (at fixed `kappa_par`, so `tau` scales with `v_red`).
+
+**Source hook (spec).**
+- Placement: in the stage RHS of the unsplit FV scheme, next to `cr_grey_feedback_sources` in
+  `evolve_state._evolve_gas_state_unsplit_inner`, not in `_time_integrator_sources` (for the
+  unsplit FV scheme that is the operator-split presolve). By my analysis, an operator-split
+  source leaves an O(dt) bias in the discrete steady state, whereas an in-stage source keeps the
+  exact, dt-independent fixed point (both Heun stages vanish when `L(e) + Q = 0`). The A4.4 dt
+  gate tests this.
+- Form: a time-constant `Q(x)` array (cell-averaged, spatial shape) on the `e_cr` row only, as in
+  Jiang & Oh (2018) and Thomas et al. (2021); carried in the params (pytree, jit-friendly,
+  differentiable; default None = off). In FV MHD (Strang split) it acts in each gas half-step.
+- Test-only scope for now; no change to existing defaults (bitwise check against HEAD with it off).
+
+**Other points for the A3.1 test file.**
+- Heavy static gas as in the ring test (`rho = 1e4`, `E_SCALE = 1e-7`, `B0 = 1e-5`), float64,
+  2D MHD, `anisotropic_transport=True` (requires MHD). Recheck the `max|u| t < 0.1 dx` gate for
+  the longer runs (estimate: displacement ~5e-7, fine).
+- Expected order ~1.0-1.4 (ring 3a), below the literature's ~2: order >= 1.5 is a tracked metric
+  until D1, not a hard gate. The literature's second order comes from implicit diffusion
+  solvers without a Riemann dissipation term; for this scheme order ~1 and a `kappa_perp,num`
+  that grows with `v_red` (Thomas et al. 2021, Sec. 4.4) are the expected baseline.
+- Variants (all at the same N and `v_red` set, decay rate; reported side by side):
+  - limiter: MINMOD (default) and `DOUBLE_MINMOD` (MC) as equal main variants, not a side run.
+    JO18 and Rosdahl et al. (2025) use van Leer; the repo has none, MC is the nearest.
+  - `e_cr`-row HLL wave speed: the current `R(n . K . n)` and the Athena++ (JO18 code) form:
+    `(R(tau_par), R(tau_perp), R(tau_perp)) v_red/sqrt(3)` rotated into the lab frame, absolute
+    value per axis (~`|b_n| R(tau_par)` at `kappa_perp = 0`; `tau` constant as in our
+    `cr_wave_speed_reduction`). Optional third: Thomas et al. (2021) eq. 44, `|b_n| v_red/sqrt(3)`
+    without the `tau` reduction. A test-only opt-in flag, default unchanged (bitwise check);
+    adopting it as default would be a scheme change and needs the user's OK. Expected gain at
+    most ~1.4x at 45 deg in the thin regime (M7 along B), a loss in thick cells.
+  - guard on and off (A3.4 / D3).
+  - The 2x2 limiter x wave-speed matrix is the minimum; guard on/off only for the default pair.
 
 ### 2026-10-12: X1/X2 -- baseline registry and tightened gates
 

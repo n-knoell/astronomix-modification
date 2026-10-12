@@ -533,6 +533,11 @@ def _evolve_gas_state_split(
         config.gravity_config.gravity or registered_variables.cosmic_ray_e_active
     )
 
+    if params.cosmic_ray_grey_params.test_e_cr_source is not None:
+        raise NotImplementedError(
+            "cosmic_ray_grey_params.test_e_cr_source requires split == UNSPLIT."
+        )
+
     shock_mask = None
     if registered_variables.entropy_active:
         shock_mask = _dual_energy_shock_mask(
@@ -738,6 +743,22 @@ def _evolve_gas_state_unsplit_inner(
         conservative_states = conservative_states + dt * cr_grey_feedback_sources(
             primitive_state, config, params, registered_variables
         )
+
+    # Test-only e_cr source (CosmicRayGreyParams.test_e_cr_source), in the
+    # stage RHS for the same reason: a steady state stays an exact fixed point.
+    test_e_cr_source = params.cosmic_ray_grey_params.test_e_cr_source
+    if test_e_cr_source is not None and registered_variables.cosmic_ray_e_active:
+        if config.cosmic_ray_grey_config.cr_entropy:
+            raise NotImplementedError(
+                "cosmic_ray_grey_params.test_e_cr_source does not support cr_entropy "
+                "(e_cr is reset from s_cr after the step)."
+            )
+        # Given on the interior grid; zero in the ghost halo, which the
+        # boundary handler overwrites before every stage.
+        if test_e_cr_source.shape != conservative_states.shape[1:]:
+            test_e_cr_source = jnp.pad(test_e_cr_source, config.num_ghost_cells)
+        e_cr_index = registered_variables.cosmic_ray_e_index
+        conservative_states = conservative_states.at[e_cr_index].add(dt * test_e_cr_source)
 
     # Pallas-fused per-axis recon+Riemann+divergence: each axis writes
     # ``conservative_states += -(dt/dx) * (F[i+1/2] - F[i-1/2])`` directly

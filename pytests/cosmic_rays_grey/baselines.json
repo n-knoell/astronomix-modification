@@ -435,6 +435,160 @@
    "value": 7.506e-07
   }
  },
+ "cr_steady_state_source.py::test_steady_state_2d": {
+  "v8_n128": {
+   "date": "2026-10-12",
+   "value": 0.002357
+  },
+  "v8_n32": {
+   "date": "2026-10-12",
+   "value": 0.03458
+  },
+  "v8_n64": {
+   "date": "2026-10-12",
+   "value": 0.009376
+  }
+ },
+ "cr_steady_state_source.py::test_steady_state_convergence": {
+  "mc_v32_n128": {
+   "date": "2026-10-12",
+   "value": 0.0005619
+  },
+  "mc_v32_n256": {
+   "date": "2026-10-12",
+   "value": 0.000109
+  },
+  "mc_v32_n32": {
+   "date": "2026-10-12",
+   "value": 0.01176
+  },
+  "mc_v32_n64": {
+   "date": "2026-10-12",
+   "value": 0.002743
+  },
+  "minmod_v16_n1024": {
+   "date": "2026-10-12",
+   "value": 7.008e-05
+  },
+  "minmod_v16_n128": {
+   "date": "2026-10-12",
+   "value": 0.004434
+  },
+  "minmod_v16_n256": {
+   "date": "2026-10-12",
+   "value": 0.001123
+  },
+  "minmod_v16_n32": {
+   "date": "2026-10-12",
+   "value": 0.04755
+  },
+  "minmod_v16_n512": {
+   "date": "2026-10-12",
+   "value": 0.0002807
+  },
+  "minmod_v16_n64": {
+   "date": "2026-10-12",
+   "value": 0.01638
+  },
+  "minmod_v32_n1024": {
+   "date": "2026-10-12",
+   "value": 0.0001361
+  },
+  "minmod_v32_n128": {
+   "date": "2026-10-12",
+   "value": 0.007746
+  },
+  "minmod_v32_n256": {
+   "date": "2026-10-12",
+   "value": 0.002126
+  },
+  "minmod_v32_n32": {
+   "date": "2026-10-12",
+   "value": 0.04913
+  },
+  "minmod_v32_n512": {
+   "date": "2026-10-12",
+   "value": 0.0005425
+  },
+  "minmod_v32_n64": {
+   "date": "2026-10-12",
+   "value": 0.02232
+  },
+  "minmod_v4_n1024": {
+   "date": "2026-10-12",
+   "value": 1.994e-05
+  },
+  "minmod_v4_n128": {
+   "date": "2026-10-12",
+   "value": 0.001277
+  },
+  "minmod_v4_n256": {
+   "date": "2026-10-12",
+   "value": 0.0003189
+  },
+  "minmod_v4_n32": {
+   "date": "2026-10-12",
+   "value": 0.02024
+  },
+  "minmod_v4_n512": {
+   "date": "2026-10-12",
+   "value": 7.974e-05
+  },
+  "minmod_v4_n64": {
+   "date": "2026-10-12",
+   "value": 0.005123
+  },
+  "minmod_v8_n1024": {
+   "date": "2026-10-12",
+   "value": 3.684e-05
+  },
+  "minmod_v8_n128": {
+   "date": "2026-10-12",
+   "value": 0.002375
+  },
+  "minmod_v8_n256": {
+   "date": "2026-10-12",
+   "value": 0.0005919
+  },
+  "minmod_v8_n32": {
+   "date": "2026-10-12",
+   "value": 0.03508
+  },
+  "minmod_v8_n512": {
+   "date": "2026-10-12",
+   "value": 0.0001476
+  },
+  "minmod_v8_n64": {
+   "date": "2026-10-12",
+   "value": 0.009456
+  }
+ },
+ "cr_steady_state_source.py::test_steady_state_vred_dependence": {
+  "vred_diff_n1024": {
+   "date": "2026-10-12",
+   "value": 0.0001162
+  },
+  "vred_diff_n128": {
+   "date": "2026-10-12",
+   "value": 0.006474
+  },
+  "vred_diff_n256": {
+   "date": "2026-10-12",
+   "value": 0.001808
+  },
+  "vred_diff_n32": {
+   "date": "2026-10-12",
+   "value": 0.02897
+  },
+  "vred_diff_n512": {
+   "date": "2026-10-12",
+   "value": 0.0004629
+  },
+  "vred_diff_n64": {
+   "date": "2026-10-12",
+   "value": 0.01722
+  }
+ },
  "cr_telegrapher_reference.py::test_cr_gaussian_vs_telegrapher": {
   "l2_tel_n1024": {
    "date": "2026-10-12",

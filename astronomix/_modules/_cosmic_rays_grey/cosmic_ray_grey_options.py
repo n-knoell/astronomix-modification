@@ -9,7 +9,9 @@ Mirrors the split used by the older ``cosmic_ray_options.py``.
 """
 
 # typing
-from typing import NamedTuple
+from typing import NamedTuple, Union
+
+from jax import Array
 
 
 #: diffusive_shock_acceleration efficiency models (CosmicRayGreyConfig.
@@ -317,3 +319,14 @@ class CosmicRayGreyParams(NamedTuple):
     #: converging cell to count as shocked (Gupta, Sharma & Mignone 2021,
     #: Sec. 4.4, who find 0.5-1 works well).
     cr_entropy_shock_threshold: float = 0.5
+
+    #: test-only e_cr source rate Q(x) (energy density / time): an array on
+    #: the interior grid (the spatial shape of the state passed to
+    #: time_integration), or None (off, the default). Constant in time. Added
+    #: to the e_cr row inside every RK stage of the unsplit FV scheme
+    #: (evolve_state._evolve_gas_state_unsplit_inner),
+    #: so a steady state L(e_cr) + Q = 0 is an exact, dt-independent fixed
+    #: point of the step; an operator-split source would bias it by O(dt)
+    #: (PROGRESS_PHASEA.md 2026-10-12, A3.1 / A4.4). With FV MHD it acts in
+    #: both gas half-steps. Not supported with the split scheme or cr_entropy.
+    test_e_cr_source: Union[Array, None] = None
