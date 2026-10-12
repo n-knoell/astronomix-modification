@@ -129,16 +129,18 @@ depth):
     - At N = 2048: 15x smaller than MINMOD at ``v_red = 8`` (5.2e-7 vs 7.9e-6), and nearly
       ``v_red``-independent (``v_red`` 64 / 8: 1.42, MINMOD 7.20). This is the plan's A4.2
       expectation, which MINMOD does not meet.
-  - Van Albada (prototype, same logs) is within 10% of MC (1% at N = 2048).
+  - Van Albada (prototype, same logs) is within 10% of MC (1% at N = 2048), but only because
+    its unscaled ``3 dx`` epsilon makes it the unlimited central slope for e_cr in code units.
+  - HLLC gives the same CR-row fluxes as HLL (``hll._grey_cr_hll_rows``): identical errors.
 - **Relevance:** M5-M7 run MINMOD. M7 at ``v_red = 1e4`` km/s has ``tau ~ 3`` (``kappa =
-  1e28``, dx 31 pc), so its CR diffusion is in the first-order regime. The limiter is a
-  scheme choice: user decision (DESIGN.md "Open: CR diffusion accuracy and the slope
-  limiter").
+  1e28``, dx 31 pc), so its CR diffusion is in the first-order regime. Relative to the bump
+  RMS that costs 0.6-2.4% at 13-50 cells per sigma. Decision 2026-10-12: MINMOD kept
+  (DESIGN.md "Decided: CR diffusion accuracy and the slope limiter").
 
-Gates: 1 slope -2 +- 0.05; 2 order >= 1.8 (plan A4.1), error at N = 2048 <= 1.2e-5
-(1.5x measured), finest vs-diffusion error = model floor within 5%, gas at rest; 3
-tracked bounds (error decreasing from N = 256, N = 2048 within 1.5x of the measured
-values); 4 pairwise order >= 1.8 at N 1024 -> 2048 for m >= 8; 5 stage-wise order <= 1.2
+Gates: 1 slope -2 +- 0.05; 2 order >= 1.8 (plan A4.1), error at every N within 1.5x of
+``baselines.json``, finest vs-diffusion error = model floor within 5%, gas at rest; 3
+tracked bounds (error decreasing from N = 256, N = 2048 within 1.5x of ``baselines.json``);
+4 pairwise order >= 1.8 at N 1024 -> 2048 for m >= 8; 5 stage-wise order <= 1.2
 and ETD2RK >= 3x more accurate at N = 2048. A4.2:
 - floor: slope vs diffusion at N = 8192 over ``v_red`` 4-32 is ``-2 +- 0.3`` (plan), and
   at N = 2048 the scheme error exceeds the floor at ``v_red = 32`` (the documented
@@ -170,6 +172,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -391,17 +396,17 @@ def test_telegrapher_model_floor(slope_tol: float = 0.05):
 
 def test_cr_gaussian_vs_telegrapher(
     min_order: float = 1.8,
-    max_error_2048: float = 1.2e-5,
     floor_rel_tol: float = 0.05,
     max_gas_speed: float = 1e-10,
 ):
     """Item 4's Gaussian against the exact two-moment solution.
 
+    The L2 error against the telegrapher reference at every N is gated at 1.5x of
+    ``baselines.json``.
+
     Args:
         min_order: Minimum least-squares order over N = 128-2048 against the
             telegrapher reference (plan A4.1).
-        max_error_2048: Maximum L2 error / amplitude at N = 2048 against the
-            telegrapher reference (1.5x the measured 7.9e-6).
         floor_rel_tol: The error against the diffusion solution at the finest N
             must equal the model floor (:func:`_model_floor`) to this relative
             tolerance: the item-4 floor is the model, not the scheme.
@@ -461,20 +466,13 @@ def test_cr_gaussian_vs_telegrapher(
 
     assert max_u < max_gas_speed, f"gas not at rest: max abs(u) {max_u:.1e}."
     assert order >= min_order, f"order vs telegrapher {order:.3f} < {min_order}: {error_tel}."
-    i_2048 = GAUSS_RESOLUTIONS.index(2048)
-    assert error_tel[i_2048] <= max_error_2048, (
-        f"L2 error vs telegrapher at N = 2048 {error_tel[i_2048]:.3e} > {max_error_2048:.1e}."
-    )
     assert floor_rel <= floor_rel_tol, (
         f"finest error vs diffusion {error_diffusion[-1]:.3e} is not the model floor {floor:.3e}."
     )
-
-
-# Measured max-in-time L2 / amplitude at N = 2048 (2026-10-10, ETD2RK), per (mode, C_cfl).
-MODE_BASELINES_2048 = {
-    (2, 0.4): 3.27e-5, (8, 0.4): 1.56e-4, (18, 0.4): 5.06e-4, (24, 0.4): 8.64e-4, (48, 0.4): 3.11e-3,
-    (2, 0.1): 3.26e-5, (8, 0.1): 1.52e-4, (18, 0.1): 5.06e-4, (24, 0.1): 8.55e-4, (48, 0.1): 3.02e-3,
-}
+    baselines = Baselines("cr_telegrapher_reference.py::test_cr_gaussian_vs_telegrapher")
+    for n, error in zip(GAUSS_RESOLUTIONS, error_tel):
+        baselines.upper(f"l2_tel_n{n}", float(error))
+    baselines.check()
 
 
 def test_cr_single_mode_vs_telegrapher(baseline_factor: float = 1.5, max_gas_speed: float = 1e-10):
@@ -482,10 +480,10 @@ def test_cr_single_mode_vs_telegrapher(baseline_factor: float = 1.5, max_gas_spe
 
     Tracked bounds: the max-in-time error decreases with N (from N = 256) and
     stays below ``baseline_factor`` x the measured value at N = 2048, for both
-    ``C_cfl``.
+    ``C_cfl`` (the measured values are in ``baselines.json``).
 
     Args:
-        baseline_factor: Allowed growth over :data:`MODE_BASELINES_2048`.
+        baseline_factor: Allowed growth over the baseline.
         max_gas_speed: The gas must stay at rest.
     """
     k_c = telegrapher_critical_wavenumber(GAMMA_CR, V_RED, KAPPA)
@@ -495,6 +493,7 @@ def test_cr_single_mode_vs_telegrapher(baseline_factor: float = 1.5, max_gas_spe
         for c in MODE_CFLS
     }
     failures = []
+    baselines = Baselines("cr_telegrapher_reference.py::test_cr_single_mode_vs_telegrapher")
     for (m, c), err in errors.items():
         pairwise = np.log2(err[:-1] / err[1:])
         print(
@@ -506,9 +505,7 @@ def test_cr_single_mode_vs_telegrapher(baseline_factor: float = 1.5, max_gas_spe
         )
         if np.any(np.diff(err[1:]) >= 0):
             failures.append(f"m = {m}, C_cfl {c}: error not decreasing from N = 256: {err}")
-        baseline = MODE_BASELINES_2048[(m, c)]
-        if err[-1] > baseline_factor * baseline:
-            failures.append(f"m = {m}, C_cfl {c}: {err[-1]:.3e} > {baseline_factor} x {baseline:.3e}")
+        baselines.upper(f"m{m}_cfl{c:g}_max_l2_n{MODE_RESOLUTIONS[-1]}", float(err[-1]), factor=baseline_factor)
     max_u = max(_mode_run(m, n, c)["max_u"] for m in MODE_NUMBERS for n in MODE_RESOLUTIONS for c in MODE_CFLS)
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
@@ -539,6 +536,7 @@ def test_cr_single_mode_vs_telegrapher(baseline_factor: float = 1.5, max_gas_spe
 
     assert max_u < max_gas_speed, f"gas not at rest: max abs(u) {max_u:.1e}."
     assert not failures, "; ".join(failures)
+    baselines.check()
 
 
 def test_cr_single_mode_second_order(min_order: float = 1.8, min_mode: int = 8):
@@ -711,6 +709,12 @@ def test_vred_scan_scheme_error(
     assert all(thick_order_range[0] <= o <= thick_order_range[1] for o in orders), (
         f"thick-cell orders {orders} outside {thick_order_range}."
     )
+    baselines = Baselines("cr_telegrapher_reference.py::test_vred_scan_scheme_error")
+    for v_red, error in zip(FLOOR_FIT_V_REDS, thin):
+        baselines.upper(f"thin_v{v_red:g}_n{FINE_N}", error)
+    for n, error in zip(thick_n, thick_errors):
+        baselines.upper(f"thick_v64_n{n}", error)
+    baselines.check()
 
 
 def test_vred_scan_limiter(min_order: float = 1.8, min_gain: float = 5.0, max_v_red_ratio: float = 2.0):

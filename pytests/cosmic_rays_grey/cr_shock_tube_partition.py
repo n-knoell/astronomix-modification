@@ -88,7 +88,9 @@ t such that the shock travels 0.35), N = 3200 (N = 1600 identical to 3 digits):
 So the partition error is a property of the scheme, not a truncation error, and at weak,
 CR-loaded shocks it is as large as typical DSA efficiencies. This is decision D2 of the plan.
 Until D2 is made the partition is a tracked metric: the gates only bound it from above (so a
-fix that drives it to 0 still passes) and check the smooth control.
+fix that drives it to 0 still passes) and check the smooth control. Since 2026-10-12 (Phase A
+plan X1/X2) the upper bounds are 1.5x the measured values in ``baselines.json``
+(``cr_baselines.py``), on top of the looser fixed bounds in the test signatures.
 
 Runtime on CPU (``JAX_PLATFORMS=cpu``): A6.1 ~1 min, A6.2 ~1 min, A6.3 ~4 min.
 
@@ -116,6 +118,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -440,6 +445,12 @@ def test_cr_shock_tube_partition(
     assert dK_L[-1] < max_control_error, (
         f"Left-plateau K_cr error {dK_L[-1]:.3e} at N = {resolutions[-1]} exceeds {max_control_error}."
     )
+    baselines = Baselines("cr_shock_tube_partition.py::test_cr_shock_tube_partition")
+    baselines.upper(f"abs_dK_2_n{resolutions[-1]}", abs(float(dK_2[-1])), floor=1e-3)
+    baselines.upper("abs_dK_2_worst_method", max(abs(v) for v in method_dK.values()), floor=1e-3)
+    baselines.upper(f"dK_L_n{resolutions[-1]}", float(dK_L[-1]), floor=1e-6)
+    baselines.lower("control_order", control_order, margin=0.15)
+    baselines.check()
 
 
 
@@ -548,6 +559,10 @@ def test_cr_shock_tube_gupta(
         if m["cells_in_window"] >= min_resolved_cells:
             assert abs(m["dK_2"]) < max_partition_error_b, f"Gupta B N={n}: dK_cr,2 = {m['dK_2']:.3e}."
     assert results["B", resolutions_b[-1]][-1]["cells_in_window"] >= min_resolved_cells
+    baselines = Baselines("cr_shock_tube_partition.py::test_cr_shock_tube_gupta")
+    for (label, n), result in results.items():
+        baselines.upper(f"{label}_abs_dK_2_n{n}", abs(result[-1]["dK_2"]), floor=1e-3)
+    baselines.check()
 
 
 def test_cr_shock_tube_mach_scan(
@@ -610,6 +625,11 @@ def test_cr_shock_tube_mach_scan(
     for r in rows:
         assert abs(r["dK_2"]) < max_partition_error, f"M={r['mach']} N={r['n']}: dK_cr,2 = {r['dK_2']:.3e}."
         assert abs(r["dK_L"]) < max_control_error, f"M={r['mach']} N={r['n']}: dK_cr,L = {r['dK_L']:.3e}."
+    baselines = Baselines("cr_shock_tube_partition.py::test_cr_shock_tube_mach_scan")
+    for r in rows:
+        if r["n"] == resolutions[-1]:
+            baselines.upper(f"m{r['mach']:g}_abs_dK_2_n{r['n']}", abs(r["dK_2"]), floor=1e-3)
+    baselines.check()
 
 
 def test_cr_entropy_shock_partition(

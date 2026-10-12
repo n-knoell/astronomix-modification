@@ -53,7 +53,8 @@ and equation definitions this test exercises.
 
 **Re-measured 2026-10-09 with the stage-wise CR coupling** (the CR feedback is applied inside every
 RK stage, DESIGN.md "Resolved: stage-wise CR-gas coupling"; operator-split values in brackets):
-max invariant error (inner 80%) 9.8e-4 [1.52e-3], max rho/rho0 1.145 [1.167]. The wave trains
+max invariant error (inner 80%) 9.8e-4 [1.52e-3], max rho/rho0 1.145 [1.167] (current gate
+values: ``baselines.json``, ``cr_baselines.py``). The wave trains
 at x ~ 0.3-0.4 / 0.6-0.7 are gone: they came from the operator-split coupling, not from the
 gas scheme or the boundaries (``cr_adiabatic_coupling.py``, A2.3: gamma = 4/3 hydro shows none).
 """
@@ -72,6 +73,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -93,8 +97,13 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 )
 
 
-def test_cr_adiabatic_compression(edge_margin: float = 0.1, tol: float = 5e-3):
+def test_cr_adiabatic_compression(edge_margin: float = 0.1, tol: float = 5e-3, rho_rel_tol: float = 0.01):
     """Homologous squeeze: check e_cr ~ rho^gamma_cr pointwise.
+
+    Gates: the physics bound ``tol`` (far from the wrong exponent's 0.15), the invariant error
+    within 1.5x of ``baselines.json``, and the central compression max rho/rho0 within
+    ``rho_rel_tol`` of its baseline. The latter is the global dynamics (the size of the
+    ``-grad P_cr`` deceleration), which the pointwise invariant cannot see.
 
     Args:
         edge_margin: Fraction of the box (from each edge) excluded from the
@@ -108,6 +117,8 @@ def test_cr_adiabatic_compression(edge_margin: float = 0.1, tol: float = 5e-3):
             ~1e-3 at this margin); the wrong (pre-fix) exponent gives ~0.15,
             so this tolerance leaves a wide margin while still being far
             tighter than the two exponents' separation.
+        rho_rel_tol: Relative tolerance on max rho/rho0 (``rho/rho0 - 1`` is ~0.15, so 1%
+            of rho is ~7% of the compression).
     """
     num_cells = 512
     box_size = 1.0
@@ -243,6 +254,10 @@ def test_cr_adiabatic_compression(edge_margin: float = 0.1, tol: float = 5e-3):
         f"e_cr does not scale as rho^gamma_cr under adiabatic compression: "
         f"max pointwise relative error {max_rel_err:.4e} >= tol {tol}."
     )
+    baselines = Baselines("cr_adiabatic_compression.py::test_cr_adiabatic_compression")
+    baselines.upper("max_invariant_error", max_rel_err)
+    baselines.close("max_rho_ratio", float(jnp.max(rho_ratio)), rel=rho_rel_tol)
+    baselines.check()
 
 
 if __name__ == "__main__":

@@ -1931,7 +1931,15 @@ the stage-wise backward Euler stays available as `CR_RELAXATION_STAGEWISE_IMPLIC
   - Not rerun: the stratified-ISM production setups M5-M7 (pytests/stratified_ism). Their
     results predate this change.
 
-## Open: CR diffusion accuracy and the slope limiter (2026-10-11, Phase A A4.2)
+## Decided: CR diffusion accuracy and the slope limiter (2026-10-11, Phase A A4.2; option a 2026-10-12)
+
+**Status (2026-10-12, user decision): option a -- MINMOD kept, limitation documented.** Relative
+to the RMS of the diffusing bump the MINMOD error is 0.009% at v_red 8 / N 2048 (14x below the
+two-moment model error of 0.13%) and 0.6-2.4% in thick cells with 13-50 cells per sigma
+(v_red 64, N 512-128). That is small next to the open item-3 perpendicular numerical
+diffusion (D1) and the shock partition (D2). Revisit only if a side run with MC on the CR rows
+in A3.1/A3.2 shows a substantial cut in `kappa_perp,num` (Sharma & Hammett 2007: the limiter
+matters for perpendicular leakage).
 
 - **Found by:** A4.2 (`pytests/cosmic_rays_grey/cr_telegrapher_reference.py`,
   `test_vred_scan_*`). Item 4's Gaussian was run at v_red 4-64 and N 128-8192 against the
@@ -1965,11 +1973,11 @@ the stage-wise backward Euler stays available as `CR_RELAXATION_STAGEWISE_IMPLIC
   unlimited central (Fromm) slope. That is why it matched MC in the smooth A4.2 test, but it
   gives no TVD protection at sharp CR fronts (SN deposits, rings), and its behaviour changes
   with the unit system. MC is scale-invariant and TVD, so it is the candidate for option b/c.
-- **Options (user decision, not done):**
-  - a. **Leave MINMOD** and document it.
+- **Options (decided 2026-10-12: a):**
+  - a. **Leave MINMOD** and document it. **Chosen.**
   - b. **A less dissipative limiter for the CR rows only** (MC on e_cr and F_cr), with the gas
-    keeping MINMOD. This needs a per-row limiter in the reconstruction. Recommended
-    (2026-10-12): the gas keeps MINMOD's positivity paths and shock robustness.
+    keeping MINMOD. This needs a per-row limiter in the reconstruction. The better of b/c
+    if it is ever needed: the gas keeps MINMOD's positivity paths and shock robustness.
   - c. **Change the global limiter** in production.
   - For b and c, the sharp-front tests (rings 3a/3b, positivity, monotonicity guard) and the
     shock tests must be re-checked: less dissipative slopes can bring back the undershoots the

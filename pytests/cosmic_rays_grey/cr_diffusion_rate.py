@@ -32,7 +32,10 @@ the hydro CFL and the current relaxation limit scale with ``C_cfl``, so
 ``nu dt`` scales with it either way.
 
 Numbers measured on the current code (2026-10-04, before any fix step) are in
-each test's docstring; units are ``kappa``.
+each test's docstring; units are ``kappa``. Those are history: the values the tests
+now gate on (within 1.5x, with small absolute floors for round-off-sized metrics) are
+in ``baselines.json`` (``cr_baselines.py``, Phase A plan X1/X2), next to the fixed
+physics tolerances of each test.
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
 """
@@ -56,6 +59,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -350,6 +356,9 @@ def test_cr_diffusion_time_step_independence_1d(
         f"C_cfl = {c_cfl_values} (D/kappa = {[d / KAPPA_1D for d in diffusivities]}). "
         f"Operator-split relaxation bias, DESIGN.md Problem 3."
     )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_diffusion_time_step_independence_1d")
+    baselines.upper("spread", spread, floor=1e-3)
+    baselines.check()
 
 
 def test_cr_diffusion_rate_1d(
@@ -402,6 +411,9 @@ def test_cr_diffusion_rate_1d(
     assert all(abs(b) < abs(a) for a, b in zip(errors, errors[1:])), (
         f"|D/kappa - 1| does not decrease under refinement: {errors}."
     )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_diffusion_rate_1d")
+    baselines.upper(f"abs_d_error_n{resolutions[-1]}", abs(errors[-1]), floor=2e-4)
+    baselines.check()
 
 
 def test_cr_diffusion_stiff_1d(
@@ -441,6 +453,9 @@ def test_cr_diffusion_stiff_1d(
         f"D/kappa = {d / KAPPA_STIFF:.4f} in the stiff regime, expected 1 within "
         f"{tol} (numerical diffusion of the CR rows, fix step 4)."
     )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_diffusion_stiff_1d")
+    baselines.upper("abs_d_error", abs(d / KAPPA_STIFF - 1.0), floor=2e-3)
+    baselines.check()
 
 
 # -------------------------------------------------------------
@@ -478,6 +493,9 @@ def test_cr_anisotropic_no_leak(
         f"D_perp changes by {change:.4f} kappa between C_cfl = {c_cfl_values}: "
         f"per-step leak of the B-projection (fix step 3)."
     )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_anisotropic_no_leak")
+    baselines.upper("d_perp_change", change, floor=1e-3)
+    baselines.check()
 
 
 def _anisotropic_resolution_study():
@@ -521,6 +539,10 @@ def test_cr_anisotropic_parallel_rate(tol: float = 0.1):
             f"|D_par/kappa - 1| does not decrease under refinement at "
             f"theta = {theta}: {errors}."
         )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_anisotropic_parallel_rate")
+    for theta, rows in study.items():
+        baselines.upper(f"theta_{theta:g}_abs_d_par_error_finest", abs(rows[-1][1] - 1.0), floor=2e-3)
+    baselines.check()
 
 
 def test_cr_anisotropic_perpendicular_numerical(
@@ -563,6 +585,12 @@ def test_cr_anisotropic_perpendicular_numerical(
         f"N = {RESOLUTIONS_2D[-1]} (kappa_perp = 0), expected < {aligned_tol}: "
         f"numerical diffusion of the CR rows across B (fix steps 3-4)."
     )
+    # The oblique D_perp is the numerical cross-field diffusion (plan item 3, decision D1):
+    # no absolute bound yet, but it may not grow beyond 1.5x of the measured value.
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_anisotropic_perpendicular_numerical")
+    for theta, rows in study.items():
+        baselines.upper(f"theta_{theta:g}_d_perp_finest", rows[-1][2], floor=advection_floor)
+    baselines.check()
 
 
 def test_cr_anisotropic_kappa_perp(
@@ -595,6 +623,9 @@ def test_cr_anisotropic_kappa_perp(
         f"kappa_perp = {kappa_perp} adds {ratio:.4f} kappa_perp to D_perp, "
         f"expected 1 within {tol}."
     )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_anisotropic_kappa_perp")
+    baselines.upper("abs_ratio_error", abs(ratio - 1.0), floor=0.02)
+    baselines.check()
 
 
 def test_cr_anisotropic_out_of_plane_b(
@@ -662,6 +693,10 @@ def test_cr_anisotropic_out_of_plane_b(
         f"C_cfl = {c_cfl_values} ({scan})."
     )
     assert d_y / KAPPA_2D < perp_tol, f"D_y / kappa = {d_y / KAPPA_2D:.2e} >= {perp_tol}."
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_anisotropic_out_of_plane_b")
+    baselines.upper("abs_ratio_error_fine", abs(ratio - 1.0), floor=2e-3)
+    baselines.upper("spread", spread, floor=1e-3)
+    baselines.check()
 
 
 def test_cr_anisotropic_out_of_plane_wave_speed(
@@ -719,6 +754,9 @@ def test_cr_anisotropic_out_of_plane_wave_speed(
         f"(v_red sqrt(gamma_cr - 1) cos phi): the field-aligned flux loses its "
         f"F_z part (fix step 1)."
     )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_anisotropic_out_of_plane_wave_speed")
+    baselines.upper("abs_speed_error", abs(c_fit / c_exact - 1.0), floor=2e-3)
+    baselines.check()
 
 
 
@@ -832,6 +870,11 @@ def test_cr_anisotropic_3d(
     assert all(b < a for a, b in zip(perp, perp[1:])), (
         f"D_perp does not decrease under refinement for b = (1,1,1)/sqrt3: {perp}."
     )
+    baselines = Baselines("cr_diffusion_rate.py::test_cr_anisotropic_3d")
+    baselines.upper("in_plane_d_perp_finest", rows[-1]["in_plane"][1])
+    baselines.upper("diagonal_abs_d_par_error_finest", par_err[-1])
+    baselines.upper("diagonal_d_perp_finest", perp[-1])
+    baselines.check()
 
 def _plot_anisotropic(study):
     fig, (ax_par, ax_perp) = plt.subplots(1, 2, figsize=(11, 4.5))

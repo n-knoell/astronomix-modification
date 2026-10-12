@@ -33,7 +33,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A3.5 `v_red` dependence of `D_perp,num` | 3 | todo | | | |
 | **Item 4: isotropic diffusion** | | | | | |
 | A4.1 exact telegrapher reference | 1 | done (1D); F_cr relaxation fixed (ETD2RK, 2026-10-10) | `cr_telegrapher_reference.py`, `linear_theory.py` | Gaussian vs telegrapher order 1.93 (N 128-2048), pairwise 2.00 to N 4096 (1.98e-6), no floor; item-4 floor = model (1.08e-4, slope -2.008 in v_red); single modes second order (1.89-2.00 at 1024 -> 2048), C_cfl-independent; stage-wise relaxation (old) was first order, kept as a comparison test | 2026-10-10 |
-| A4.2 `v_red` scan of the model floor | 1 | done; finding: MINMOD makes CR diffusion first order in optically thick cells | `cr_telegrapher_reference.py` (`test_vred_scan_*`) | error vs diffusion = floor (v_red^-2) + scheme error; slope -1.975 at N 8192 (gate -2 +- 0.3), -1.31 at N 2048 (scheme error ~v_red overtakes floor near v_red 16: the old "v_red^-1 floor", Sec. 4.3 step 3 closed); MINMOD scheme error ~v_red dx^2 (thin) / ~kappa dx, first order (tau >~ 2); MC: second order, 15x smaller, ~v_red-independent; limiter = user decision | 2026-10-11 |
+| A4.2 `v_red` scan of the model floor | 1 | done; finding: MINMOD makes CR diffusion first order in optically thick cells; limiter: option a (MINMOD kept, 2026-10-12) | `cr_telegrapher_reference.py` (`test_vred_scan_*`) | error vs diffusion = floor (v_red^-2) + scheme error; slope -1.975 at N 8192 (gate -2 +- 0.3), -1.31 at N 2048 (scheme error ~v_red overtakes floor near v_red 16: the old "v_red^-1 floor", Sec. 4.3 step 3 closed); MINMOD scheme error ~v_red dx^2 (thin) / ~kappa dx, first order (tau >~ 2); MC: second order, 15x smaller, ~v_red-independent; HLLC identical to HLL; limiter: option a, MINMOD kept (relative error 0.6-2.4% in thick cells, << D1/D2) | 2026-10-12 |
 | A4.3 multi-D isotropic Gaussian | 3 | todo | | | |
 | A4.4 steady-state diffusion with source | 2 | todo | | | |
 | A4.5 passive energy conservation | 3 | todo | | | |
@@ -46,8 +46,8 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A6.6 finite-`kappa` two-moment shock tube | 3 | todo | | | |
 | A6.7 remedy evaluation (decision) | -- | done | DESIGN.md | option a (CR entropy, Semenov et al. 2021 eq. 8 + Et+Scr energy bookkeeping); design note written | 2026-10-08 |
 | **Cross-cutting** | | | | | |
-| X1 baseline registry, stale docstrings | 1 | todo (docstrings re-baselined to HLLC + P2 2026-10-10; registry open) | | | |
-| X2 tighten loose gates | 1 | todo | | | |
+| X1 baseline registry, stale docstrings | 1 | done | `pytests/cosmic_rays_grey/cr_baselines.py`, `baselines.json` | one registry for the 12 Phase A files (28 tests, 118 metrics); docstrings point to it; refresh with `CR_UPDATE_BASELINES=1`; GPU reruns reproduce it to its 4-digit rounding | 2026-10-12 |
+| X2 tighten loose gates | 1 | done | the 12 Phase A files | errors at the finest N within 1.5x of the registry (was up to 8-10x), orders within 0.1-0.15, localized quantities: item 1 `F/e = lambda` and the speed, item 6 plateau values and front positions (box mean was blind to the partition); fixed-order item-4 gate replaced by per-N errors (A4.1 gates the order) | 2026-10-12 |
 | X3 multi-resolution runs | -- | todo | | covered per test | |
 | X4 production-config variants | -- | todo | | covered per test | |
 | X5 float64 for analytic tests | -- | todo | | covered per test | |
@@ -76,6 +76,66 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 ## Log (newest first)
 
+### 2026-10-12: X1/X2 -- baseline registry and tightened gates
+
+- **Registry (X1):** `pytests/cosmic_rays_grey/cr_baselines.py` + `baselines.json`, keyed by
+  `<file>::<test>` and metric, with the measurement date.
+  - Checks: `upper` (errors: `<= 1.5x` baseline, optional absolute floor for round-off-sized
+    metrics; a value far below prints a NOTE), `lower` (orders: `>= baseline - margin`),
+    `close` (physical quantities, two-sided).
+  - The physics gates (literature orders, invariants) stay in the tests; the registry adds
+    "no worse than measured".
+  - Refresh: `CR_UPDATE_BASELINES=1` records instead of comparing (physics gates still apply);
+    review the json diff before committing.
+  - Docstrings keep their dated history and point to the registry for the gated values.
+- **Gates (X2), per file** (the 12 Phase A files of items 1, 2, 3, 4, 6 and A1-A6 tests):
+  - `cr_advection.py`: L2 and peak loss 1.5x (were 8x / 4x). New localized checks:
+    `max |F/(lambda e) - 1|` in the pulse (3.0e-4) and the `e_cr` first moment (the speed).
+  - `cr_advection_by_gas.py`, `cr_contact_pressure_balance.py` (HLL tracked bounds),
+    `cr_adiabatic_coupling.py`: finest-N errors and orders against the registry.
+  - `cr_adiabatic_compression.py`: invariant error 1.5x (was 5x), and max `rho/rho0` within 1%
+    (the size of the `-grad P_cr` deceleration, previously unchecked).
+  - Item 3: oblique leak ratio 1.5x (was 4.6x) and the parallel spread within 2%; ring 3a
+    `kappa_perp,num/kappa_par` at every N and L1 at N = 400; ring 3c L1 at every N and order;
+    T1-T3 rates (e.g. T1b `|D/kappa - 1|` 1.2e-3 against a 0.02 gate) and the oblique
+    `D_perp` (T2c 30/45 deg, T3 diagonal and in-plane), so numerical cross-field diffusion can
+    no longer grow unnoticed (its absolute budget is still D1).
+  - Item 4: `cr_isotropic_diffusion_convergence.py` drops the fragile order gate (plan
+    Sec. 4.3; the order is gated without a floor in A4.1) for per-N errors;
+    `cr_telegrapher_reference.py` moves its mode baselines into the registry and adds the
+    Gaussian per N and the A4.2 scheme errors.
+  - Item 6: `cr_shock_tube.py` now gates plateau averages on the left star and shocked
+    plateaus (windows from the reference) and the shock / contact positions (< 1 cell; the box
+    mean stays as a loose sanity bound). Shocked plateau: `e_cr` +1.68%, `P_th` -0.93%,
+    `rho` 0.38%, `u` 0.08% (the A6.1 partition, D2); left star plateau <= 0.22%.
+    `cr_shock_tube_partition.py`: A6.1-A6.3 partition errors at 1.5x per case. The old fixed
+    bounds were already ~1.5x for A6.1 and Gupta A / B, but A6.3 had one bound (0.2) for every
+    Mach number: 41x at M 1.4, 6.7x at M 2.
+- **Finding (item 1 speed):** the first moment of `e_cr` ends -0.074 cells behind after one
+  period (512 cells, 1.4e-4 of the distance; float32 and float64 alike). Not transport: at
+  `amp = 1e-5` it is 1.4e-3 cells (speed exact to ~3e-6). At the test's `amp = 1e-3` the CR
+  pressure moves the gas and the coupling is second order in `amp`. Tracked (+- 0.02 cells);
+  the docstring's "speed to 5 decimals" is qualified.
+- **Runs (GPU):** update mode `/export/scratch/nknoell/phaseA/x1x2/logs/`, check mode
+  `x1x2_check/logs/`: all tests of the 11 non-ring files pass in both (106 registry checks,
+  reproduced to the 4-digit rounding). Ring file (update mode only, ~70 min): 3a / 3b / 3c
+  pass and match 2026-10-05 (3a `kappa_perp,num/kappa_par` 0.0408 / 0.0198 / 0.0087 / 0.0033,
+  3c L1 1.99e-2 / 1.40e-2 / 1.02e-2, orders 0.51 / 0.45); the cap-alone test fails as its
+  strict xfail expects. Not rerun in check mode (the check path is the same generic code,
+  exercised by the 106 checks above).
+
+### 2026-10-12: limiter decision for CR diffusion -- option a (MINMOD kept)
+
+- **HLLC check:** HLL, HLLC and AM-HLLC share `hll._grey_cr_hll_rows` for the CR rows; the A4.2
+  points rerun with HLLC match HLL to all printed digits (`a42/logs/rs_*.log`).
+- **van Albada:** `limiters._van_albada_limiter` adds an unscaled `3 dx` to the squared slopes,
+  so for e_cr in code units it is the unlimited central slope (why it matched MC); not a
+  candidate for CR rows.
+- **Size:** relative to the bump RMS (0.084) MINMOD costs 0.009% at v_red 8 / N 2048 (model
+  error 0.13%) and 2.4 / 1.2 / 0.6% at v_red 64 / N 128 / 256 / 512 (MC 0.08% at N 256).
+- **Decision (user):** option a, MINMOD kept. Revisit only via an MC side run in A3.1/A3.2
+  (perpendicular leakage). Next: X1/X2.
+
 ### 2026-10-11: A4.2 `v_red` scan -- floor explained, MINMOD limits CR diffusion accuracy
 
 - **Tests:** `cr_telegrapher_reference.py` gained 4 A4.2 tests. They use item 4's Gaussian at
@@ -94,8 +154,8 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
   - Cause: minmod's O(dx^2) face jumps times the HLL dissipation R(tau) c.
   - MC / van Albada: second order everywhere, 15x smaller at v_red 8 / N 2048, and nearly
     v_red-independent (the plan's expectation).
-- **Production:** M5-M7 run MINMOD; M7 at v_red 1e4 km/s has tau ~ 3. DESIGN.md "Open: CR
-  diffusion accuracy and the slope limiter", options a/b/c: **user decision**.
+- **Production:** M5-M7 run MINMOD; M7 at v_red 1e4 km/s has tau ~ 3. DESIGN.md "Decided: CR
+  diffusion accuracy and the slope limiter": option a (2026-10-12).
 
 ### 2026-10-11: MHD energy-budget cavity change explained (streaming leak across B)
 

@@ -29,7 +29,22 @@ here, since it needs a second, decoupled setup) via a center-of-mass
 diagnostic: with a genuinely CR-free background, the numerical propagation
 speed matches ``lambda`` to 5 decimal places and total ``e_cr`` is conserved
 to 6, across resolutions and reduced-streaming-speed choices spanning 1-20 --
-see this module's PROGRESS.md.
+see this module's PROGRESS.md. (Over one full period at ``amp = 1e-3`` the coupling does
+show: the first moment ends 1.4e-4 of the distance behind, see "Speed" below.)
+
+Gates (Phase A plan X1/X2): the L2 error and peak loss within 1.5x of the measured
+baselines, plus two localized checks of the eigenmode, which the box-averaged L2 cannot see:
+``F_cr / e_cr = lambda`` inside the pulse at ``t_end`` (the right-moving family is kept, no
+left-moving part is excited) and the first moment of ``e_cr`` at ``t_end`` (the speed). The
+measured values live in ``baselines.json`` (``cr_baselines.py``), not here.
+
+Speed (re-measured 2026-10-12, float64 scratch runs): ``int F dx`` is conserved, so without
+gas coupling the first moment moves at exactly ``lambda``. At ``amp = 1e-5`` it ends 1.4e-3
+cells from ``x0`` after 512 cells of travel (speed exact to ~3e-6). At this test's ``amp =
+1e-3`` the CR pressure moves the gas, and the coupling (second order in ``amp``) leaves it
+-0.074 cells behind (1.4e-4 of the distance; float32 gives the same). That is tracked against
+the baseline to +- 0.02 cells. (``amp = 1e-7`` is unusable: the ``minimum_e_cr = 1e-10`` floor
+then fills the empty background.)
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md for the state-variable
 and equation definitions this test exercises.
@@ -49,6 +64,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -70,21 +88,18 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 )
 
 
-def test_cr_advection(l2_tol: float = 0.05, peak_retention_tol: float = 0.15):
+def test_cr_advection(centroid_tol_cells: float = 0.02, max_ratio_floor: float = 1e-3):
     """Advect a right-moving ``e_cr`` eigenmode one full period and check
     shape/amplitude preservation against the (exact, periodic) initial
     profile.
 
+    Gated against ``baselines.json`` (factor 1.5): the L2 error / amplitude, the peak loss
+    and the deviation of ``F_cr / e_cr`` from ``lambda`` where ``e_cr > 0.1`` amp.
+
     Args:
-        l2_tol: Maximum allowed L2-norm relative error (normalized by the
-            pulse amplitude) between the final and initial ``e_cr``
-            profiles. Calibrated against a 512-cell run (L2 error ~0.011,
-            HLL + MINMOD numerical diffusion of a resolved-but-not-huge
-            Gaussian); this leaves comfortable margin.
-        peak_retention_tol: Maximum allowed fractional loss of the pulse's
-            peak amplitude (1 - final_peak / initial_peak). Calibrated
-            against the same run (~0.06 loss observed); this leaves
-            comfortable margin.
+        centroid_tol_cells: Allowed change of the ``e_cr`` first moment at ``t_end`` from
+            its baseline, in cells (a speed change of 1e-5 lambda moves it by 0.005 cells).
+        max_ratio_floor: Floor of the ``F_cr / e_cr`` gate, as a fraction of ``lambda``.
     """
     num_cells = 512
     box_size = 1.0
@@ -147,6 +162,12 @@ def test_cr_advection(l2_tol: float = 0.05, peak_retention_tol: float = 0.15):
 
     l2_err = float(jnp.sqrt(jnp.mean((e_cr_final - e_cr_initial) ** 2)) / amp)
     peak_retention_loss = 1.0 - float(jnp.max(e_cr_final) / jnp.max(e_cr_initial))
+    f_cr_final = final_state[registered_variables.cosmic_ray_flux_index]
+    in_pulse = e_cr_final > 0.1 * amp
+    ratio_error = float(jnp.max(jnp.where(in_pulse, jnp.abs(f_cr_final / e_cr_final / wave_speed - 1.0), 0.0)))
+    # First moment of e_cr: in the conservative scheme it moves at exactly lambda (int F dx is
+    # conserved and starts at lambda int e dx). The pulse is far from the boundaries at t_end.
+    centroid_cells = float(jnp.sum((x - x0) * e_cr_final) / jnp.sum(e_cr_final) * num_cells / box_size)
 
     # Diagnostic plot: the initial pulse and the state after exactly one
     # box-crossing period should coincide almost exactly (periodic BCs make
@@ -176,15 +197,16 @@ def test_cr_advection(l2_tol: float = 0.05, peak_retention_tol: float = 0.15):
     fig.savefig(pics_dir / "cr_advection_test.svg")
     plt.close(fig)
 
-    print(f"L2/amp {l2_err:.4e}, peak loss {peak_retention_loss:.4e}")
-    assert l2_err < l2_tol, (
-        f"CR pulse shape not preserved: L2 relative error {l2_err:.4f} "
-        f">= tol {l2_tol}."
+    print(
+        f"L2/amp {l2_err:.4e}, peak loss {peak_retention_loss:.4e}, "
+        f"max |F/(lambda e) - 1| in pulse {ratio_error:.2e}, centroid {centroid_cells:+.2e} cells"
     )
-    assert peak_retention_loss < peak_retention_tol, (
-        f"CR pulse amplitude not preserved: peak loss {peak_retention_loss:.4f} "
-        f">= tol {peak_retention_tol}."
-    )
+    baselines = Baselines("cr_advection.py::test_cr_advection")
+    baselines.upper("l2_error", l2_err)
+    baselines.upper("peak_loss", peak_retention_loss)
+    baselines.upper("flux_ratio_error", ratio_error, floor=max_ratio_floor)
+    baselines.close("centroid_cells", centroid_cells, abs_tol=centroid_tol_cells)
+    baselines.check()
 
 
 if __name__ == "__main__":

@@ -10,18 +10,20 @@ disturb the gas (passive). The exact solution is the initial profile translated 
 after one crossing (``t = 1``) it is the initial profile. float64. ``v_red = 0`` (``F_cr = 0``
 exactly); the 1D test also runs a relaxation variant (``v_red = 1``, ``kappa = 1e-6``).
 
-Measured (2026-10-09, stage-wise CR coupling, HLL + minmod, ``C_cfl = 0.4``):
+Expected and found (HLL + minmod, ``C_cfl = 0.4``; first measured 2026-10-09, see
+``PROGRESS_PHASEA.md``):
 
-- 1D Gaussian (sigma = 0.05): L1/amp 4.7e-2 / 1.9e-2 / 6.0e-3 / 2.1e-3 at N = 64-512, order 1.51
-  (the minmod value for a smooth extremum); centroid within 0.012 dx; minimum 3e-12 of amp
-  above 0; ``F_cr`` exactly 0; max abs(u - u0) 1.3e-7.
-- 1D top-hat (width 0.2): L1/amp 8.7e-2 ... 2.2e-2, order 0.66 (the expected ~2/3 for a
-  discontinuity); no new extrema (min -1e-11, max 1.0000 of amp).
-- Relaxation variant: identical to 4 digits; ``F_cr`` stays below 4e-5 of amp.
-- 3D (diagonal ``u0 = (1, 1, 1)``, Gaussian sigma = 0.1): order 1.56 / 1.55 (N = 32-64-128),
-  round to 4e-5, centroid within 0.025 cells; see ``test_cr_advection_by_gas_3d``.
+- 1D Gaussian (sigma = 0.05): L1 order ~1.5 (the minmod value for a smooth extremum), the
+  centroid stays put to a few 0.01 dx, ``F_cr`` exactly 0, no new extrema, gas undisturbed.
+- 1D top-hat (width 0.2): L1 order ~2/3 (the expected value for a discontinuity), no new
+  extrema.
+- Relaxation variant: the same errors to 4 digits; ``F_cr`` stays small.
+- 3D (diagonal ``u0 = (1, 1, 1)``, Gaussian sigma = 0.1): order ~1.55, round to 1e-4, centroid
+  within a few 0.01 cells.
 
-See ``PROGRESS_PHASEA.md`` (2026-10-09).
+Gates: the physics bounds below (orders, extrema, centroid, passivity), plus the L1 errors at
+the finest N within 1.5x and the orders within 0.1 of ``baselines.json`` (``cr_baselines.py``,
+Phase A plan X1/X2), which holds the measured numbers.
 """
 
 # ==== GPU selection ====
@@ -42,6 +44,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -126,7 +131,6 @@ def _order(resolutions, errors):
 def test_cr_advection_by_gas_1d(
     resolutions=(64, 128, 256, 512),
     min_order_smooth=1.4,
-    max_error_smooth=3e-3,
     min_order_tophat=0.55,
     max_centroid_cells=0.05,
     max_overshoot=1e-9,
@@ -136,12 +140,11 @@ def test_cr_advection_by_gas_1d(
 
     Args:
         resolutions: Cell counts.
-        min_order_smooth: Minimum L1 order for the Gaussian (measured 1.51).
-        max_error_smooth: Bound on the Gaussian L1/amp at the finest N (measured 2.1e-3).
-        min_order_tophat: Minimum L1 order for the top-hat (measured 0.66).
-        max_centroid_cells: Bound on the centroid offset in cells (measured <= 0.012).
-        max_overshoot: Bound on new extrema, as a fraction of the amplitude (measured 1e-11).
-        max_du: Bound on the gas velocity perturbation (passive CRs; measured 1.3e-7).
+        min_order_smooth: Minimum L1 order for the Gaussian (minmod at a smooth extremum: ~1.5).
+        min_order_tophat: Minimum L1 order for the top-hat (discontinuity: ~2/3).
+        max_centroid_cells: Bound on the centroid offset in cells.
+        max_overshoot: Bound on new extrema, as a fraction of the amplitude.
+        max_du: Bound on the gas velocity perturbation (passive CRs).
     """
     shapes = {
         "Gaussian": lambda x: _gaussian(0.05)((x - 0.5) ** 2),
@@ -189,8 +192,13 @@ def test_cr_advection_by_gas_1d(
         if not relaxation:
             assert last["max_flux"] == 0.0, f"{name}: F_cr != 0 with v_red = 0."
     assert results["Gaussian", False]["order"] >= min_order_smooth
-    assert results["Gaussian", False]["errors"][-1] < max_error_smooth
     assert results["top-hat", False]["order"] >= min_order_tophat
+    baselines = Baselines("cr_advection_by_gas.py::test_cr_advection_by_gas_1d")
+    for (name, relaxation), r in results.items():
+        label = f"{name.lower()}{'_relaxation' if relaxation else ''}"
+        baselines.upper(f"{label}_l1_finest", r["errors"][-1])
+        baselines.lower(f"{label}_order", r["order"], margin=0.1)
+    baselines.check()
 
 
 def _run_3d(num_cells, shape):
@@ -245,11 +253,11 @@ def test_cr_advection_by_gas_3d(
     """A1.1 in 3D: a Gaussian (sigma = 0.1) and a top-hat sphere (r = 0.2) advected along the box
     diagonal, ``u0 = (1, 1, 1)``, for one crossing (``t = 1``), periodic.
 
-    Measured (2026-10-09): Gaussian L1/amp 6.8e-3 / 2.3e-3 / 7.9e-4 at N = 32 / 64 / 128 (order
-    1.56 for 32-64, 1.55 for 64-128); second-moment ratio along / across the diagonal 1.00004 /
-    1.00000 / 1.00000 (round); identical moments along x, y and z; centroid within 0.025 cells;
-    minimum >= -3e-9 of the amplitude. Top-hat sphere at N = 64: L1/amp 2.0e-2, min -5.8e-9, max 0.98 (no new extrema). The
-    default runs N = 32 and 64 (~2 min on a GPU); add 128 for the third point (~6 min, 128^3 float64).
+    Checks the order, roundness (second moments along / across the diagonal), centroid, extrema
+    and passivity, plus the Gaussian L1 at the finest N, its order and the top-hat L1 against
+    ``baselines.json`` (first measured 2026-10-09: order 1.56 for 32-64, 1.55 for 64-128). The
+    default runs N = 32 and 64 (~2 min on a GPU); add 128 for the third point (~6 min, 128^3
+    float64).
 
     Args:
         resolutions: Cell counts for the Gaussian.
@@ -296,6 +304,11 @@ def test_cr_advection_by_gas_3d(
         assert abs(r["roundness"] - 1.0) < max_roundness_error, f"roundness {r['roundness']:.6f}."
         assert r["max_du"] < max_du, f"the CRs are not passive (max|u - u0| {r['max_du']:.2e})."
     assert tophat["min"] > -max_overshoot and tophat["max"] < 1.0 + max_overshoot, "top-hat: new extrema."
+    baselines = Baselines("cr_advection_by_gas.py::test_cr_advection_by_gas_3d")
+    baselines.upper(f"gaussian_l1_n{resolutions[-1]}", errors[-1])
+    baselines.lower("gaussian_order", order, margin=0.1)
+    baselines.upper("tophat_l1_n64", tophat["l1"])
+    baselines.check()
 
 
 if __name__ == "__main__":

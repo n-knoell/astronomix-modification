@@ -50,8 +50,10 @@ relative error 3.6e-3 -> 9.2e-4 -> 2.7e-4 -> 1.4e-4; least-squares order 1.58,
 pairwise 1.95 / 1.78 / 0.94.
 - The last pair flattens on a floor of ~1.2e-4 (still 1.2e-4 at N = 2048). It
   is the finite-``v_red`` two-moment model, not the scheme: it is the same in
-  float64 and at amplitude 1e-5, and it halves when ``v_red`` doubles (16:
-  6.7e-5 at N = 2048). The diffusion *rate* itself converges at second order
+  float64 and at amplitude 1e-5. (It seemed to halve when ``v_red`` doubles (16: 6.7e-5 at
+  N = 2048); A4.2 showed that this is the model floor, exactly ``~v_red^-2``, plus a MINMOD
+  scheme error ``~v_red`` that dominates at ``v_red = 16`` and N = 2048:
+  ``cr_telegrapher_reference.py``.) The diffusion *rate* itself converges at second order
   (``cr_diffusion_rate.py`` T1b: ``D/kappa - 1`` = 0.029 / 0.0073 / 0.0020 at
   N = 256 / 512 / 1024).
 - 2026-10-10, ETD2RK F_cr relaxation (DESIGN.md "F_cr relaxation time accuracy: ETD2RK"):
@@ -62,6 +64,12 @@ pairwise 1.95 / 1.78 / 0.94.
   ``+nu dt / 2`` bias in D (``nu dt`` scales with ``dx`` in these
   hydro-CFL-limited runs) -- DESIGN.md "Open: CR diffusion correctness",
   Problem 3.
+
+Gates (since 2026-10-12, Phase A plan X1/X2): the L2 error at every N within 1.5x of
+``baselines.json`` (``cr_baselines.py``). The least-squares order is printed but no longer
+gated: the floor is reached early, so an improvement at coarse N would *lower* it (plan
+Sec. 4.3). The order of the scheme itself is gated against the exact two-moment solution in
+``cr_telegrapher_reference.py`` (A4.1), where there is no floor.
 
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
 """
@@ -81,6 +89,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -169,18 +180,15 @@ def _run_diffusion(
     return l2_err, x, e_cr_final, analytic
 
 
-def test_cr_isotropic_diffusion_convergence(
-    min_order: float = 1.3, max_finest_error: float = 2e-4
-):
+def test_cr_isotropic_diffusion_convergence(max_finest_error: float = 2e-4):
     """Isotropic diffusion vs. the analytic Gaussian Green's function.
 
+    Gated on the L2 error at every N against ``baselines.json`` (factor 1.5).
+
     Args:
-        min_order: The minimum acceptable least-squares convergence order
-            over N = 128-512, i.e. before the error reaches the ~1.2e-4
-            finite-``v_red`` model floor (see module docstring). Calibrated
-            against 1.56; the old operator-split relaxation gave 1.08.
-        max_finest_error: Maximum L2 error at N = 1024, just above the floor
-            (1.3e-4 measured; 9.9e-4 with the old relaxation).
+        max_finest_error: Physics bound on the L2 error at N = 1024, just above the
+            ~1.2e-4 finite-``v_red`` model floor (9.9e-4 with the old operator-split
+            relaxation).
     """
     gamma_cr = 4.0 / 3.0
     reduced_streaming_speed = 8.0
@@ -250,14 +258,14 @@ def test_cr_isotropic_diffusion_convergence(
     plt.close(fig)
 
     print(f"L2 errors {[f'{e:.3e}' for e in errors]} at N = {list(resolutions)}, order (N <= 512) {convergence_order:.3f}")
-    assert convergence_order >= min_order, (
-        f"CR isotropic diffusion did not converge as expected: order "
-        f"{convergence_order:.3f} < min {min_order}. Errors: {errors}."
-    )
     assert errors[-1] < max_finest_error, (
         f"L2 error {errors[-1]:.3e} at N = {resolutions[-1]} >= "
         f"{max_finest_error:.1e}. Errors: {errors}."
     )
+    baselines = Baselines("cr_isotropic_diffusion_convergence.py::test_cr_isotropic_diffusion_convergence")
+    for num_cells, error in zip(resolutions, errors):
+        baselines.upper(f"l2_n{num_cells}", error)
+    baselines.check()
 
 
 if __name__ == "__main__":

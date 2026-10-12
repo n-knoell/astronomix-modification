@@ -31,8 +31,8 @@ et al. (2021, Fig. 3).
   max abs(u) ~1e-2. This is physical: the CRs diffuse out of the contact.
 
 **Source-term coupling (HLL; before 2026-10-10 also HLLC): the balance is NOT kept.** Measured
-2026-10-09 with the stage-wise CR coupling, HLL + minmod. The errors converge only at order
-~0.5-0.75:
+2026-10-09 with the stage-wise CR coupling, HLL + minmod (the 1D values the test now tracks are
+in ``baselines.json``). The errors converge only at order ~0.5-0.75:
 
 - 1D static: max abs(P_tot - 1) 2.9e-2 / 1.6e-2 / 9.1e-3 / 5.9e-3 (N = 64-512), max abs(u)
   1.3e-2 ... 3.4e-3. Early on it is larger: 0.16 and 0.055 at t = 0.01, before the waves leave
@@ -92,6 +92,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -168,21 +171,16 @@ def _decreasing(values):
 def test_cr_contact_pressure_balance_1d(
     resolutions=(64, 128, 256, 512),
     max_error_hllc=1e-10,
-    max_dp_static_hll=1e-2,
-    max_du_static_hll=5e-3,
-    max_dp_advected_hll=4e-3,
-    max_du_advected_hll=3e-3,
 ):
     """A1.3 in 1D: HLLC with the total-pressure flux, and HLL with the source coupling (tracked).
+
+    HLL is tracked, not fixed: its errors must decrease with N, and max abs(P_tot - 1) and max
+    abs(u - u0) at the finest N must stay within 1.5x of ``baselines.json``.
 
     Args:
         resolutions: Cell counts.
         max_error_hllc: Bound on max abs(P_tot - 1) and max abs(u - u0) with HLLC, every N, static
-            and advected (measured <= 1.2e-13).
-        max_dp_static_hll, max_du_static_hll: Bounds on max abs(P_tot - 1) and max abs(u) with
-            HLL at the finest N, static contact (measured 5.9e-3, 3.4e-3).
-        max_dp_advected_hll, max_du_advected_hll: The same for the advected slab (measured
-            2.0e-3, 1.7e-3).
+            and advected (exact up to round-off).
     """
     results = {}
     for solver, name in ((HLLC, "HLLC"), (HLL, "HLL ")):
@@ -225,13 +223,14 @@ def test_cr_contact_pressure_balance_1d(
         for r in results[HLLC, advected, 0.0]:
             assert r["max_dp"] < max_error_hllc, f"HLLC advected={advected}: max|P_tot - 1| {r['max_dp']:.2e}."
             assert r["max_du"] < max_error_hllc, f"HLLC advected={advected}: max|u - u0| {r['max_du']:.2e}."
-    for advected, max_dp, max_du in (
-        (False, max_dp_static_hll, max_du_static_hll), (True, max_dp_advected_hll, max_du_advected_hll)
-    ):
+    baselines = Baselines("cr_contact_pressure_balance.py::test_cr_contact_pressure_balance_1d")
+    for advected in (False, True):
         runs = results[HLL, advected, 0.0]
         assert _decreasing([r["max_dp"] for r in runs]), f"HLL advected={advected}: P_tot error not decreasing with N."
-        assert runs[-1]["max_dp"] < max_dp, f"HLL advected={advected}: max|P_tot - 1| {runs[-1]['max_dp']:.2e}."
-        assert runs[-1]["max_du"] < max_du, f"HLL advected={advected}: max|u - u0| {runs[-1]['max_du']:.2e}."
+        label = "advected" if advected else "static"
+        baselines.upper(f"hll_{label}_max_dp_finest", runs[-1]["max_dp"])
+        baselines.upper(f"hll_{label}_max_du_finest", runs[-1]["max_du"])
+    baselines.check()
 
 
 def _run_3d(num_cells, geometry, advected=False, mhd=False, riemann_solver=HLLC):

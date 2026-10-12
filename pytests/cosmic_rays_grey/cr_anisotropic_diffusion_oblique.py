@@ -72,6 +72,9 @@ import jax.numpy as jnp
 # plotting
 import matplotlib.pyplot as plt
 
+# baseline registry
+from cr_baselines import Baselines
+
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
 from astronomix.option_classes.simulation_config import (
@@ -175,6 +178,10 @@ def test_cr_anisotropic_diffusion_oblique(leak_ratio_tol: float = 0.1):
             anisotropic closure, ~1.0 -- i.e. isotropic spread -- for the
             unprojected closure on the same IC); this leaves a wide margin
             while still being far below the isotropic value.
+
+    Also gated against ``baselines.json`` (Phase A plan X1/X2): the anisotropic leak ratio
+    within 1.5x of its measured value, and the anisotropic parallel variance growth (how far
+    the pulses travel along B) within 2%.
     """
     num_cells = 128
     box_size = 1.0
@@ -269,6 +276,10 @@ def test_cr_anisotropic_diffusion_oblique(leak_ratio_tol: float = 0.1):
         f"{leak_ratio_aniso:.4f} >= tol {leak_ratio_tol} for the anisotropic "
         f"closure (isotropic-run ratio for comparison: {leak_ratio_iso:.4f})."
     )
+    baselines = Baselines("cr_anisotropic_diffusion_oblique.py::test_cr_anisotropic_diffusion_oblique")
+    baselines.upper("leak_ratio_anisotropic", float(leak_ratio_aniso))
+    baselines.close("parallel_growth_anisotropic", float(par_growth_aniso), rel=0.02)
+    baselines.check()
 
 
 if __name__ == "__main__":

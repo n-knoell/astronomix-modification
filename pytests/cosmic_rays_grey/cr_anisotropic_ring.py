@@ -51,8 +51,9 @@ Status (2026-10-05, RTX 2080 Ti, ~55 min for the file).
   user as option B): 3a, 3b and 3c pass. 3b's gate is in units of the jump like 3a's (user
   decision 2026-10-05); its worst case is 1.1e-5 of the jump at N = 100.
 
-Numbers in each test's docstring; the design history is in DESIGN.md "Open: CR diffusion
-follow-up", step 3.
+Numbers in each test's docstring (dated); the values the tests gate on are in
+``baselines.json`` (``cr_baselines.py``, Phase A plan X1/X2). The design history is in DESIGN.md
+"Open: CR diffusion follow-up", step 3.
 """
 
 # ==== GPU selection ====
@@ -75,6 +76,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -291,7 +295,9 @@ def test_cr_ring_sharma_hammett(
       differentiable switch, as the implementation plan asks for, so it cannot
       be exactly monotone. The gate was 1e-6 relative before the guard existed
       and was restated after the first guarded run (2026-10-05).
-    - ``kappa_perp,num / kappa_par`` (S&H eq. 39) decreases under refinement.
+    - ``kappa_perp,num / kappa_par`` (S&H eq. 39) decreases under refinement, and at every N
+      stays within 1.5x of ``baselines.json``; so does the L1 error at the finest N. (An
+      absolute bound against S&H's rows is A3.3 / decision D1, not yet set.)
     - The gas stays static (``max |u| t_end < 0.1 dx``).
 
     Printed for comparison with S&H Tables 1-4: L1 / L2 / Linf, ``e_max``,
@@ -362,6 +368,11 @@ def test_cr_ring_sharma_hammett(
     assert all(b < a for a, b in zip(ratios, ratios[1:])), (
         f"kappa_perp,num / kappa_par does not decrease under refinement: {ratios}."
     )
+    baselines = Baselines("cr_anisotropic_ring.py::test_cr_ring_sharma_hammett")
+    for r in rows:
+        baselines.upper(f"kappa_perp_ratio_n{r['n']}", r["kappa_perp_ratio"])
+    baselines.upper(f"l1_n{rows[-1]['n']}", rows[-1]["l1"])
+    baselines.check()
 
 
 def test_cr_ring_positivity(
@@ -516,10 +527,11 @@ def _jiang_oh_analytic(x, y, t):
 def test_cr_ring_jiang_oh(resolutions: tuple = JO_RESOLUTIONS):
     """3c: JO18 Sec. 4.1.5, ``kappa_par = 1/3``, ``t = 0.26``, against eq. 28.
 
-    Gate: the L1 error (mean over the box) decreases under refinement. The
+    Gate: the L1 error (mean over the box) decreases under refinement, stays within 1.5x of
+    ``baselines.json`` at every N, and the order of the last pair within 0.1 of it. The
     exact solution keeps sharp radial edges at ``r = 0.5`` and 0.7, so the L1
     error measures parallel accuracy and the smearing of those edges by
-    numerical perpendicular diffusion together. The order is printed.
+    numerical perpendicular diffusion together.
 
     Measured (2026-10-05): L1 = 1.99e-2 / 1.39e-2 / 1.02e-2 at N = 64 / 128 /
     256 with the guard (1.82e-2 / 1.35e-2 / 1.01e-2 without); order ~0.5, set
@@ -557,6 +569,11 @@ def test_cr_ring_jiang_oh(resolutions: tuple = JO_RESOLUTIONS):
     assert all(b < a for a, b in zip(l1, l1[1:])), (
         f"L1 error against JO18 eq. 28 does not decrease under refinement: {l1}."
     )
+    baselines = Baselines("cr_anisotropic_ring.py::test_cr_ring_jiang_oh")
+    for r in rows:
+        baselines.upper(f"l1_n{r['n']}", r["l1"])
+    baselines.lower("order_finest_pair", orders[-1], margin=0.1)
+    baselines.check()
 
 
 if __name__ == "__main__":

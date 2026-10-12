@@ -90,6 +90,19 @@ mean absolute error rho 3.0e-3 [2.5e-3], u 4.1e-3 [3.1e-3], P_th 1.8e-3 [1.4e-3]
 [2.9e-3]; ``F_cr`` stays exactly 0. Slightly larger, as the post-shock CR/thermal partition error
 grows from 1.06% to 1.27% (``cr_shock_tube_partition.py``, A6.1), but now nearly
 CFL-independent.
+
+**Gates (since 2026-10-12, Phase A plan X1/X2).** The mean absolute error over the box hides
+the post-shock partition (the shocked plateau is ~18% of the box, plan Sec. 6.3), so it is now
+only a loose sanity bound. The test gates localized quantities against ``baselines.json``
+(``cr_baselines.py``):
+
+- plateau averages (windows a few cells inside the reference's rarefaction tail, contact and
+  shock): relative errors of ``rho``, ``u``, ``P_th`` and ``e_cr`` on the left star plateau
+  and on the shocked plateau, each within 1.5x of the baseline (floor 2e-3). The shocked
+  ``e_cr`` / ``P_th`` errors are the non-converging partition error of A6.1 (decision D2
+  open), so they are tracked, not bounded by physics;
+- the shock and contact positions (where ``rho`` crosses the mid-value of its jump) within
+  one cell of the reference.
 """
 
 # ==== GPU selection ====
@@ -109,6 +122,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -133,13 +149,38 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 )
 
 
-def test_cr_shock_tube(tol: float = 1e-2):
+def _plateau_windows(rho_ref, p_tot_ref, margin_rarefaction=4, margin_contact=6, margin_shock=4):
+    """Index windows of the left star plateau and the shocked plateau from the reference.
+
+    The star region is where the reference total pressure equals its value next to the
+    shock; the contact is the largest density jump inside it.
+    """
+    i_shock = int(np.max(np.nonzero(np.abs(np.diff(p_tot_ref)) > 1e-8)[0]))
+    p_star = p_tot_ref[i_shock - 2]
+    star = np.nonzero(np.abs(p_tot_ref - p_star) < 1e-8 * p_star)[0]
+    i_tail = int(star.min())
+    i_contact = i_tail + int(np.argmax(np.abs(np.diff(rho_ref[i_tail:i_shock]))))
+    left = slice(i_tail + margin_rarefaction, i_contact - margin_contact + 1)
+    shocked = slice(i_contact + 1 + margin_contact, i_shock - margin_shock + 1)
+    return left, shocked, i_contact, i_shock
+
+
+def _crossing(x, profile, lo, hi, start, stop):
+    """Position where ``profile`` crosses ``(lo + hi) / 2`` between ``start`` and ``stop``."""
+    level = 0.5 * (lo + hi)
+    seg = profile[start:stop] - level
+    i = start + int(np.nonzero(np.sign(seg[:-1]) != np.sign(seg[1:]))[0][0])
+    return float(x[i] + (x[i + 1] - x[i]) * (level - profile[i]) / (profile[i + 1] - profile[i]))
+
+
+def test_cr_shock_tube(tol: float = 1e-2, max_front_offset_cells: float = 1.0):
     """Two-fluid CR-modified shock tube vs. a Pfrommer et al. (2006)-style
     semi-analytic solution.
 
     Args:
-        tol: The maximum allowed mean absolute error per primitive variable
-            against the semi-analytic solution.
+        tol: Loose sanity bound on the mean absolute error per primitive
+            variable over the box (see the module docstring for the real gates).
+        max_front_offset_cells: Bound on the shock and contact position errors, in cells.
     """
     num_cells = 400
     box_size = 1.0
@@ -247,6 +288,34 @@ def test_cr_shock_tube(tol: float = 1e-2):
     assert velocity_error < tol, f"Velocity error {velocity_error} exceeds tolerance {tol}"
     assert pressure_error < tol, f"Pressure error {pressure_error} exceeds tolerance {tol}"
     assert e_cr_error < tol, f"e_cr error {e_cr_error} exceeds tolerance {tol}"
+
+    # Localized gates (module docstring).
+    x_np = np.asarray(x)
+    dx = box_size / num_cells
+    numerical = dict(rho=np.asarray(rho_num), u=np.asarray(u_num), p_th=np.asarray(p_th_num), e_cr=np.asarray(e_cr_num))
+    reference = dict(rho=rho_ref, u=u_ref, p_th=p_th_ref, e_cr=e_cr_ref)
+    left, shocked, i_contact, i_shock = _plateau_windows(rho_ref, p_th_ref + p_cr_ref)
+    baselines = Baselines("cr_shock_tube.py::test_cr_shock_tube")
+    for name, window in (("left_star", left), ("shocked", shocked)):
+        assert window.stop - window.start >= 10, f"{name} plateau window too small: {window}."
+        for key in ("rho", "u", "p_th", "e_cr"):
+            ref_mean = float(np.mean(reference[key][window]))
+            rel = float(np.mean(numerical[key][window])) / ref_mean - 1.0
+            print(f"  {name} plateau ({window.stop - window.start} cells) {key}: {rel:+.4e} relative to the reference")
+            baselines.upper(f"{name}_{key}_abs_rel_error", abs(rel), floor=2e-3)
+    rho_star_right = float(rho_ref[i_contact + 1 + 6])
+    x_shock_ref = 0.5 * (x_np[i_shock] + x_np[i_shock + 1])
+    x_contact_ref = 0.5 * (x_np[i_contact] + x_np[i_contact + 1])
+    x_shock = _crossing(x_np, numerical["rho"], rho_star_right, rho_R, i_contact + 3, num_cells - 1)
+    x_contact = _crossing(x_np, numerical["rho"], float(rho_ref[i_contact]), rho_star_right, i_contact - 15, i_shock - 3)
+    shock_offset, contact_offset = (x_shock - x_shock_ref) / dx, (x_contact - x_contact_ref) / dx
+    print(f"  shock at {x_shock:.4f} (reference {x_shock_ref:.4f}, {shock_offset:+.2f} cells), "
+          f"contact at {x_contact:.4f} (reference {x_contact_ref:.4f}, {contact_offset:+.2f} cells)")
+    assert abs(shock_offset) < max_front_offset_cells, f"shock position off by {shock_offset:.2f} cells."
+    assert abs(contact_offset) < max_front_offset_cells, f"contact position off by {contact_offset:.2f} cells."
+    for name, error in (("rho", density_error), ("u", velocity_error), ("p_th", pressure_error), ("e_cr", e_cr_error)):
+        baselines.upper(f"mean_abs_error_{name}", error)
+    baselines.check()
 
 
 if __name__ == "__main__":

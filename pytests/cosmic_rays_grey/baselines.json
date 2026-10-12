@@ -1,0 +1,536 @@
+{
+ "_meta": {
+  "about": "Measured baselines of the grey-CR Phase A tests (cr_baselines.py; Phase A plan X1/X2). Gates: errors <= 1.5x, orders >= value - margin, physical quantities two-sided.",
+  "measured": "2026-10-12, GPU (RTX 2080 Ti), branch feature/cosmic-rays-grey at 1008ccb plus the uncommitted ETD2RK / A4 / X1-X2 changes",
+  "refresh": "CR_UPDATE_BASELINES=1 python <test file>  (records instead of comparing; review the diff)",
+  "scheme": "ETD2RK F_cr relaxation (default), stage-wise CR coupling, MINMOD; Riemann solver as set per test (HLL default, HLLC + total-pressure flux where the test sets HLLC)"
+ },
+ "cr_adiabatic_compression.py::test_cr_adiabatic_compression": {
+  "max_invariant_error": {
+   "date": "2026-10-12",
+   "value": 0.0009798
+  },
+  "max_rho_ratio": {
+   "date": "2026-10-12",
+   "value": 1.145
+  }
+ },
+ "cr_adiabatic_coupling.py::test_cr_hydro_equivalence": {
+  "simple_wave_l1_finest": {
+   "date": "2026-10-12",
+   "value": 7.116e-06
+  },
+  "simple_wave_vs_hydro_finest": {
+   "date": "2026-10-12",
+   "value": 4.893e-06
+  },
+  "squeeze_ringing_n2048": {
+   "date": "2026-10-12",
+   "value": 0.002734
+  },
+  "squeeze_ringing_n512": {
+   "date": "2026-10-12",
+   "value": 0.002596
+  }
+ },
+ "cr_adiabatic_coupling.py::test_cr_linear_sound_wave": {
+  "ratio_0.5_l1_cfl08": {
+   "date": "2026-10-12",
+   "value": 0.0009619
+  },
+  "ratio_0.5_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.0004079
+  },
+  "ratio_0_l1_cfl08": {
+   "date": "2026-10-12",
+   "value": 0.001115
+  },
+  "ratio_0_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.0004296
+  },
+  "ratio_10_l1_cfl08": {
+   "date": "2026-10-12",
+   "value": 0.0003878
+  },
+  "ratio_10_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.0003676
+  },
+  "ratio_2_l1_cfl08": {
+   "date": "2026-10-12",
+   "value": 0.0006733
+  },
+  "ratio_2_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.0003865
+  }
+ },
+ "cr_advection.py::test_cr_advection": {
+  "centroid_cells": {
+   "date": "2026-10-12",
+   "value": -0.0731
+  },
+  "flux_ratio_error": {
+   "date": "2026-10-12",
+   "value": 0.000301
+  },
+  "l2_error": {
+   "date": "2026-10-12",
+   "value": 0.006049
+  },
+  "peak_loss": {
+   "date": "2026-10-12",
+   "value": 0.03718
+  }
+ },
+ "cr_advection_by_gas.py::test_cr_advection_by_gas_1d": {
+  "gaussian_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.002099
+  },
+  "gaussian_order": {
+   "date": "2026-10-12",
+   "value": 1.509
+  },
+  "gaussian_relaxation_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.002105
+  },
+  "gaussian_relaxation_order": {
+   "date": "2026-10-12",
+   "value": 1.509
+  },
+  "top-hat_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.02169
+  },
+  "top-hat_order": {
+   "date": "2026-10-12",
+   "value": 0.665
+  },
+  "top-hat_relaxation_l1_finest": {
+   "date": "2026-10-12",
+   "value": 0.02178
+  },
+  "top-hat_relaxation_order": {
+   "date": "2026-10-12",
+   "value": 0.6647
+  }
+ },
+ "cr_advection_by_gas.py::test_cr_advection_by_gas_3d": {
+  "gaussian_l1_n64": {
+   "date": "2026-10-12",
+   "value": 0.0023
+  },
+  "gaussian_order": {
+   "date": "2026-10-12",
+   "value": 1.556
+  },
+  "tophat_l1_n64": {
+   "date": "2026-10-12",
+   "value": 0.01958
+  }
+ },
+ "cr_anisotropic_diffusion_oblique.py::test_cr_anisotropic_diffusion_oblique": {
+  "leak_ratio_anisotropic": {
+   "date": "2026-10-12",
+   "value": 0.02182
+  },
+  "parallel_growth_anisotropic": {
+   "date": "2026-10-12",
+   "value": 0.03066
+  }
+ },
+ "cr_anisotropic_ring.py::test_cr_ring_jiang_oh": {
+  "l1_n128": {
+   "date": "2026-10-12",
+   "value": 0.01399
+  },
+  "l1_n256": {
+   "date": "2026-10-12",
+   "value": 0.01024
+  },
+  "l1_n64": {
+   "date": "2026-10-12",
+   "value": 0.01987
+  },
+  "order_finest_pair": {
+   "date": "2026-10-12",
+   "value": 0.4494
+  }
+ },
+ "cr_anisotropic_ring.py::test_cr_ring_sharma_hammett": {
+  "kappa_perp_ratio_n100": {
+   "date": "2026-10-12",
+   "value": 0.01979
+  },
+  "kappa_perp_ratio_n200": {
+   "date": "2026-10-12",
+   "value": 0.008659
+  },
+  "kappa_perp_ratio_n400": {
+   "date": "2026-10-12",
+   "value": 0.003259
+  },
+  "kappa_perp_ratio_n50": {
+   "date": "2026-10-12",
+   "value": 0.04077
+  },
+  "l1_n400": {
+   "date": "2026-10-12",
+   "value": 0.02699
+  }
+ },
+ "cr_contact_pressure_balance.py::test_cr_contact_pressure_balance_1d": {
+  "hll_advected_max_dp_finest": {
+   "date": "2026-10-12",
+   "value": 0.001975
+  },
+  "hll_advected_max_du_finest": {
+   "date": "2026-10-12",
+   "value": 0.001731
+  },
+  "hll_static_max_dp_finest": {
+   "date": "2026-10-12",
+   "value": 0.005901
+  },
+  "hll_static_max_du_finest": {
+   "date": "2026-10-12",
+   "value": 0.003405
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_anisotropic_3d": {
+  "diagonal_abs_d_par_error_finest": {
+   "date": "2026-10-12",
+   "value": 0.01573
+  },
+  "diagonal_d_perp_finest": {
+   "date": "2026-10-12",
+   "value": 0.0157
+  },
+  "in_plane_d_perp_finest": {
+   "date": "2026-10-12",
+   "value": 0.01662
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_anisotropic_kappa_perp": {
+  "abs_ratio_error": {
+   "date": "2026-10-12",
+   "value": 0.04046
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_anisotropic_no_leak": {
+  "d_perp_change": {
+   "date": "2026-10-12",
+   "value": 6.494e-08
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_anisotropic_out_of_plane_b": {
+  "abs_ratio_error_fine": {
+   "date": "2026-10-12",
+   "value": 0.02853
+  },
+  "spread": {
+   "date": "2026-10-12",
+   "value": 1.037e-05
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_anisotropic_out_of_plane_wave_speed": {
+  "abs_speed_error": {
+   "date": "2026-10-12",
+   "value": 0.0001451
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_anisotropic_parallel_rate": {
+  "theta_0_abs_d_par_error_finest": {
+   "date": "2026-10-12",
+   "value": 0.01545
+  },
+  "theta_30_abs_d_par_error_finest": {
+   "date": "2026-10-12",
+   "value": 0.01413
+  },
+  "theta_45_abs_d_par_error_finest": {
+   "date": "2026-10-12",
+   "value": 0.01464
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_anisotropic_perpendicular_numerical": {
+  "theta_0_d_perp_finest": {
+   "date": "2026-10-12",
+   "value": 8.99e-05
+  },
+  "theta_30_d_perp_finest": {
+   "date": "2026-10-12",
+   "value": 0.01095
+  },
+  "theta_45_d_perp_finest": {
+   "date": "2026-10-12",
+   "value": 0.01459
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_diffusion_rate_1d": {
+  "abs_d_error_n1024": {
+   "date": "2026-10-12",
+   "value": 0.001206
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_diffusion_stiff_1d": {
+  "abs_d_error": {
+   "date": "2026-10-12",
+   "value": 0.01773
+  }
+ },
+ "cr_diffusion_rate.py::test_cr_diffusion_time_step_independence_1d": {
+  "spread": {
+   "date": "2026-10-12",
+   "value": 7.736e-07
+  }
+ },
+ "cr_isotropic_diffusion_convergence.py::test_cr_isotropic_diffusion_convergence": {
+  "l2_n1024": {
+   "date": "2026-10-12",
+   "value": 0.0001189
+  },
+  "l2_n128": {
+   "date": "2026-10-12",
+   "value": 0.001671
+  },
+  "l2_n256": {
+   "date": "2026-10-12",
+   "value": 0.000522
+  },
+  "l2_n512": {
+   "date": "2026-10-12",
+   "value": 0.0001808
+  }
+ },
+ "cr_shock_tube.py::test_cr_shock_tube": {
+  "left_star_e_cr_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.002179
+  },
+  "left_star_p_th_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.0003244
+  },
+  "left_star_rho_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.002111
+  },
+  "left_star_u_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.0009381
+  },
+  "mean_abs_error_e_cr": {
+   "date": "2026-10-12",
+   "value": 0.003676
+  },
+  "mean_abs_error_p_th": {
+   "date": "2026-10-12",
+   "value": 0.001807
+  },
+  "mean_abs_error_rho": {
+   "date": "2026-10-12",
+   "value": 0.002998
+  },
+  "mean_abs_error_u": {
+   "date": "2026-10-12",
+   "value": 0.004125
+  },
+  "shocked_e_cr_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.01683
+  },
+  "shocked_p_th_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.009276
+  },
+  "shocked_rho_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.003788
+  },
+  "shocked_u_abs_rel_error": {
+   "date": "2026-10-12",
+   "value": 0.0007572
+  }
+ },
+ "cr_shock_tube_partition.py::test_cr_shock_tube_gupta": {
+  "A_abs_dK_2_n1000": {
+   "date": "2026-10-12",
+   "value": 0.06828
+  },
+  "A_abs_dK_2_n250": {
+   "date": "2026-10-12",
+   "value": 0.06868
+  },
+  "A_abs_dK_2_n4000": {
+   "date": "2026-10-12",
+   "value": 0.06828
+  },
+  "B_abs_dK_2_n1000": {
+   "date": "2026-10-12",
+   "value": 0.07385
+  },
+  "B_abs_dK_2_n2000": {
+   "date": "2026-10-12",
+   "value": 0.129
+  },
+  "B_abs_dK_2_n4000": {
+   "date": "2026-10-12",
+   "value": 0.1287
+  }
+ },
+ "cr_shock_tube_partition.py::test_cr_shock_tube_mach_scan": {
+  "m1.4_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.004845
+  },
+  "m100_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.1363
+  },
+  "m10_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.1289
+  },
+  "m2_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.02983
+  },
+  "m30_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.1356
+  },
+  "m3_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.07091
+  },
+  "m60_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.1362
+  },
+  "m6_abs_dK_2_n3200": {
+   "date": "2026-10-12",
+   "value": 0.1164
+  }
+ },
+ "cr_shock_tube_partition.py::test_cr_shock_tube_partition": {
+  "abs_dK_2_n1600": {
+   "date": "2026-10-12",
+   "value": 0.0127
+  },
+  "abs_dK_2_worst_method": {
+   "date": "2026-10-12",
+   "value": 0.01309
+  },
+  "control_order": {
+   "date": "2026-10-12",
+   "value": 1.117
+  },
+  "dK_L_n1600": {
+   "date": "2026-10-12",
+   "value": 7.506e-07
+  }
+ },
+ "cr_telegrapher_reference.py::test_cr_gaussian_vs_telegrapher": {
+  "l2_tel_n1024": {
+   "date": "2026-10-12",
+   "value": 3.175e-05
+  },
+  "l2_tel_n128": {
+   "date": "2026-10-12",
+   "value": 0.001641
+  },
+  "l2_tel_n2048": {
+   "date": "2026-10-12",
+   "value": 7.94e-06
+  },
+  "l2_tel_n256": {
+   "date": "2026-10-12",
+   "value": 0.0004868
+  },
+  "l2_tel_n4096": {
+   "date": "2026-10-12",
+   "value": 1.984e-06
+  },
+  "l2_tel_n512": {
+   "date": "2026-10-12",
+   "value": 0.0001263
+  }
+ },
+ "cr_telegrapher_reference.py::test_cr_single_mode_vs_telegrapher": {
+  "m18_cfl0.1_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.000506
+  },
+  "m18_cfl0.4_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.0005062
+  },
+  "m24_cfl0.1_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.0008553
+  },
+  "m24_cfl0.4_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.000864
+  },
+  "m2_cfl0.1_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 3.256e-05
+  },
+  "m2_cfl0.4_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 3.274e-05
+  },
+  "m48_cfl0.1_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.00302
+  },
+  "m48_cfl0.4_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.003111
+  },
+  "m8_cfl0.1_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.0001524
+  },
+  "m8_cfl0.4_max_l2_n2048": {
+   "date": "2026-10-12",
+   "value": 0.0001556
+  }
+ },
+ "cr_telegrapher_reference.py::test_vred_scan_scheme_error": {
+  "thick_v64_n128": {
+   "date": "2026-10-12",
+   "value": 0.00198
+  },
+  "thick_v64_n256": {
+   "date": "2026-10-12",
+   "value": 0.0009768
+  },
+  "thick_v64_n512": {
+   "date": "2026-10-12",
+   "value": 0.0004758
+  },
+  "thin_v16_n8192": {
+   "date": "2026-10-12",
+   "value": 9.676e-07
+  },
+  "thin_v32_n8192": {
+   "date": "2026-10-12",
+   "value": 1.91e-06
+  },
+  "thin_v4_n8192": {
+   "date": "2026-10-12",
+   "value": 2.622e-07
+  },
+  "thin_v8_n8192": {
+   "date": "2026-10-12",
+   "value": 4.958e-07
+  }
+ }
+}

@@ -37,7 +37,9 @@ The coupling is now applied inside every RK stage (Gupta, Sharma & Mignone 2021,
   two-fluid vs hydro order 1.85.
 - A2.3b: ringing 0.0026 / 0.0027 (N = 512 / 2048); hydro 0.0012 / 0.0013.
 
-See ``PROGRESS_PHASEA.md`` (2026-10-09).
+Gates: the physics bounds in each test, plus the errors at the finest N (and the squeeze
+ringing) within 1.5x of ``baselines.json`` (``cr_baselines.py``, Phase A plan X1/X2), which
+holds the current measured values. See ``PROGRESS_PHASEA.md`` (2026-10-09).
 """
 
 # ==== GPU selection ====
@@ -58,6 +60,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import SimulationConfig, SimulationParams, get_helper_data
@@ -203,6 +208,11 @@ def test_cr_linear_sound_wave(
         assert abs(r["phase"]) < max_phase_error, f"P_cr/P_th {ratio}: phase error {r['phase']:.2e}."
         assert r["eigen"] < max_eigenvector_error, f"P_cr/P_th {ratio}: eigenvector error {r['eigen']:.2e}."
         assert r["cfl08"] < max_error_cfl08, f"P_cr/P_th {ratio}: C_cfl 0.8 error {r['cfl08']:.2e}."
+    baselines = Baselines("cr_adiabatic_coupling.py::test_cr_linear_sound_wave")
+    for ratio, r in results.items():
+        baselines.upper(f"ratio_{ratio:g}_l1_finest", r["errors"][-1])
+        baselines.upper(f"ratio_{ratio:g}_l1_cfl08", r["cfl08"])
+    baselines.check()
 
 
 def test_cr_hydro_equivalence(
@@ -299,6 +309,12 @@ def test_cr_hydro_equivalence(
         assert two_fluid <= max_ringing_ratio * hydro, (
             f"squeeze N = {n}: ringing {two_fluid:.4f} > {max_ringing_ratio} x hydro {hydro:.4f}."
         )
+    baselines = Baselines("cr_adiabatic_coupling.py::test_cr_hydro_equivalence")
+    baselines.upper("simple_wave_l1_finest", errors_two_fluid[-1])
+    baselines.upper("simple_wave_vs_hydro_finest", differences[-1])
+    for n, (two_fluid, _) in ringing.items():
+        baselines.upper(f"squeeze_ringing_n{n}", two_fluid)
+    baselines.check()
 
 
 if __name__ == "__main__":
