@@ -45,6 +45,8 @@ from astronomix.option_classes.simulation_config import SimulationConfig
 from astronomix.option_classes.simulation_params import SimulationParams
 from astronomix.variable_registry.registered_variables import RegisteredVariables
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
+    CR_WAVE_SPEED_FACE_NORMAL,
+    CR_WAVE_SPEED_PROJECTED,
     CosmicRayGreyParams,
 )
 
@@ -416,6 +418,7 @@ def cr_flux_realizability_cap(
 def cr_monotonicity_guard(
     e_cr: Float[Array, "..."],
     params: SimulationParams,
+    wide_sensor: bool = False,
 ) -> Float[Array, "..."]:
     """Per-cell weight ``g`` in [0, 1] of the CR rows' monotonicity guard:
     the optical-depth reduction ``R`` of the Rusanov dissipation is raised to
@@ -452,9 +455,15 @@ def cr_monotonicity_guard(
     differentiable and gives ``psi = 1/3`` (off) in exactly flat or CR-free
     regions instead of 0/0.
 
+    With ``wide_sensor`` (``CosmicRayGreyConfig.cr_guard_wide_sensor``) the
+    denominator also has the jumps two faces away, ``|d_ll| + |d_rr|``: a
+    flattened smooth extremum (``d_l ~ 0``, ``d_c ~ d_r ~ -d_ll``) reads
+    ~0.25 instead of 0.5, one- and two-cell steps read 1 and 0.5 as before.
+
     Args:
         e_cr: The cell-centered ``e_cr`` (spatial axes only).
         params: The simulation parameters.
+        wide_sensor: Five-face instead of three-face sensor.
 
     Returns:
         ``g`` per cell; a face uses the larger value of its two cells.
@@ -470,9 +479,14 @@ def cr_monotonicity_guard(
         jump_center = e_cr - jnp.roll(e_cr, 1, axis=axis)  # face i: e_i - e_{i-1}
         jump_left = jnp.roll(jump_center, 1, axis=axis)
         jump_right = jnp.roll(jump_center, -1, axis=axis)
-        psi = smooth_abs(jump_center) / (
-            smooth_abs(jump_left) + smooth_abs(jump_center) + smooth_abs(jump_right)
-        )
+        total = smooth_abs(jump_left) + smooth_abs(jump_center) + smooth_abs(jump_right)
+        if wide_sensor:
+            total = (
+                total
+                + smooth_abs(jnp.roll(jump_center, 2, axis=axis))
+                + smooth_abs(jnp.roll(jump_center, -2, axis=axis))
+            )
+        psi = smooth_abs(jump_center) / total
         ramp = jnp.clip(
             (psi - cr_params.cr_guard_sensor_onset)
             / (cr_params.cr_guard_sensor_full - cr_params.cr_guard_sensor_onset),
@@ -534,7 +548,10 @@ def cr_wave_speed_factors(
     The face-normal diffusivity is ``diffusion_coefficient`` isotropically,
     and ``kappa_par b_n^2 + kappa_perp (1 - b_n^2)`` with
     ``anisotropic_transport`` (``b`` from ``magnetic_field``, the split-off
-    B of the FV MHD gas half-step, constant within it).
+    B of the FV MHD gas half-step, constant within it). The experimental
+    ``cr_wave_speed_model`` variants instead combine the reductions along and
+    across B, ``sqrt(b_n^2 R_par^2 + (1 - b_n^2) R_perp^2)`` (constants in
+    ``cosmic_ray_grey_options``).
 
     Args:
         primitive_state: The (gas) primitive state, for the grid shape.
@@ -554,6 +571,21 @@ def cr_wave_speed_factors(
     grid_shape = primitive_state.shape[1:]
     if cr_config.anisotropic_transport:
         b_hat = magnetic_unit_vector(magnetic_field, params)
+        if cr_config.cr_wave_speed_model != CR_WAVE_SPEED_FACE_NORMAL:
+            # Field-aligned speeds (R_par, R_perp, R_perp) seen along each axis.
+            r_par = cr_wave_speed_reduction(
+                jnp.full(grid_shape, cr_params.diffusion_coefficient), params, config.grid_spacing
+            )
+            if cr_config.cr_wave_speed_model == CR_WAVE_SPEED_PROJECTED:
+                r_par = jnp.ones_like(r_par)
+            r_perp = cr_wave_speed_reduction(
+                jnp.full(grid_shape, cr_params.perpendicular_diffusion_coefficient),
+                params, config.grid_spacing,
+            )
+            return jnp.stack([
+                jnp.sqrt(b_hat[i] ** 2 * r_par**2 + (1.0 - b_hat[i] ** 2) * r_perp**2)
+                for i in range(config.dimensionality)
+            ])
         kappa_normal = jnp.stack([
             cr_params.diffusion_coefficient * b_hat[i] ** 2
             + cr_params.perpendicular_diffusion_coefficient * (1.0 - b_hat[i] ** 2)

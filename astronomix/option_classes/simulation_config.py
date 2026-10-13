@@ -83,6 +83,9 @@ DOUBLE_MINMOD = 2
 SUPERBEE = 3
 VAN_ALBADA = 4
 VAN_ALBADA_PP = 5
+#: van Leer (1974): harmonic mean of the one-sided differences, zero at
+#: extrema. Scale-invariant TVD, between MINMOD and DOUBLE_MINMOD (MC).
+VAN_LEER = 6
 
 # splitting modes
 UNSPLIT = 0
@@ -1045,6 +1048,16 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
         raise ValueError(
             "cosmic_ray_grey_config.flux_relaxation_integrator must be "
             "CR_RELAXATION_STAGEWISE_IMPLICIT (0) or CR_RELAXATION_ETD2RK (1)."
+        )
+    if cr_grey_config.cr_wave_speed_model not in (0, 1, 2):
+        raise ValueError(
+            "cosmic_ray_grey_config.cr_wave_speed_model must be CR_WAVE_SPEED_FACE_NORMAL (0), "
+            "CR_WAVE_SPEED_FIELD_ALIGNED (1) or CR_WAVE_SPEED_PROJECTED (2)."
+        )
+    if cr_grey_config.cr_limiter not in (-1, MINMOD, DOUBLE_MINMOD, VAN_LEER):
+        raise ValueError(
+            "cosmic_ray_grey_config.cr_limiter must be CR_LIMITER_GAS (-1), MINMOD, "
+            "DOUBLE_MINMOD or VAN_LEER."
         )
     # cr_entropy is ignored without grey CRs (no s_cr row is allocated).
     if cr_grey_config.grey_cosmic_rays and cr_grey_config.cr_entropy:

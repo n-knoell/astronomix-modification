@@ -26,14 +26,14 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A2.3 CR-dominated fluid vs gamma=4/3 hydro | 1 | done; fixed by the stage-wise coupling | `cr_adiabatic_coupling.py` | item-2 ringing is **not** in gamma=4/3 hydro (0.0012), only in the operator-split two-fluid run (0.36 at N 2048). Stage-wise: 0.0026, and the simple wave matches hydro at order 1.85 | 2026-10-09 |
 | A2.4 two-moment linear dispersion relation | 2 | todo | | | |
 | **Item 3: anisotropic diffusion** | | | | | |
-| A3.1 Sovinec steady state | 2 | todo; spec revised 2026-10-12 (two literature checks, merged with A3.5; see log) | | | |
+| A3.1 Sovinec steady state | 2 | done (with A3.5); led to the van Leer CR limiter + guard retune (2026-10-13, misfire fixed) | `cr_sovinec.py` | **since 2026-10-13 (van Leer, default):** 3.4e-3 / 1.1e-3 / 2.2e-4 / 3.5e-5 at 16-128 cells per unit length, orders 1.6-2.7; guard on = guard off within 0.4%. Before: `kappa_perp,num/kappa_par` (MINMOD, guard off) 2.0e-2 / 8.9e-3 / 3.4e-3 / 1.0e-3 at 16-128 cells per unit length, orders 1.2-1.7; MC 1.2e-3 ... 1.1e-5 (orders 1.9-2.6); field-aligned / projected speeds 2-4x worse in thick cells; additive to physical `kappa_perp` (1e-2: 2.0 / 0.91 / 0.32 / 0.095 of it); steady-state anchor agrees to <= 3.2%; guard on: leak 2x, symmetry broken | 2026-10-13 |
 | A3.2 anisotropic Gaussian, full profile | 2 | todo | | | |
 | A3.3 absolute gates + early-time ring | 3 | todo | | | |
 | A3.4 production (guard off) tracking | 3 | todo | | | |
-| A3.5 `v_red` dependence of `D_perp,num` | 2 (with A3.1) | todo; merged into the A3.1 spec 2026-10-12 | | | |
+| A3.5 `v_red` dependence of `D_perp,num` | 2 (with A3.1) | done | `cr_sovinec.py` (`test_sovinec_vred_scan`) | leak = HLL dissipation: ~`v_red` in thin cells (slope 0.5-1.1 at `tau` <= 0.5), `v_red`-independent at `tau` >~ 2 (slope <= 0.09 face-normal) | 2026-10-12 |
 | **Item 4: isotropic diffusion** | | | | | |
 | A4.1 exact telegrapher reference | 1 | done (1D); F_cr relaxation fixed (ETD2RK, 2026-10-10) | `cr_telegrapher_reference.py`, `linear_theory.py` | Gaussian vs telegrapher order 1.93 (N 128-2048), pairwise 2.00 to N 4096 (1.98e-6), no floor; item-4 floor = model (1.08e-4, slope -2.008 in v_red); single modes second order (1.89-2.00 at 1024 -> 2048), C_cfl-independent; stage-wise relaxation (old) was first order, kept as a comparison test | 2026-10-10 |
-| A4.2 `v_red` scan of the model floor | 1 | done; finding: MINMOD makes CR diffusion first order in optically thick cells; limiter: option a (MINMOD kept, 2026-10-12) | `cr_telegrapher_reference.py` (`test_vred_scan_*`) | error vs diffusion = floor (v_red^-2) + scheme error; slope -1.975 at N 8192 (gate -2 +- 0.3), -1.31 at N 2048 (scheme error ~v_red overtakes floor near v_red 16: the old "v_red^-1 floor", Sec. 4.3 step 3 closed); MINMOD scheme error ~v_red dx^2 (thin) / ~kappa dx, first order (tau >~ 2); MC: second order, 15x smaller, ~v_red-independent; HLLC identical to HLL; limiter: option a, MINMOD kept (relative error 0.6-2.4% in thick cells, << D1/D2) | 2026-10-12 |
+| A4.2 `v_red` scan of the model floor | 1 | done; finding: MINMOD makes CR diffusion first order in optically thick cells; limiter: option a (MINMOD kept, 2026-10-12), superseded 2026-10-13 by van Leer on the CR rows | `cr_telegrapher_reference.py` (`test_vred_scan_*`) | error vs diffusion = floor (v_red^-2) + scheme error; slope -1.975 at N 8192 (gate -2 +- 0.3), -1.31 at N 2048 (scheme error ~v_red overtakes floor near v_red 16: the old "v_red^-1 floor", Sec. 4.3 step 3 closed); MINMOD scheme error ~v_red dx^2 (thin) / ~kappa dx, first order (tau >~ 2); MC: second order, 15x smaller, ~v_red-independent; HLLC identical to HLL; limiter: option a, MINMOD kept (relative error 0.6-2.4% in thick cells, << D1/D2) | 2026-10-12 |
 | A4.3 multi-D isotropic Gaussian | 3 | todo | | | |
 | A4.4 steady-state diffusion with source | 2 | done | `cr_steady_state_source.py` (1D + 2D) | steady state dt-independent to <= 4e-13 (C_cfl 0.4/0.2/0.1; ETD2RK and stage-wise; thin and thick); MINMOD second order in thin cells (2.00 at N 512->1024, all v_red), first order thick (1.14 at tau 3.3->1.7); error ~v_red^0.92 at fixed N; MC 2.1-2.4, 4-20x smaller; v_red dependence converges at 1.99; 2D diagonal mode 1.99 | 2026-10-12 |
 | A4.5 passive energy conservation | 3 | todo | | | |
@@ -51,7 +51,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | X3 multi-resolution runs | -- | todo | | covered per test | |
 | X4 production-config variants | -- | todo | | covered per test | |
 | X5 float64 for analytic tests | -- | todo | | covered per test | |
-| X6 static heavy gas for pure transport | -- | todo | | via helper below | |
+| X6 static heavy gas for pure transport | -- | running | `cr_static_gas.py` | helper used by A4.4, A3.1; ring test not migrated yet | 2026-10-12 |
 | X7 FV only | -- | dropped | -- | out of scope (plan item 20) | |
 | Mark ring "cap alone" test `xfail` (Sec. 3.1) | -- | done | `cr_anisotropic_ring.py` | `pytest.mark.xfail(strict=True)` when pytest is importable (the venv has none); standalone runs print XFAIL; verified with pytest 9.1.1 from a scratch install | 2026-10-09 |
 | Fix Pfrommer et al. 2006 citation (Sec. 6.2) | -- | todo | `cr_shock_tube.py`, DESIGN.md | | |
@@ -60,16 +60,17 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 | ID | Question | Status | Outcome |
 |---|---|---|---|
-| D1 | Absolute `kappa_perp,num/kappa_par` budget for item 3? | open | |
+| D1 | Absolute `kappa_perp,num/kappa_par` budget for item 3? | open; data from A3.1 (2026-10-12), default changed 2026-10-13 | measured (Sovinec, 16-128 cells per unit length): van Leer (default since 2026-10-13) 3.4e-3 ... 3.5e-5, MINMOD 2e-2 ... 1e-3, MC ~3x below van Leer; S&H ring N 50-400: 0.015 ... 0.00061 |
 | D2 | Shock partition: change CR energy formulation or prescribe it? | **open again** (2026-10-09) | option a implemented as opt-in `cr_entropy` (default off after the 2026-10-09 analysis: the energy-conserving transfer drains CR-dominated gas); candidate: shock-only transfer (Semenov-style) |
-| D3 | Hard gates on library default (guard on) or production (guard off)? | open | |
+| D3 | Hard gates on library default (guard on) or production (guard off)? | open; the A3.1 guard misfire (2026-10-12) is fixed by the five-face sensor (2026-10-13) | A3.1 gates guard on and off since 2026-10-13 (equal within 0.4%) |
 
 ## Infrastructure
 
 - [x] Test-only `e_cr` source hook (A4.4, A3.1 steady-state anchor): inside the RK stage RHS, not
       in `_time_integrator_sources` (spec in the 2026-10-12 A3.1/A4.4 log entry). Done 2026-10-12:
       `CosmicRayGreyParams.test_e_cr_source` (see log)
-- [ ] Static-heavy-gas helper, factored out of `cr_anisotropic_ring.py` (X6)
+- [ ] Static-heavy-gas helper, factored out of `cr_anisotropic_ring.py` (X6): `cr_static_gas.py`
+      written 2026-10-12 (A4.4, A3.1 use it); `cr_anisotropic_ring.py` still has its own copy
 - [ ] `test_setups/reference_solutions/linear_theory.py`: 5x5 dispersion matrix, eigenvectors,
       spectral telegrapher solver (A1.4, A2.2, A2.4, A4.1). Telegrapher solver done 2026-10-10
       (1D/2D/3D, verified against expm to 1e-15); the rest open.
@@ -77,6 +78,197 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-13: CR-row limiter switched to van Leer, guard retuned (user decisions; uncommitted)
+
+Scheme change, logged in DESIGN.md "Decided: CR diffusion accuracy and the slope limiter"
+(status 2026-10-13); summary and regression here.
+
+- **Option c (user): MC on the CR rows + guard retune.** Implemented as `cr_limiter`
+  (CR rows only, gas keeps `SimulationConfig.limiter`), `cr_guard_wide_sensor` (five-face
+  shape sensor, fixes the A3.1 misfire) and `cr_guard_minmod_blend` (CR slopes blended towards
+  MINMOD in guarded cells).
+- **MC rejected** after the update-mode regression (`/export/scratch/nknoell/phaseA/optc/logs/u_*.log`):
+  ring 3a/3b keep a smooth undershoot of ~1e-3 of the jump (1.4e-3 / 1.1e-3 / 1.1e-3 at N = 50
+  / 100 / 200) inside the ring, invisible to any shape sensor; sensor thresholds 0.30-0.35
+  did not help and 0.30 / 0.60 brought the Sovinec misfire back
+  (`guard_c/logs/p2_*.log`).
+- **Literature check (user: "literature backed", little time):** JO18 Sec. 4.1 (Athena++) and
+  Rosdahl et al. 2025 (RAMSES) use van Leer for two-moment CRs; S&H 2007: slope-limited schemes
+  keep the ring minimum. FCT / algebraic flux correction and transverse-flux limiting judged
+  not worth the effort (DESIGN.md). **User chose van Leer** (`VAN_LEER = 6`, new limiter
+  constant; defaults `cr_limiter = VAN_LEER`, blend and wide sensor on, ring gates back to 1e-3,
+  Sovinec anchor pinned to MINMOD / guard off so its run length stays bounded).
+- **Regression + re-baseline** (update mode, scratch copy `/export/scratch/nknoell/phaseA/optc2`,
+  logs `optc2/logs/u_*.log`, seven free GPUs, ~75 min): every test passes;
+  `test_cr_ring_flux_cap_alone` fails as designed (strict xfail). Files not rerun
+  (`cr_adiabatic_*`, `cr_advection.py`, `cr_shock_tube*.py`) never set
+  `diffusive_relaxation`, so the CR re-reconstruction does not run there.
+  Check-mode rerun (registry gated) of all rerun files except ring and Sovinec (only one
+  free GPU): 41/41 pass, values reproduce the registry (`optc2/logs/c_quick.log`).
+
+| Metric (finest N unless stated) | MINMOD (before) | van Leer (now) |
+|---|---|---|
+| Ring 3a undershoot / jump, N 50 / 100 / 200 / 400 | 0 / 1.1e-5 / 0 / 0 | 0 / 5.0e-6 / 6.5e-6 / 1.4e-5 |
+| Ring 3a `kappa_perp,num / kappa_par`, N 50 / 100 / 200 / 400 | 0.041 / 0.020 / 0.0087 / 0.0033 | 0.015 / 0.0054 / 0.0017 / 0.00061 (S&H van Leer 0.024 / 0.010 / 0.0038 / 0.0013) |
+| Ring 3a L1, N 400 | 0.027 | 0.010 |
+| Ring 3b undershoot / jump, N 100 / 200 | 1.1e-5 / 0 | 4.7e-6 / 6.7e-6 |
+| Ring 3c (JO18) L1, N 64 / 128 / 256 | 1.99e-2 / 1.40e-2 / 1.02e-2 | 1.33e-2 / 8.87e-3 / 6.21e-3 |
+| Sovinec `kappa_perp,num / kappa_par` (`kappa_perp` = 0), 16 / 32 / 64 / 128 per unit | 2.0e-2 / 8.9e-3 / 3.4e-3 / 1.0e-3 | 3.4e-3 / 1.1e-3 / 2.2e-4 / 3.5e-5 (MC 1.2e-3 ... 1.1e-5) |
+| Sovinec, `kappa_perp` = 1e-2: leak / `kappa_perp` | 2.0 / 0.91 / 0.32 / 0.095 | 0.41 / 0.11 / 0.022 / 0.0033 |
+| T1 `|D/kappa - 1|` N 1024; stiff | 1.2e-3; 1.8e-2 | 2.1e-4; 4.7e-4 |
+| T2c `D_perp/kappa` 45 deg; T2d ratio error | 1.5e-2; 4.0e-2 | 1.0e-3; 4.4e-3 |
+| T3 diagonal `D_perp/kappa`, N 128 | 1.6e-2 | 1.4e-3 |
+| Item 4 L2, N 128 / 256 / 512 / 1024 | 1.67e-3 / 5.22e-4 / 1.81e-4 / 1.19e-4 | 4.71e-4 / 1.62e-4 / 1.14e-4 / 1.09e-4 (model floor) |
+| A1.1 relaxation variant L1 Gaussian / top-hat, N 512 | 2.1e-3 / 2.2e-2 | 7.9e-4 / 1.4e-2 |
+
+- Guard misfire fixed: with the guard on, every Sovinec variant (MINMOD, MC, van Leer) gives
+  the guard-off value within 0.4% (2026-10-12: 2x leak, broken symmetry).
+- Cap alone (guard off = plain van Leer): 3a undershoot 2.2e-2 / 3.1e-2, 3b `e_min` -0.0044 /
+  -0.0085 at N = 100 / 200 (MINMOD: 1.9e-2 / 2.3e-2, -0.0027 / -0.0041). The guard stays needed.
+- Tests that set the limiter explicitly (telegrapher, steady state) now pass it as
+  `cr_limiter` too; their values moved by <= 4% (guard blend / wide sensor).
+- Registry: 66 metrics changed, 16 new (Sovinec van Leer variants); diff against the
+  pre-switch registry in `optc2/baselines_before.json`.
+- Docstrings updated: `cr_sovinec.py` (module), `cr_anisotropic_ring.py` (module, 3a, 3b, 3c,
+  cap alone), `cr_diffusion_rate.py` (module, T3), `cr_isotropic_diffusion_convergence.py`,
+  `cr_advection_by_gas.py`, `cr_telegrapher_reference.py`.
+
+### 2026-10-12: limiter / guard side run on the existing anisotropic tests (no code change)
+
+Question (after A3.1): what does MC, with and without the monotonicity guard, do on the other
+anisotropic tests, in particular the discontinuous rings the guard was built for? Variants
+MINMOD / guard off, MC / guard on, MC / guard off; the default (MINMOD / guard on) is the
+registry. Tests unchanged: a scratch driver overrides `limiter` in every `SimulationConfig` and
+the guard thresholds (2.0 / 3.0) in every `CosmicRayGreyParams`; registry neither checked nor
+written; figures to `/export/scratch/nknoell/phaseA/a3_variants/pics`, logs in `.../logs`. Free
+GPUs 4 / 5 / 7, about 85 min each.
+
+**Smooth tests (`cr_diffusion_rate.py`, oblique), finest resolution:**
+
+| quantity | MINMOD (guard on = off) | MC (guard on = off) |
+|---|---|---|
+| T2b `|D_par / kappa - 1|`, 0 / 30 / 45 deg | 1.5e-2 / 1.4e-2 / 1.5e-2 | 1.4e-4 / 1.3e-4 / 1.3e-4 |
+| T2c `D_perp / kappa`, 30 / 45 deg (N 64 / 128 / 256 at 45) | 1.1e-2 / 1.5e-2 (7.0e-2 / 3.6e-2 / 1.5e-2) | 1.1e-4 / 1.1e-4 (1.7e-3 / 3e-4 / 1e-4; 1e-4 = the T2a floor) |
+| T2d `Delta D_perp / kappa_perp` | 1.0405 | 0.9999 |
+| T2e out-of-plane `D_x / target` (N 128) | 1.07 | 1.0007 |
+| T2f `D_num` (wave speed test) | 3.4e-4 | 3.2e-5 |
+| T3 3D, N 128: in-plane `D_perp`, diagonal `D_perp` | 1.66e-2, 1.57e-2 | 1.5e-4, 1.5e-4 |
+| oblique leak ratio | 2.18e-2 | 1.51e-2 |
+
+The guard changes nothing on these smooth Gaussians (MINMOD guard off = registry to all printed
+digits; MC on = off) -- it does not misfire here, unlike the Sovinec `psi` extrema. Everything
+passes; the `D_perp` error drops 100x, consistent with A3.1.
+
+**Rings** (S&H 3a: patch 12 on 10, jump 2, `kappa_perp,num / kappa_par` at N 50 / 100 / 200 / 400;
+3b: patch on 0.1, jump 9.9; JO 3c: L1 at N 64 / 128 / 256):
+
+| variant | 3a `kappa_perp,num / kappa_par` | 3a leaked | 3a worst undershoot / jump (any snapshot) | 3b `e_min` (N 100 / 200) | 3c L1 |
+|---|---|---|---|---|---|
+| MINMOD, guard on (default) | 4.08e-2 / 1.98e-2 / 8.66e-3 / 3.26e-3 | 0.74 ... 0.43 | 0 | 0.09989 / 0.09999 | 1.99e-2 / 1.40e-2 / 1.02e-2 |
+| MINMOD, guard off | 3.33e-2 / 1.83e-2 / 8.31e-3 / 3.20e-3 | 0.73 ... 0.43 | 2.2e-2 ... 3.1e-2 | -0.0027 / -0.0041 | 1.82e-2 / 1.35e-2 / 1.01e-2 |
+| MC, guard on | 1.01e-2 / 3.27e-3 / 1.13e-3 / 4.65e-4 | 0.53 ... 0.13 | 1.4e-3 / 1.2e-3 / 2.8e-3 / 6.1e-3 | 0.0874 / 0.0758 (1.3e-3 / 2.5e-3 of the jump) | 1.22e-2 / 8.25e-3 / 5.51e-3 |
+| MC, guard off | 9.02e-3 / 3.17e-3 / 1.11e-3 / 4.61e-4 | 0.53 ... 0.13 | 2.3e-2 ... 4.6e-2 | -0.0038 / -0.0049 | 1.09e-2 / 8.10e-3 / 5.47e-3 |
+| S&H Tables 1-4 (comparison) | asym. MC 1.3e-2 ... 6.8e-4; sym. MC 7.2e-3 ... 6.5e-5; van Leer 2.4e-2 ... 1.3e-3 | | | | |
+
+- **MC improves the rings too:** `kappa_perp,num` 4-7x lower (from worse than every S&H scheme to
+  between their van Leer and symmetric MC), leaked fraction 0.43 -> 0.13 at 400^2, JO L1 1.6-1.9x
+  lower. Final-time profiles stay monotone (3a `e_min` >= 9.9975 at `t = 200`).
+- **But MC + guard is not monotone:** transient undershoots 1.2e-3 ... 6.1e-3 of the jump in 3a
+  (growing with N) and 1.3e-3 / 2.5e-3 in 3b, above the 1e-3 gate (3a and 3b fail). `e_cr` stays
+  positive (3b `e_min` 0.076 > 0). The guard is tuned for MINMOD (strictly monotone there).
+- **Without the guard both limiters undershoot by 1-5% of the jump and go negative in 3b**; the
+  guard is needed with either limiter. The guard barely affects the leak (MINMOD 3a 4.08e-2 vs
+  3.33e-2 at N 50, equal from N 200; MC equal), so the Sovinec guard misfire (smooth thick
+  extrema) does not show in these tests.
+- **Consequence for the limiter decision:** MC is a large accuracy gain on every anisotropic test
+  (smooth 50-100x, rings 2-7x), at the price of a small transient non-monotonicity (<= 0.6% of the
+  jump, positive) with the current guard. Options: (a) keep MINMOD; (b) MC and relax the 3a/3b
+  undershoot gates to ~1e-2 of the jump (positivity kept); (c) MC and retune the guard for MC
+  (scheme change, then rerun 3a/3b and Sovinec). User decision.
+- Driver bug, fixed: the guard-off override replaced `CosmicRayGreyParams` with a function, so
+  T2d (`CosmicRayGreyParams._fields`) errored in the guard-off runs; rerun with a proxy (T2d above).
+
+### 2026-10-12: A3.1 + A3.5 Sovinec test -- done (uncommitted); field-aligned wave speeds do not help, MC does, the guard misfires
+
+`pytests/cosmic_rays_grey/cr_sovinec.py`, 4 tests (3 gated + figure
+`pics/03_anisotropic_diffusion/cr_sovinec_test.svg`); static-gas helper `cr_static_gas.py`
+(X6; the ring test still has its own copy); logs `/export/scratch/nknoell/phaseA/a31/logs/`
+(`*_r2.log`, `*_r3.log`); baselines registered (2 test ids). Setup and measurement as in the spec
+entry below and the file docstring: periodic `[-1, 1]^2`, `kappa_par = 1`, `v_red = 96` (`tau` =
+2 / 1 / 0.5 / 0.25 at 16 / 32 / 64 / 128 cells per unit length; the `psi` wavelength is 2), decay
+rate of the `psi` mode fitted over `t` in [0.5, 2].
+
+New library option (test variants, default unchanged and bitwise identical to HEAD):
+`CosmicRayGreyConfig.cr_wave_speed_model` = `CR_WAVE_SPEED_FACE_NORMAL` (default, `R(tau(kappa_n))`),
+`CR_WAVE_SPEED_FIELD_ALIGNED` (Athena++-like `sqrt(b_n^2 R_par^2 + (1 - b_n^2) R_perp^2)`),
+`CR_WAVE_SPEED_PROJECTED` (TPP21 eq. 44, `|b_n|`, no `tau` reduction).
+
+**`kappa_perp,num / kappa_par` at `kappa_perp = 0`** (guard off unless marked):
+
+| variant | 16 | 32 | 64 | 128 | orders |
+|---|---|---|---|---|---|
+| MINMOD, face-normal (default) | 2.01e-2 | 8.92e-3 | 3.38e-3 | 1.02e-3 | 1.18 / 1.40 / 1.73 |
+| MINMOD, field-aligned | 4.06e-2 | 1.57e-2 | 3.92e-3 | 8.27e-4 | 1.37 / 2.00 / 2.25 |
+| MINMOD, projected | 8.26e-2 | 2.00e-2 | 4.22e-3 | 8.41e-4 | 2.05 / 2.24 / 2.33 |
+| MC, face-normal | 1.23e-3 | 3.39e-4 | 6.56e-5 | 1.09e-5 | 1.85 / 2.37 / 2.59 |
+| MC, field-aligned | 2.38e-3 | 5.00e-4 | 7.39e-5 | 9.26e-6 | 2.25 / 2.76 / 3.00 |
+| MINMOD, face-normal, guard on | 4.34e-2 | 1.55e-2 | 4.07e-3 | 1.07e-3 | 1.49 / 1.93 / 1.93 |
+| MC, face-normal, guard on | 4.06e-3 | 4.98e-4 | 7.51e-5 | 1.14e-5 | 3.03 / 2.73 / 2.72 |
+
+**`kappa_perp,num / kappa_perp` at `kappa_perp = 1e-2`** (normalized by an isotropic run with the
+same limiter, Dubois & Commerçon): default 2.03 / 0.91 / 0.32 / 0.095; field-aligned 3.6 / 1.4 /
+0.34 / 0.073; MC 0.155 / 0.038 / 0.0068 / 0.0011; MC field-aligned 0.25 / 0.052 / 0.0073 /
+0.00084; guard on 3.97 / 1.33 / 0.37 / 0.099 (MINMOD), 0.41 / 0.053 / 0.0077 / 0.0011 (MC). This
+equals the `kappa_perp = 0` row divided by 1e-2 to within 2-7%: the numerical cross-field
+diffusivity adds to the physical one. The isotropic reference itself converges at first order
+(error 7.1e-2 / 3.2e-2 / 1.5e-2 / 7.1e-3; A4.2's MINMOD-in-thick-cells result).
+
+- **The literature proposal (field-aligned or projected HLL speeds, Athena++ / TPP21) does not
+  improve the leak where it matters.** In thick cells (`tau` >= 1, M7 has `tau ~ 3`) both leak 2-4x
+  more than the face-normal default; they win only in thin cells (19% less at `tau` 0.25). Reason:
+  for an oblique face the face-normal `R(tau_n)` with `kappa_n = kappa_par b_n^2` scales as
+  `b_n^2 / tau`, the field-aligned speed as `|b_n| / tau`. Keep the default.
+- **MC cuts the leak 16x (16 cells per unit length) to 94x (128)**, second to third order; the
+  MINMOD default stays below the plan's order 1.5 except at the finest pair (first order in thick
+  cells, as in A4.2). This is the A3.1 side run the limiter decision (option a, MINMOD kept) asked
+  for: MINMOD is fine for isotropic diffusion (0.6-2.4%), not for the cross-field leak.
+- **D1 numbers:** for `kappa_perp,num <= 0.1 kappa_perp` at `kappa_perp / kappa_par = 1e-2` the
+  default needs ~128 cells per unit length (256 per wavelength of the mode), MC ~32 (64 per
+  wavelength). At 16 per unit (32 per wavelength) the default leak is 2x the physical
+  `kappa_perp`.
+- **A3.5, `v_red` scan** (`kappa_perp = 0`, MINMOD, guard off; `v_red` 24 ... 384):
+
+  | cells/unit, wave speed | `tau` | `kappa_perp,num / kappa_par` | local slopes `d ln / d ln v_red` |
+  |---|---|---|---|
+  | 32, face-normal | 0.25 ... 4 | 4.98e-3 / 7.19e-3 / 8.92e-3 / 9.44e-3 / 9.45e-3 | 0.53 / 0.31 / 0.08 / 0.00 |
+  | 32, field-aligned | 0.25 ... 4 | 4.25e-3 / 8.92e-3 / 1.57e-2 / 1.98e-2 / 2.00e-2 | 1.07 / 0.82 / 0.33 / 0.01 |
+  | 64, face-normal | 0.12 ... 2 | 1.31e-3 / 2.25e-3 / 3.38e-3 / 4.28e-3 / 4.55e-3 | 0.78 / 0.59 / 0.34 / 0.09 |
+  | 64, field-aligned | 0.12 ... 2 | 8.57e-4 / 1.83e-3 / 3.92e-3 / 7.27e-3 / 9.33e-3 | 1.10 / 1.10 / 0.89 / 0.36 |
+
+  The leak is HLL dissipation: proportional to `v_red` in thin cells (slope -> 1), independent of
+  `v_red` once `tau >~ 2` (it saturates at the `kappa`-limited `R v_red ~ kappa / dx`). At M7's
+  `tau ~ 3` a lower `v_red` does not reduce it.
+- **Steady-state anchor** (source `Q0 psi`, default variant): steady-state rate vs decay rate
+  -0.8% / +3.2% (`kappa_perp = 0`, 32 / 64 per unit), -0.5% / +0.15% (`kappa_perp = 1e-2`). The
+  decay rate is the published steady-state measure.
+- **Finding: the monotonicity guard misfires on smooth extrema in thick cells** (details in the
+  file docstring). MINMOD clips the `psi` extrema, the shape sensor reads the flat top as a step
+  (0.47 > onset 0.45) and raises `R` towards 1. Effect: the leak doubles at 16-32 cells per unit
+  length (3.3x with MC at 16), odd symmetry broken by 0.1-0.2 of `A` (round-off, ~1e-10, with the
+  guard off), rate drift 0.2; isotropic `kappa = 0.01`, `tau = 200` (smoke run): decay 4.6x too
+  fast (1.07x off). Production M7 runs guard off; the library default is guard on (D3). A fix
+  changes the scheme -> user decision.
+- Gates: antisymmetry <= 1e-9 (guard off; round-off up to 1.8e-10 after ~1e4 steps), rate drift
+  <= 0.05 at `kappa_perp > 0` (measured <= 1.3e-2); at `kappa_perp = 0` the leak is not a
+  single-mode decay (drift up to 0.34 for MC at 16 per unit, 0.13 for MINMOD field-aligned at 64;
+  projection residual 0.07-0.29), so the drift is printed only and the anchor checks the rate;
+  default `kappa_perp,num` decreasing with N; finest-pair order (registry, margin 0.15); every
+  value within 1.5x of the registry; anchor mismatch <= 10%; gas at rest (< 0.1 cell).
+- Launch note: the scripts' own `autocvd` call overrides a UUID pin in `CUDA_VISIBLE_DEVICES`
+  (four pinned jobs landed on one GPU); launch through a wrapper that no-ops `autocvd`.
+- Verified: gating rerun (no `CR_UPDATE_BASELINES`, `gate_*.log`) passes all four tests and
+  reproduces every registered value exactly (74 metrics).
 
 ### 2026-10-12: A4.4 steady-state diffusion with a source -- done (uncommitted)
 

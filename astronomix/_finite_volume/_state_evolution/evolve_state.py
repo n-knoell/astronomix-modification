@@ -17,6 +17,7 @@ from jaxtyping import Array, Float
 # jax
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.experimental import checkify
 
 # astronomix constants
@@ -60,14 +61,17 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_sources import (
     cr_flux_relaxation_etd2rk,
     cr_flux_relaxation_update,
 )
+from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import CR_LIMITER_GAS
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
     cr_flux_realizability_cap,
+    cr_flux_rows,
     cr_monotonicity_guard,
     cr_total_pressure_flux,
     cr_wave_speed_factors,
 )
 from astronomix._stencil_operations._stencil_operations import _stencil_add
 from astronomix._geometry.geometric_terms import _pressure_nozzling_source
+from astronomix._finite_volume._state_evolution.limited_gradients import _calculate_limited_gradients
 from astronomix._finite_volume._state_evolution.reconstruction import (
     _reconstruct_at_interface_split,
     _reconstruct_at_interface_unsplit,
@@ -703,6 +707,47 @@ def _evolve_gas_state_split(
 # -------------------------------------------------------------
 
 
+def _cr_rows_own_reconstruction(config: SimulationConfig) -> bool:
+    """Whether the CR rows get their own limiter (CosmicRayGreyConfig.cr_limiter,
+    cr_guard_minmod_blend) instead of the gas reconstruction."""
+    cr_config = config.cosmic_ray_grey_config
+    return cr_config.cr_limiter != CR_LIMITER_GAS or cr_config.cr_guard_minmod_blend
+
+
+def _reconstruct_cr_rows(
+    primitive_state,
+    primitives_left_interface,
+    primitives_right_interface,
+    cr_guard,
+    config: SimulationConfig,
+    helper_data: HelperData,
+    registered_variables: RegisteredVariables,
+    axis: int,
+):
+    """Replace the CR rows (e_cr, F_cr) of the interface states by a
+    reconstruction with the CR limiter, blended towards MINMOD in guarded
+    cells with cr_guard_minmod_blend (same piecewise-linear reconstruction as
+    _reconstruct_at_interface_unsplit_single)."""
+    cr_config = config.cosmic_ray_grey_config
+    rows = np.array((registered_variables.cosmic_ray_e_index,) + cr_flux_rows(registered_variables))
+    cr_state = primitive_state[rows]
+    limiter = config.limiter if cr_config.cr_limiter == CR_LIMITER_GAS else cr_config.cr_limiter
+    gradients = _calculate_limited_gradients(
+        cr_state, config._replace(limiter=limiter), helper_data, axis=axis
+    )
+    if cr_config.cr_guard_minmod_blend and limiter != MINMOD:
+        minmod_gradients = _calculate_limited_gradients(
+            cr_state, config._replace(limiter=MINMOD), helper_data, axis=axis
+        )
+        gradients = gradients + cr_guard * (minmod_gradients - gradients)
+    differences = gradients * config.grid_spacing / 2
+    primitives_left_interface = primitives_left_interface.at[rows].set(
+        jnp.roll(cr_state + differences, shift=1, axis=axis)
+    )
+    primitives_right_interface = primitives_right_interface.at[rows].set(cr_state - differences)
+    return primitives_left_interface, primitives_right_interface
+
+
 # @jaxtyped(typechecker=typechecker)
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
 def _evolve_gas_state_unsplit_inner(
@@ -781,7 +826,9 @@ def _evolve_gas_state_unsplit_inner(
     # applied to the CR rows' wave-speed reduction on every axis below.
     if cr_wave_speed_factors is not None:
         cr_guard = cr_monotonicity_guard(
-            primitive_state[registered_variables.cosmic_ray_e_index], params
+            primitive_state[registered_variables.cosmic_ray_e_index],
+            params,
+            config.cosmic_ray_grey_config.cr_guard_wide_sensor,
         )
 
     # in case of the van albada pp limiter, the limited
@@ -840,6 +887,19 @@ def _evolve_gas_state_unsplit_inner(
                 _reconstruct_at_interface_unsplit_single(
                     primitive_state, config, helper_data, axis
                 )
+            )
+
+        # Grey-CR rows with their own limiter (cr_limiter, cr_guard_minmod_blend).
+        if cr_wave_speed_factors is not None and _cr_rows_own_reconstruction(config):
+            primitives_left_interface, primitives_right_interface = _reconstruct_cr_rows(
+                primitive_state,
+                primitives_left_interface,
+                primitives_right_interface,
+                cr_guard,
+                config,
+                helper_data,
+                registered_variables,
+                axis,
             )
 
         # Grey-CR realizability cap on the reconstructed interface states

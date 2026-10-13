@@ -182,6 +182,7 @@ def _steady_run(
             grey_cosmic_rays=True,
             diffusive_relaxation=True,
             flux_relaxation_integrator=integrator,
+            cr_limiter=limiter,
         ),
     )
     registered_variables = get_registered_variables(config)

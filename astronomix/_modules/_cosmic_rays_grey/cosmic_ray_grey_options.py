@@ -63,6 +63,33 @@ CR_RELAXATION_STAGEWISE_IMPLICIT = 0
 #: relaxation itself, exact diffusive fixed point, L-stable.
 CR_RELAXATION_ETD2RK = 1
 
+#: CosmicRayGreyConfig.cr_wave_speed_model (anisotropic_transport only): the
+#: optical-depth reduction R of the CR rows' HLL wave speed on a face with
+#: normal n (cr_grey_transport.cr_wave_speed_factors). Experimental variants
+#: for the Phase A test A3.1 (PROGRESS_PHASEA.md 2026-10-12); the default is
+#: the production scheme.
+
+#: R(n . K . n), the face-normal diffusivity kappa_par b_n^2 + kappa_perp
+#: (1 - b_n^2) (default; validated by cr_diffusion_rate.py T2c).
+CR_WAVE_SPEED_FACE_NORMAL = 0
+
+#: sqrt(b_n^2 R(kappa_par)^2 + (1 - b_n^2) R(kappa_perp)^2): the field-aligned
+#: speeds (R_par, R_perp, R_perp) seen along n, a rotation-invariant form of
+#: Athena++'s CR module (Jiang & Oh 2018), which rotates the vector
+#: (R_par, R_perp, R_perp) into the lab frame; ~|b_n| R(kappa_par) at
+#: kappa_perp = 0.
+CR_WAVE_SPEED_FIELD_ALIGNED = 1
+
+#: as CR_WAVE_SPEED_FIELD_ALIGNED with R_par = 1: no optical-depth reduction
+#: along B, |b_n| at kappa_perp = 0 (Thomas, Pfrommer & Pakmor 2021, eq. 44).
+CR_WAVE_SPEED_PROJECTED = 2
+
+#: CosmicRayGreyConfig.cr_limiter: reconstruct the CR rows (e_cr, F_cr) with
+#: the gas limiter SimulationConfig.limiter. A limiter constant of
+#: simulation_config (MINMOD, DOUBLE_MINMOD, VAN_LEER) instead applies to the CR rows
+#: only, the gas keeps SimulationConfig.limiter.
+CR_LIMITER_GAS = -1
+
 
 class CosmicRayGreyConfig(NamedTuple):
 
@@ -110,6 +137,41 @@ class CosmicRayGreyConfig(NamedTuple):
     #: first-order per-stage backward Euler used before). See the constants
     #: above.
     flux_relaxation_integrator: int = CR_RELAXATION_ETD2RK
+
+    #: optical-depth reduction of the CR rows' HLL wave speed with
+    #: anisotropic_transport: CR_WAVE_SPEED_FACE_NORMAL (default),
+    #: CR_WAVE_SPEED_FIELD_ALIGNED or CR_WAVE_SPEED_PROJECTED (experimental,
+    #: Phase A test A3.1). See the constants above.
+    cr_wave_speed_model: int = CR_WAVE_SPEED_FACE_NORMAL
+
+    #: slope limiter of the CR rows (e_cr, F_cr): VAN_LEER (default),
+    #: DOUBLE_MINMOD (MC), MINMOD, or CR_LIMITER_GAS (the gas limiter
+    #: SimulationConfig.limiter, the behaviour until 2026-10-12). The gas
+    #: always keeps SimulationConfig.limiter. Acts with diffusive_relaxation
+    #: (unsplit FV RK2); without it the CR rows use the gas limiter. Van Leer
+    #: is what Athena++ (Jiang & Oh 2018) and RAMSES (Rosdahl et al. 2025) use
+    #: for two-moment CRs. Phase A (PROGRESS_PHASEA.md 2026-10-13), against
+    #: MINMOD: cross-field leak 3-5x lower on the S&H ring, 6-8x on Sovinec,
+    #: with the ring as monotone as before. MC leaks another 1.5-3x less but
+    #: leaves a smooth ~1e-3 undershoot in the ring tests that the guard cannot
+    #: see. The literal 6 is simulation_config.VAN_LEER (not imported:
+    #: circular import).
+    cr_limiter: int = 6
+
+    #: in cells the monotonicity guard marks (weight g,
+    #: cr_grey_transport.cr_monotonicity_guard), blend the CR rows' limited
+    #: slopes towards MINMOD: s = s_lim + g (s_minmod - s_lim). No effect with
+    #: a MINMOD CR limiter. With van Leer it cuts the ring undershoot from
+    #: 5e-5 to 7e-6 of the jump (N = 200); with MC from 2.4e-3 to 1.1e-3.
+    cr_guard_minmod_blend: bool = True
+
+    #: monotonicity-guard shape sensor over five faces instead of three:
+    #: psi = |d_c| / (|d_ll| + |d_l| + |d_c| + |d_r| + |d_rr|). A flattened
+    #: smooth extremum (d_l ~ 0, d_c ~ d_r ~ -d_ll) then reads ~0.25 instead
+    #: of 0.5 (the A3.1 misfire: guard on doubled the Sovinec leak and broke
+    #: its symmetry); one- and two-cell steps read 1 and 0.5 as before.
+    #: False is the three-face sensor used until 2026-10-12.
+    cr_guard_wide_sensor: bool = True
 
     #: turn on diffusive shock acceleration: inject cosmic-ray energy into
     #: e_cr at shocks detected by the Pfrommer shock finder (PR #4,
@@ -257,7 +319,12 @@ class CosmicRayGreyParams(NamedTuple):
     #: compares the e_cr jump across the face with the jumps across its two
     #: neighbouring faces: <= 1/3 on any linear or exponential profile, ~0.2 at
     #: a smooth extremum, <= 0.38 for a Gaussian with 2.6 cells per sigma, 0.5
-    #: for a step smeared over two cells and 1 for a one-cell step. The
+    #: for a step smeared over two cells and 1 for a one-cell step. With
+    #: CosmicRayGreyConfig.cr_guard_wide_sensor (default) the sum runs over
+    #: five faces: 1/5 on a linear profile, ~0.25 at a flattened extremum, 0.5
+    #: and 1 for the two- and one-cell steps. 0.35 / 0.65 changes the ring
+    #: undershoot by < 5%; 0.30 / 0.60 makes the guard misfire on the Sovinec
+    #: test again (PROGRESS_PHASEA.md 2026-10-13). The
     #: optical-depth reduction R of the Rusanov dissipation is raised toward 1
     #: (full dissipation) as psi goes from onset to full (C1 smoothstep): a
     #: flux-limiter blend of the low- and full-dissipation fluxes (Sweby 1984;

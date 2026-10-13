@@ -1931,7 +1931,59 @@ the stage-wise backward Euler stays available as `CR_RELAXATION_STAGEWISE_IMPLIC
   - Not rerun: the stratified-ISM production setups M5-M7 (pytests/stratified_ism). Their
     results predate this change.
 
-## Decided: CR diffusion accuracy and the slope limiter (2026-10-11, Phase A A4.2; option a 2026-10-12)
+## Decided: CR diffusion accuracy and the slope limiter (2026-10-11, Phase A A4.2; option a 2026-10-12; superseded 2026-10-13: van Leer on the CR rows)
+
+**Status (2026-10-13, user decisions): van Leer on the CR rows, with the monotonicity guard
+retuned.** This is structurally option b below: the gas keeps `SimulationConfig.limiter`.
+- **Trigger:** the side run asked for in the 2026-10-12 status below. MC on the CR rows cut
+  `kappa_perp,num` 16-94x in A3.1 (Sovinec) and 4-8x on the S&H ring 3a
+  (`PROGRESS_PHASEA.md` 2026-10-12). The user chose to switch ("option c": MC + guard retune).
+- **MC rejected after prototyping.** It leaves a smooth undershoot of ~1e-3 of the jump in
+  the ring tests (1.4e-3 / 1.1e-3 / 1.1e-3 at N = 50 / 100 / 200; e_cr stays positive).
+  - The undershoot sits inside the ring (r ~ 0.3 at N = 100), is at its level by t ~ 4 and
+    then stays.
+  - It is smooth, so no shape sensor sees it, and lower sensor thresholds do not reduce it.
+  - The 1e-3 gate was briefly relaxed to 2e-3 for MC, then restored.
+- **Literature check, then van Leer.**
+  - Athena++ (Jiang & Oh 2018, Sec. 4.1: per-direction van Leer "is enough to ensure the
+    entropy condition" in their ring test) and RAMSES (Rosdahl et al. 2025) both use van
+    Leer for two-moment CRs.
+  - Prototype against MINMOD, i.e. the guard-off old scheme (`guard_c/logs/p4_*.log`):
+    - ring undershoot <= 7e-6 of the jump;
+    - S&H 3a `kappa_perp,num / kappa_par` 1.5e-2 / 5.4e-3 / 1.7e-3 at N = 50 / 100 / 200
+      (MINMOD 4.1e-2 / 2.0e-2 / 8.7e-3; MC 9.7e-3 / 3.3e-3 / 1.1e-3);
+    - Sovinec 3.4e-3 / 1.1e-3 at 16 / 32 cells per unit (MINMOD 2.0e-2 / 8.9e-3);
+    - JO ring L1 1.33e-2 at N = 64 (MINMOD 1.99e-2).
+  - Alternatives judged not worth the effort for this problem:
+    - S&H 2007's transverse-flux limiting: in the two-moment scheme the transverse coupling
+      sits in the local F_cr relaxation; no two-moment adaptation known.
+    - FCT / algebraic flux correction (Zalesak 1979; Kuzmin, Shashkov & Svyatskiy 2009):
+      bounds guaranteed, but days of work and non-smooth.
+    - A linear hyperbolic DMP scheme (arXiv:2508.09509): bounds come from extra dissipation,
+      i.e. the leak.
+- **Implementation** (`CosmicRayGreyConfig`, all three on by default):
+  - `cr_limiter`: default `VAN_LEER` (new limiter constant 6, `limiters._van_leer`); also
+    `DOUBLE_MINMOD`, `MINMOD`, or `CR_LIMITER_GAS` (the gas limiter, the behaviour until
+    2026-10-12).
+    - The CR rows (e_cr, F_cr) are re-reconstructed with it after the gas reconstruction,
+      before the realizability cap (`evolve_state._reconstruct_cr_rows`).
+    - Only with `diffusive_relaxation` (unsplit RK2); otherwise the CR rows keep the gas
+      limiter.
+  - `cr_guard_wide_sensor`: the guard's shape sensor sums five face jumps instead of three. A
+    flattened smooth extremum then reads ~0.25 instead of ~0.5.
+    - The three-face sensor fired there in thick cells. In A3.1 it doubled the Sovinec leak
+      and broke the odd symmetry (0.1-0.3 of the mode amplitude).
+    - With the five-face sensor, guard-on equals guard-off to round-off (antisymmetry 1e-10).
+  - `cr_guard_minmod_blend`: in guarded cells the CR slopes are blended towards MINMOD with the
+    guard weight, `s = s_lim + g (s_minmod - s_lim)`. Ring undershoot with van Leer: 5e-5 ->
+    7e-6 of the jump at N = 200.
+  - Sensor thresholds unchanged (0.45 / 0.75). With MC, 0.30 / 0.60 brought the Sovinec misfire
+    back.
+- **Known limitation:** a 450-time-unit steady-state Sovinec run at `kappa_perp = 0` with MC
+  and the guard on lost the odd symmetry (0.12 of the amplitude). Not chased: every run with
+  `kappa_perp = 0.01` (the production-like case) stays symmetric to 1e-10.
+- **Logs:** prototypes in `/export/scratch/nknoell/phaseA/guard_c/logs/p{1,2,3,4}_*.log`.
+  Regression and re-baseline: `PROGRESS_PHASEA.md` 2026-10-13.
 
 **Status (2026-10-12, user decision): option a -- MINMOD kept, limitation documented.** Relative
 to the RMS of the diffusing bump the MINMOD error is 0.009% at v_red 8 / N 2048 (14x below the

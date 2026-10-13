@@ -47,6 +47,14 @@ def _double_minmod(a, b):
     return jnp.where(a * b > 0, _minmod3((a + b) / 2, 2 * a, 2 * b), 0.0)
 
 
+def _van_leer(a, b):
+    """van Leer (1974) limiter: the harmonic mean 2ab / (a + b) of the one-sided
+    differences, zero when they differ in sign (the inner where keeps the
+    division finite there, also for the gradient)."""
+    ab = a * b
+    return jnp.where(ab > 0, 2 * ab / jnp.where(ab > 0, a + b, 1.0), 0.0)
+
+
 @jax.jit
 def _maxmod(a, b):
     """Return the two-argument maxmod of ``a`` and ``b`` (zero on sign change)."""

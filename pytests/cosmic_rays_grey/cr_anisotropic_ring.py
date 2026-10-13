@@ -50,6 +50,10 @@ Status (2026-10-05, RTX 2080 Ti, ~55 min for the file).
 - **With the monotonicity guard** (``cr_grey_transport.cr_monotonicity_guard``, chosen by the
   user as option B): 3a, 3b and 3c pass. 3b's gate is in units of the jump like 3a's (user
   decision 2026-10-05); its worst case is 1.1e-5 of the jump at N = 100.
+- **van Leer on the CR rows** (2026-10-13, ``cr_limiter`` default; DESIGN.md "Decided: CR
+  diffusion accuracy and the slope limiter"): 3a, 3b and 3c pass with undershoots <= 1.4e-5
+  of the jump and 2.6-5.4x less cross-field numerical diffusion than MINMOD (~70 min for the
+  file).
 
 Numbers in each test's docstring (dated); the values the tests gate on are in
 ``baselines.json`` (``cr_baselines.py``, Phase A plan X1/X2). The design history is in DESIGN.md
@@ -294,7 +298,11 @@ def test_cr_ring_sharma_hammett(
       (``cr_grey_transport.cr_monotonicity_guard``) is a smooth,
       differentiable switch, as the implementation plan asks for, so it cannot
       be exactly monotone. The gate was 1e-6 relative before the guard existed
-      and was restated after the first guarded run (2026-10-05).
+      and was restated after the first guarded run (2026-10-05). With the van
+      Leer CR limiter (default since 2026-10-13) it stays at <= 1.4e-5. MC
+      (``cr_limiter = DOUBLE_MINMOD``) would fail this gate: it leaves a
+      smooth undershoot of ~1e-3 of the jump inside the ring that the guard
+      cannot see (PROGRESS_PHASEA.md 2026-10-13).
     - ``kappa_perp,num / kappa_par`` (S&H eq. 39) decreases under refinement, and at every N
       stays within 1.5x of ``baselines.json``; so does the L1 error at the finest N. (An
       absolute bound against S&H's rows is A3.3 / decision D1, not yet set.)
@@ -305,7 +313,16 @@ def test_cr_ring_sharma_hammett(
     (the FLASH scheme of Yang et al. 2012, which Girichidis et al. 2016 build
     on), symmetric-MC and van Leer rows.
 
-    Measured (2026-10-05), N = 50 / 100 / 200 / 400, with the guard:
+    Measured (2026-10-13), N = 50 / 100 / 200 / 400, van Leer CR limiter (default):
+    - Undershoot 0 / 5.0e-6 / 6.5e-6 / 1.4e-5 of the jump. PASSES.
+    - ``kappa_perp,num / kappa_par`` = 0.0154 / 0.0054 / 0.0017 / 0.00061
+      (order 1.5 / 1.7 / 1.5): 1.5-2.2x below S&H's van Leer row, between
+      their van Leer and asymmetric-MC rows.
+    - L1 0.038 / 0.029 / 0.018 / 0.010; ``e_max`` 10.066 / 10.093 / 10.129 /
+      10.162. Leaked fraction 0.61 / 0.47 / 0.29 / 0.16. Gas: ``max |u| <=
+      1.9e-9``.
+
+    Measured (2026-10-05), N = 50 / 100 / 200 / 400, MINMOD with the guard:
     - Undershoot 0 / 1.1e-5 / 0 / 0 of the jump. PASSES.
     - ``kappa_perp,num / kappa_par`` = 0.0408 / 0.0198 / 0.0086 / 0.0033
       (order 1.0 / 1.2 / 1.4). S&H asymmetric MC: 0.0127 / 0.0040 / 0.0015 /
@@ -391,7 +408,11 @@ def test_cr_ring_positivity(
     above the ``minimum_e_cr = 1e-10`` clamp, so the clamp cannot hide an
     undershoot.
 
-    Measured (2026-10-05), with the guard: ``e_min`` = 0.099890 at N = 100
+    Measured (2026-10-13), van Leer CR limiter (default): ``e_min`` =
+    0.099953 at N = 100 (t = 0.45; 4.7e-6 of the jump) and 0.099934 at N = 200
+    (t = 0.21; 6.7e-6): passes.
+
+    Measured (2026-10-05), MINMOD with the guard: ``e_min`` = 0.099890 at N = 100
     (t = 0.098; 1.1e-5 of the jump, 1.1e-3 of the background) and 0.100000 at
     N = 200: passes. Without the guard: -0.091 and
     -0.126 (``e_cr`` negative; the ``minimum_e_cr`` floor was then applied only
@@ -481,6 +502,9 @@ def test_cr_ring_flux_cap_alone(
     - With the ETD2RK F_cr relaxation (2026-10-10; values above are the
       stage-wise backward Euler): 3a ``e_min`` 9.961036 / 9.953968, 3b
       -0.00265 / -0.00412; the other ring tests match to 3-4 digits.
+    - With the van Leer CR limiter (2026-10-13; guard off means unblended van
+      Leer): 3a ``e_min`` 9.955594 / 9.937444 (2.2e-2 / 3.1e-2 of the jump),
+      3b -0.0044 / -0.0085. Still fails, as expected.
 
     Args:
         resolutions: The grid sizes.
@@ -533,7 +557,10 @@ def test_cr_ring_jiang_oh(resolutions: tuple = JO_RESOLUTIONS):
     error measures parallel accuracy and the smearing of those edges by
     numerical perpendicular diffusion together.
 
-    Measured (2026-10-05): L1 = 1.99e-2 / 1.39e-2 / 1.02e-2 at N = 64 / 128 /
+    Measured (2026-10-13), van Leer CR limiter (default): L1 = 1.33e-2 /
+    8.87e-3 / 6.21e-3 at N = 64 / 128 / 256, orders 0.58 / 0.51. Passes.
+
+    Measured (2026-10-05), MINMOD: L1 = 1.99e-2 / 1.39e-2 / 1.02e-2 at N = 64 / 128 /
     256 with the guard (1.82e-2 / 1.35e-2 / 1.01e-2 without); order ~0.5, set
     by the sharp radial edges of the exact solution. Passes.
 

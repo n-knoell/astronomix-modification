@@ -59,6 +59,8 @@ pairwise 1.95 / 1.78 / 0.94.
 - 2026-10-10, ETD2RK F_cr relaxation (DESIGN.md "F_cr relaxation time accuracy: ETD2RK"):
   L2 errors (this test's print) 1.67e-3 / 5.22e-4 / 1.81e-4 / 1.19e-4, order (N <= 512) 1.60;
   the floor is unchanged (it is the model, ``cr_telegrapher_reference.py``).
+- 2026-10-13, van Leer on the CR rows (``cr_limiter`` default): 4.71e-4 / 1.62e-4 / 1.14e-4 /
+  1.09e-4; the floor is reached already at N = 512.
 - Before step 2 the errors were 8.9e-3 -> 4.2e-3 -> 2.0e-3 -> 9.9e-4 (order
   ~1.0-1.1). That first order was the operator-split relaxation's
   ``+nu dt / 2`` bias in D (``nu dt`` scales with ``dx`` in these

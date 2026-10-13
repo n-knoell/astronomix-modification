@@ -37,6 +37,12 @@ now gate on (within 1.5x, with small absolute floors for round-off-sized metrics
 in ``baselines.json`` (``cr_baselines.py``, Phase A plan X1/X2), next to the fixed
 physics tolerances of each test.
 
+Since 2026-10-13 the CR rows use the van Leer limiter (``cr_limiter`` default; DESIGN.md
+"Decided: CR diffusion accuracy and the slope limiter"); the docstring numbers before that
+are MINMOD. At the finest N the numerical diffusivities dropped ~10x: T1 ``|D/kappa - 1|``
+1.2e-3 -> 2.1e-4 (N = 1024), stiff 1.8e-2 -> 4.7e-4; T2c ``D_perp`` at 45 deg 1.5e-2 -> 1.0e-3;
+T3 diagonal ``D_perp`` 1.6e-2 -> 1.4e-3 (N = 128).
+
 See astronomix/_modules/_cosmic_rays_grey/DESIGN.md.
 """
 
@@ -802,6 +808,11 @@ def test_cr_anisotropic_3d(
     1.0601 / 1.0313 / 1.0157 and ``D_perp`` = 0.0599 / 0.0313 / 0.0157 kappa,
     i.e. one isotropic numerical diffusivity on top of kappa, converging at
     first order over N = 32-128; ``D_perp / (v_red dx)`` = 0.0050 at N = 128.
+
+    Measured (2026-10-13, van Leer CR limiter): in-plane 3D vs. 2D within 1e-4 kappa (D_par
+    1.0307 / 1.0083 / 1.0021, D_perp 0.0200 / 0.0054 / 0.0014); diagonal D_par 1.0174 /
+    1.0048 / 1.0013, D_perp 0.0187 / 0.0051 / 0.0014 (order ~1.9); ``D_perp / (v_red dx)`` =
+    0.0004 at N = 128.
     """
     rows = []
     for n in RESOLUTIONS_3D:

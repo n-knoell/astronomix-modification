@@ -17,7 +17,10 @@ Expected and found (HLL + minmod, ``C_cfl = 0.4``; first measured 2026-10-09, se
   centroid stays put to a few 0.01 dx, ``F_cr`` exactly 0, no new extrema, gas undisturbed.
 - 1D top-hat (width 0.2): L1 order ~2/3 (the expected value for a discontinuity), no new
   extrema.
-- Relaxation variant: the same errors to 4 digits; ``F_cr`` stays small.
+- Relaxation variant: the same errors to 4 digits; ``F_cr`` stays small. Since 2026-10-13
+  its CR rows use van Leer (``cr_limiter`` default; the gas keeps MINMOD): L1 at N = 512
+  7.9e-4 (Gaussian, order 1.69) and 1.40e-2 (top-hat, order 0.70) instead of 2.1e-3 / 2.2e-2;
+  top-hat ``min`` -7.4e-10 of the amplitude, inside the 1e-9 bound.
 - 3D (diagonal ``u0 = (1, 1, 1)``, Gaussian sigma = 0.1): order ~1.55, round to 1e-4, centroid
   within a few 0.01 cells.
 

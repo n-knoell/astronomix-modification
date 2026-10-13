@@ -30,6 +30,7 @@ from astronomix.option_classes.simulation_config import (
     STATE_TYPE_ALTERED,
     VAN_ALBADA,
     VAN_ALBADA_PP,
+    VAN_LEER,
 )
 
 # astronomix containers
@@ -38,7 +39,7 @@ from astronomix.option_classes.simulation_config import SimulationConfig
 
 # astronomix functions
 from astronomix._stencil_operations._stencil_operations import _stencil_add
-from astronomix._finite_volume._state_evolution.limiters import _double_minmod, _minmod, _superbee, _van_albada_limiter
+from astronomix._finite_volume._state_evolution.limiters import _double_minmod, _minmod, _superbee, _van_albada_limiter, _van_leer
 
 
 # @jaxtyped(typechecker=typechecker)
@@ -86,6 +87,8 @@ def _calculate_limited_gradients(
         limited_gradients = _superbee(backward_diff, forward_diff)
     elif config.limiter == DOUBLE_MINMOD:
         limited_gradients = _double_minmod(backward_diff, forward_diff)
+    elif config.limiter == VAN_LEER:
+        limited_gradients = _van_leer(backward_diff, forward_diff)
     elif config.limiter == VAN_ALBADA or config.limiter == VAN_ALBADA_PP:
         # van Albada limiter
         limited_gradients = _van_albada_limiter(

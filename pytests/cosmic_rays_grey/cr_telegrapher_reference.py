@@ -37,7 +37,10 @@ number 18.4), float64, static heavy gas (``rho = 1e4``, ``P = 1e-4``,
    relaxation used until 2026-10-10 (``CR_RELAXATION_STAGEWISE_IMPLICIT``), on m = 24.
 6. A4.2 (``test_vred_scan_*``): item 4's Gaussian at ``v_red`` = 4 ... 64 and N = 128 ...
    8192, against the diffusion Green's function and the telegrapher reference; the
-   default MINMOD limiter, plus MC (``DOUBLE_MINMOD``) for comparison.
+   MINMOD limiter, plus MC (``DOUBLE_MINMOD``) for comparison. Every run sets
+   ``cr_limiter`` to the gas limiter, so the comparison holds although the CR rows use
+   van Leer by default since 2026-10-13 (DESIGN.md "Decided: CR diffusion accuracy and the
+   slope limiter").
 
 All runs use the default ``flux_relaxation_integrator`` (ETD2RK, since 2026-10-10)
 unless stated.
@@ -107,7 +110,7 @@ depth):
     telegrapher reference (4.2e-6 / 7.9e-6 / 1.5e-5 / 3.0e-5) grows with ``v_red`` and
     overtakes the falling floor near ``v_red ~ 16``. This combination is also what made item
     4's floor look like ``v_red^-1`` (plan Sec. 4.3 step 3, now closed).
-- **Scheme error with MINMOD (the default and the production limiter):**
+- **Scheme error with MINMOD (the CR-row default until 2026-10-12):**
   - It is spatial: ``C_cfl`` 0.1 and 0.4 agree to < 1% (v_red 8 and 32, N 128 ... 8192).
   - Optically thin cells (``tau << 1``): second order, ``~ v_red^1`` at fixed N (slope 0.956 at
     N = 8192: 2.6e-7 / 5.0e-7 / 9.7e-7 / 1.9e-6).
@@ -284,6 +287,7 @@ def _run(
             grey_cosmic_rays=True,
             diffusive_relaxation=True,
             flux_relaxation_integrator=integrator,
+            cr_limiter=limiter,
         ),
     )
     registered_variables = get_registered_variables(config)
@@ -721,7 +725,8 @@ def test_vred_scan_limiter(min_order: float = 1.8, min_gain: float = 5.0, max_v_
     """The MINMOD dependence pinned down: with the MC limiter (``DOUBLE_MINMOD``,
     central slopes, O(dx^3) face jumps) the scheme error is second order also
     in optically thick cells and nearly independent of ``v_red`` (the plan's
-    A4.2 expectation). Documents the alternative; the default stays MINMOD.
+    A4.2 expectation). Documents the alternative; MC was not adopted (it leaves an
+    undershoot in the ring test), the CR rows use van Leer since 2026-10-13.
 
     Args:
         min_order: Minimum pairwise order at ``v_red = 64``, N = 256 -> 1024.
