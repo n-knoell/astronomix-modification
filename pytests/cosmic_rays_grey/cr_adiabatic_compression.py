@@ -57,6 +57,9 @@ max invariant error (inner 80%) 9.8e-4 [1.52e-3], max rho/rho0 1.145 [1.167] (cu
 values: ``baselines.json``, ``cr_baselines.py``). The wave trains
 at x ~ 0.3-0.4 / 0.6-0.7 are gone: they came from the operator-split coupling, not from the
 gas scheme or the boundaries (``cr_adiabatic_coupling.py``, A2.3: gamma = 4/3 hydro shows none).
+
+**Re-measured 2026-10-13 with HLLC + hybrid CR entropy, the grey-CR default** (DESIGN.md
+"Decided: CR shock partition"): max invariant error 8.8e-4, max rho/rho0 1.153.
 """
 
 # ==== GPU selection ====

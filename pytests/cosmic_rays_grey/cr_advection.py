@@ -42,7 +42,8 @@ Speed (re-measured 2026-10-12, float64 scratch runs): ``int F dx`` is conserved,
 gas coupling the first moment moves at exactly ``lambda``. At ``amp = 1e-5`` it ends 1.4e-3
 cells from ``x0`` after 512 cells of travel (speed exact to ~3e-6). At this test's ``amp =
 1e-3`` the CR pressure moves the gas, and the coupling (second order in ``amp``) leaves it
--0.074 cells behind (1.4e-4 of the distance; float32 gives the same). That is tracked against
+-0.074 cells behind (1.4e-4 of the distance; float32 gives the same; -0.078 with the
+HLLC + hybrid CR entropy default of 2026-10-13). That is tracked against
 the baseline to +- 0.02 cells. (``amp = 1e-7`` is unusable: the ``minimum_e_cr = 1e-10`` floor
 then fills the empty background.)
 

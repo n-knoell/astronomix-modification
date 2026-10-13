@@ -2035,7 +2035,166 @@ matters for perpendicular leakage).
     shock tests must be re-checked: less dissipative slopes can bring back the undershoots the
     guard was built for.
 
-## Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note 2026-10-08, implemented opt-in, default off)
+## Decided: CR shock partition, HLLC + hybrid CR entropy as the CR-run default (Phase A plan D2; design note 2026-10-08; hybrid 2026-10-13)
+
+**Status (2026-10-13, user decision): HLLC + hybrid is the default for grey-CR runs.**
+- **Mechanism:** `simulation_config.resolve_auto_defaults`, called by `finalize_config` and
+  `get_registered_variables`.
+  - `SimulationConfig.riemann_solver` defaults to `RIEMANN_SOLVER_AUTO`: HLLC (with the
+    total-pressure flux, P2) for finite-volume, Cartesian, unsplit runs with grey CRs, HLL
+    everywhere else. Runs without CRs are unchanged.
+  - `CosmicRayGreyConfig.cr_entropy` defaults to `None`: on wherever supported (FV,
+    Cartesian, unsplit RK2, HLL/HLLC, no streaming), off elsewhere.
+  - `cr_entropy_transfer` defaults to `CR_ENTROPY_TRANSFER_SHOCKS`, the hybrid.
+  - Explicit settings always win; an explicit `cr_entropy=True` where unsupported raises.
+- **Why:**
+  - Post-shock `K_cr` error ~1e-4 instead of 0.4-13.6%.
+  - Exact energy, contacts and mixing.
+  - The full grey-CR regression passes (refined plan and results below; PROGRESS_PHASEA.md
+    2026-10-13).
+- **Known open points:**
+  - M7 is not validated with it. The M7 script sets `riemann_solver=HLLC` and
+    `cr_entropy=False` explicitly, so M7 is unchanged. M5/M6 and the frozen-field probe use
+    the defaults and would change.
+  - HLLC + P2 is not well-balanced with gravity (open option a/b, "Resolved: total-pressure
+    HLLC flux").
+  - A2.3a two-fluid vs gamma = 4/3 hydro converges at order 1.70 with HLLC in both runs
+    (HLL: 1.85), though the gap is 20x smaller; two-fluid vs exact keeps 1.87. Not the
+    hybrid (identical with `cr_entropy=False`). Vs-hydro gate lowered to 1.6 (user).
+  - Item 9 is less accurate under the default (within gates): Test A 0.17-0.22% ->
+    0.30-0.53%, Test B du/dx 24% -> 33% (gate 40%). HLLC and the hybrid not separated.
+  - A2.2 linear wave at `C_cfl = 0.8`: up to 1.45e-3 eps (HLL <= 1.1e-3).
+  - The Phase D inference tests pass under the default.
+- **Controls:** the energy-scheme / HLL tests (A6.1-A6.3 control curves, A6.5, the global
+  mode's cold rarefaction, the A1.3 HLL comparison) set their scheme explicitly.
+
+Earlier title: "Open: conservative CR entropy at shocks (Phase A plan D2, option a; design note
+2026-10-08, implemented opt-in, default off)".
+
+
+**Refined plan (2026-10-13, after a second literature check; not implemented).**
+
+*What the literature adds.*
+- **Gupta, Sharma & Mignone (2021, MNRAS 502, 2733):** the jump is non-unique for every
+  energy-based discretization. All methods agree only when the post-shock partition is
+  imposed in detected shock zones (their eq. 34, `w_cr = P_cr / (P_th + P_cr)`, total
+  `e_cr + e_th` per cell unchanged). Without that, they recommend "Et+Ecr (Unsplit-pdv)":
+  interface velocity and `P_cr` from the HLL state, signal speed slightly above the composite
+  sound speed. That method is insensitive to reconstruction, time stepping and CFL, but it is
+  not adiabatic. They argue that constant `K_cr` across a shock is not physically required
+  (DSA sets the CR fraction), and they report that "Et+Scr" (our global `cr_entropy`) breaks
+  pressure balance at contacts. Our HLLC + P2 (DESIGN.md "Resolved: total-pressure HLLC flux")
+  is their Unsplit-pdv family; A6.1 gives 0.42% there, against 1.27% with HLL. It was never
+  run on A6.2/A6.3 or across CFL and limiters.
+- **Semenov, Kravtsov & Diemer (2021, arXiv:2107.14240), Sec. 2.2-2.3, the complete scheme:**
+  - Non-thermal components always follow their entropy.
+  - The gas also follows its own entropy, except in shock zones, where `e_th = e_tot - e_kin - e_nt`.
+    Shock zones are found with "Riemann shocks" (Springel 2010): `M_R > 1.1` from the
+    star-state pressure jump, the shock speed above 0.1 of `|v|`, and dissipation above 1e-3
+    of `e_tot`.
+  - Exact energy conservation is given up.
+  - **Injection:** `e_diss = e_tot - e_kin - e_th(s_th) - e_nt(s_nt)` is exactly the shock
+    dissipation of the step, and a fraction `zeta` of it goes to the non-thermal component.
+    For `gamma_nt = 4/3` that under-injects by ~20%, because the injection changes the
+    compressibility across the smeared shock.
+  - Their energy-based CR error reaches ~20% for M >= 9 (ART).
+- **Weber, Thomas & Pfrommer (2023, MNRAS, arXiv:2205.12288), AREPO:**
+  - The entropy formulation is best for adiabatic CRs (`K_cr` exact). The energy formulation's
+    post-shock `K_cr` error saturates at ~2% (moving mesh) and ~7% in `P_cr` (static mesh,
+    M = 10), against our 12.9%.
+  - **With CR acceleration at the shock, the energy formulation is clearly better.** The
+    entropy formulation develops post-shock oscillations and a shock speed off by more than 10%
+    at N <~ 500 cells, because injected energy is converted into entropy.
+  - Their entropy variant has no energy transfer to the gas at all.
+  - In isolated-galaxy runs both formulations agree within astrophysical uncertainties.
+- **Pfrommer et al. (2017, MNRAS 465, 4500), AREPO:** energy formulation; the adiabatic term
+  comes from Gauss' theorem with the interface fluxes. DSA injects `zeta e_diss`, with
+  `e_diss = e_th2 + e_cr2 - (e_th1 + e_cr1 x^gamma)` from a ray-traced shock zone. That sum
+  does not depend on the partition error, so the spurious CR gain adds to `zeta e_diss` rather
+  than replacing it; our Phase B injection behaves the same way.
+- **Electron thermodynamics in GRMHD (Ressler et al. 2015, arXiv:1509.04717):** the same
+  construction as Semenov et al.'s injection. Heating per step is the difference between the
+  energy-evolved and entropy-advected gas states, and a prescribed fraction goes to the
+  electron entropy. It is established and robust, but it heats wherever numerical dissipation
+  acts, so for DSA it needs a shock mask.
+- **Path-conservative schemes** (Dal Maso, LeFloch & Murat; Pares 2006): they define a unique
+  jump by a chosen path, but they converge to the wrong solution at shocks (Abgrall & Karni
+  2010; Castro et al. 2008). Not pursued.
+- **RAMSES two-moment (Rosdahl et al. 2025) and Athena++ (JO18):** energy formulation, with
+  the work term through the interaction coefficient. Neither addresses the partition.
+
+*What this changes in our reading.*
+1. A shock where the CRs stay exactly adiabatic is a modelling choice, not physics: DSA sets
+   the post-shock CR fraction. The acceptance criterion should therefore be
+   **method-independent, with spurious CR energy well below the DSA injection, in particular
+   below the DSA threshold**, where KR13 injects nothing. Exact `K_cr` is a sufficient
+   condition, not a necessary one.
+2. Our energy-scheme error is 2-6x AREPO's, so part of it is our discretization, not the
+   formulation. HLLC + P2 cuts A6.1 3x.
+3. ~~The M7 verdicts point to a smooth-flow error of the energy scheme.~~ **Refuted by
+   step 2 (2026-10-13):** in 1D CR-dominated expansion, sub- and supersonic, the energy
+   scheme keeps `K_cr` to 1e-5 (second order). It is the advected `s_cr` that creates CR
+   energy when the grid mixes gas of different density (+1.7-4.3% after one crossing of a
+   10x contact; Jensen). Both entropy modes therefore carry a first-order mixing error. That
+   explains the M7 energy creation (shock-only) and the drain (global), and it makes
+   Semenov-complete (ii) unattractive on a static mesh with multiphase gas.
+
+*Plan.*
+- **Step 1 (measure, no code change; running 2026-10-13):** A6.1-A6.3 with HLLC + P2 at
+  `C_cfl` 0.1 / 0.4 / 0.8 and MINMOD / MC / van Leer; HLL with van Leer; HLLC with
+  `cr_entropy` shocks (compatibility). Logs in `/export/scratch/nknoell/phaseA/d2/logs`.
+- **Step 2 (diagnose, a test):** A2.1 homologous expansion, CR-dominated (`P_cr/P_th` ~ 100,
+  as in M7's halo), sub- and supersonic, HLL and HLLC + P2. Measure `K_cr` and `K_th` drift
+  against N. If the energy scheme's smooth-flow error does not converge, that is a separate
+  bug, and it should be fixed before D2 is decided, because it dominates M7.
+- **Step 3 (decide, user), with the numbers from steps 1-2:**
+  - **(i) Energy scheme, robust variant.** Applies if HLLC + P2 is method-insensitive and its
+    spurious CR energy is well below DSA levels at every M. Gupta's recommendation and
+    Weber's "energy is better with DSA"; no new row. It needs the P2 / gravity well-balancing
+    decision (option b) for M7, and the error is tracked as a documented budget for Phase B.
+  - **(ii) Semenov-complete entropy scheme.** Builds on the existing `cr_entropy` row and gas
+    `dual_energy`:
+    - CRs always from `s_cr`; gas from `s_th` outside shock zones, from the total energy
+      inside them.
+    - Shock zones from star-state "Riemann shocks", plus Semenov's two filters.
+    - Phase B injection either `zeta e_diss` from that difference or the existing finder.
+    - Costs: exact energy conservation (drift must be measured and bounded); Weber's
+      oscillation problem with injection must be tested on items 7/8 at low N; `e_th` is no
+      longer the energy-scheme value in smooth flow for any CR run.
+  - **(iii) Gupta's prescribed partition** in detected shock zones, with `w_cr` from DSA. This
+    is Phase B physics and needs a Mach-dependent `w_cr`. A fallback, and it combines with (i).
+- **Results of steps 1-2 and the hybrid prototype (2026-10-13; tables in
+  PROGRESS_PHASEA.md "D2 restarted"):**
+  - HLLC + P2 alone halves the energy-scheme error (M >= 10: 6-7%, spread 5.96-7.22% over
+    CFL and limiter); not enough for (i).
+  - **(iv) Hybrid, recommended:**
+    - energy scheme everywhere;
+    - in cells of the shock mask (Gupta et al. detector), `e_cr := e(s_cr)` with `s_cr`
+      re-synced from `e_cr` every step, the difference going to the gas.
+    - Exact energy, contacts and mixing as the energy scheme.
+    - Post-shock `K_cr` error <= 0.013% with HLLC + P2 and 0.15-0.41% with HLL, on all 11
+      tubes, for C_cfl 0.4-0.8 and MINMOD / MC.
+    - It is the current `CR_ENTROPY_TRANSFER_SHOCKS` with one change: outside the mask keep
+      `e_cr` instead of `e(s_cr)`.
+- **(iv) implemented as opt-in (user, 2026-10-13):** `cr_entropy=True`,
+  `cr_entropy_transfer=CR_ENTROPY_TRANSFER_SHOCKS`. The default stays the energy scheme.
+  - Code: the new `shock_cells` argument of `cr_grey_sources.cr_entropy_to_energy` (outside
+    the mask, `e_cr` and the gas keep their values), passed from `evolve_state` separately
+    from the dual-energy cells.
+  - The old shock-only behaviour (`e(s_cr)` everywhere) is gone.
+  - Tests:
+    - `cr_shock_tube_partition.test_cr_entropy_shock_only`, rewritten for the hybrid;
+    - `test_cr_entropy_hybrid_sedov_3d`, new;
+    - items 2, 7, 8 and 9, A1.3 (1D + 3D) and all gradient checks, run with the hybrid forced
+      on: all pass, M7 excluded on request. Numbers in PROGRESS_PHASEA.md 2026-10-13.
+- **Acceptance tests (any option):**
+  - A6.1-A6.3 across CFL, limiter and solver (method spread < 0.5%), and spurious CR energy
+    per `e_th` below 1% at M < 2.25;
+  - A6.5 energy (exact for i, bounded drift for ii);
+  - A1.3 contact pressure balance (Gupta: Et+Scr fails it);
+  - A2.1/A2.2/A2.3, items 7/8 (Weber's low-N injection test), item 9;
+  - M7 A/B with three seeds, including the energy-drift budget.
+
 
 Not implemented. The user picked option a of `astronomix_CR_phaseA_test_plan.md` A6.7 on
 2026-10-08; this note is for review before any code changes.

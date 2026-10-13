@@ -154,6 +154,9 @@ def _run(dsa_efficiency: float, streaming: bool, grey_cosmic_rays: bool = True):
             grey_cosmic_rays=grey_cosmic_rays,
             diffusive_shock_acceleration=grey_cosmic_rays,
             streaming=streaming,
+            # The CR entropy row (on by default since 2026-10-13) does not support streaming;
+            # off in all runs so the streaming / no-streaming comparison uses the same scheme.
+            cr_entropy=False,
         ),
     )
     helper_data = get_helper_data(config)

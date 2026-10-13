@@ -623,9 +623,10 @@ def cr_entropy_to_energy(
     registered_variables: RegisteredVariables,
     params: SimulationParams,
     gas_energy_cells=None,
+    shock_cells=None,
 ) -> STATE_TYPE:
     """Take ``e_cr`` from the advected CR entropy and give the difference to the
-    gas thermal energy (DESIGN.md "Open: conservative CR entropy at shocks",
+    gas thermal energy (DESIGN.md "Decided: CR shock partition",
     design step 5).
 
     At the end of a hydro step the conservative ``e_cr`` row (fluxes plus the
@@ -648,6 +649,12 @@ def cr_entropy_to_energy(
             is taken from ``s_cr`` and the gas is left unchanged: the
             dual-energy scheme already discards the total-energy residue there.
             None: all cells.
+        shock_cells: Optional boolean mask of the shock zones
+            (``CR_ENTROPY_TRANSFER_SHOCKS``, the hybrid of 2026-10-13). Outside it
+            ``e_cr`` and the gas keep their energy-scheme values: the energy scheme is
+            exact for smooth flow and contacts, while ``e(s_cr)`` gains CR energy where the
+            grid mixes gas of different density (PROGRESS_PHASEA.md 2026-10-13, "D2
+            restarted"). None: all cells.
 
     Returns:
         The state with ``e_cr`` and the gas pressure updated.
@@ -674,6 +681,9 @@ def cr_entropy_to_energy(
     if gas_energy_cells is not None:
         e_cr_new = jnp.where(gas_energy_cells, e_cr_new, e_cr_entropy)
         delta = jnp.where(gas_energy_cells, delta, 0.0)
+    if shock_cells is not None:
+        e_cr_new = jnp.where(shock_cells, e_cr_new, e_cr_energy)
+        delta = jnp.where(shock_cells, delta, 0.0)
 
     primitive_state = primitive_state.at[registered_variables.cosmic_ray_e_index].set(e_cr_new)
     primitive_state = primitive_state.at[registered_variables.pressure_index].add(
@@ -697,7 +707,7 @@ def cr_entropy_closure_source(
     axis: int,
 ) -> STATE_TYPE:
     """Add the non-adiabatic CR transport of one axis to the CR entropy row
-    (DESIGN.md "Open: conservative CR entropy at shocks", design step 4).
+    (DESIGN.md "Decided: CR shock partition", design step 4).
 
     The ``e_cr`` interface flux is the advective part (mass flux x upwind
     ``e_cr / rho``, which ``s_cr`` already gets for its own row) plus the

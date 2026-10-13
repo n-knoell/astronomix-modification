@@ -37,6 +37,20 @@ The coupling is now applied inside every RK stage (Gupta, Sharma & Mignone 2021,
   two-fluid vs hydro order 1.85.
 - A2.3b: ringing 0.0026 / 0.0027 (N = 512 / 2048); hydro 0.0012 / 0.0013.
 
+Re-measured 2026-10-13 with HLLC (the grey-CR default since then; both runs of A2.3 set it)
+and the hybrid CR entropy (on by default in the two-fluid runs):
+
+- A2.2: L1/eps at N = 512 4.31e-4 for every ``P_cr / P_th`` (equal to three digits, also
+  ``C_cfl = 0.8``), order 1.86,
+  phase within 1.6e-5; ``C_cfl = 0.8``: 1.45e-3 eps (HLL: 3.9e-4 ... 1.1e-3).
+- A2.3a: two-fluid vs exact 8.3e-6 at N = 1024 (order 1.87, same as hydro); two-fluid vs
+  hydro order 1.70 (gate lowered from 1.8 to 1.6, user decision 2026-10-13), but the gap
+  at N = 1024 is 2.4e-7, 20x smaller than with HLL (4.9e-6). Not the
+  hybrid: identical to all printed digits with ``cr_entropy=False``. With HLL in both runs it
+  was 1.85, so it comes from HLLC (two-fluid with the total-pressure flux vs gamma = 4/3
+  hydro HLLC).
+- A2.3b: ringing 0.0014 / 0.0015 (N = 512 / 2048); hydro 0.0012 / 0.0013.
+
 Gates: the physics bounds in each test, plus the errors at the finest N (and the squeeze
 ringing) within 1.5x of ``baselines.json`` (``cr_baselines.py``, Phase A plan X1/X2), which
 holds the current measured values. See ``PROGRESS_PHASEA.md`` (2026-10-09).
@@ -70,6 +84,7 @@ from astronomix.option_classes.simulation_config import (
     FINITE_VOLUME,
     BoundarySettings1D,
     DOUBLE_PRECISION,
+    HLLC,
     OPEN_BOUNDARY,
     PERIODIC_BOUNDARY,
     finalize_config,
@@ -94,13 +109,18 @@ PICS_DIR = Path(__file__).resolve().parent / "pics" / "02_adiabatic_compression"
 
 
 def _run(num_cells, rho, u, p_th, p_cr, t_end, boundary, cosmic_rays=True, gamma=GAMMA, C_cfl=0.4):
-    """1D float64 run from profile functions of x; ``cosmic_rays=False`` is plain hydro."""
+    """1D float64 run from profile functions of x; ``cosmic_rays=False`` is plain hydro.
+
+    HLLC for both, so the A2.3 comparison is scheme against scheme: since 2026-10-13 HLLC is
+    the grey-CR default (``RIEMANN_SOLVER_AUTO``), while a run without CRs would default to HLL.
+    """
     config = SimulationConfig(
         solver_mode=FINITE_VOLUME,
         dimensionality=1,
         num_cells=num_cells,
         box_size=1.0,
         numerical_precision=DOUBLE_PRECISION,
+        riemann_solver=HLLC,
         boundary_settings=BoundarySettings1D(left_boundary=boundary, right_boundary=boundary),
         cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=cosmic_rays),
     )
@@ -147,8 +167,8 @@ def test_cr_linear_sound_wave(
             <= 2e-5).
         max_eigenvector_error: Bound on ``abs(ratio - 1)`` of
             ``(delta P_cr / P_cr) / (delta rho / rho) / gamma_cr`` at the finest N.
-        max_error_cfl08: Bound on L1/eps at the finest N with ``C_cfl = 0.8`` (measured <= 1.1e-3;
-            the operator-split coupling gave up to 1e5).
+        max_error_cfl08: Bound on L1/eps at the finest N with ``C_cfl = 0.8`` (measured 1.45e-3
+            with HLLC, <= 1.1e-3 with HLL; the operator-split coupling gave up to 1e5).
     """
     eps = 1e-6
     wave = lambda x: np.sin(2.0 * np.pi * x)  # noqa: E731
@@ -218,6 +238,7 @@ def test_cr_linear_sound_wave(
 def test_cr_hydro_equivalence(
     resolutions=(64, 128, 256, 512, 1024),
     min_order=1.8,
+    min_order_vs_hydro=1.6,
     max_ringing_ratio=3.0,
     squeeze_resolutions=(512, 2048),
 ):
@@ -225,8 +246,14 @@ def test_cr_hydro_equivalence(
 
     Args:
         resolutions: Cell counts for the simple wave.
-        min_order: Minimum L1 order of the two-fluid run vs the exact solution and vs hydro
-            (measured 1.86 / 1.85).
+        min_order: Minimum L1 order of the two-fluid run vs the exact solution (measured 1.87).
+        min_order_vs_hydro: Minimum L1 order of the two-fluid run vs gamma = 4/3 hydro
+            (measured 1.70 with HLLC, the default since 2026-10-13; 1.85 with HLL). With HLLC
+            the two runs are different discretizations (total-pressure flux plus ``-P_cr div
+            v`` vs a single energy equation), so their difference converges slower than each
+            run does to the exact solution, although the gap itself is 20x smaller than with HLL
+            (2.4e-7 at N = 1024); the hybrid CR entropy plays no part (identical with
+            ``cr_entropy=False``).
         max_ringing_ratio: Bound on the squeeze ringing (``rho`` range in 0.28 < x < 0.42)
             relative to gamma = 4/3 hydro (measured ~2.1).
         squeeze_resolutions: Cell counts for the squeeze.
@@ -304,7 +331,9 @@ def test_cr_hydro_equivalence(
     plt.close(fig)
 
     assert order_two_fluid >= min_order, f"simple wave order {order_two_fluid:.2f} < {min_order}."
-    assert order_difference >= min_order, f"two-fluid vs hydro order {order_difference:.2f} < {min_order}."
+    assert order_difference >= min_order_vs_hydro, (
+        f"two-fluid vs hydro order {order_difference:.2f} < {min_order_vs_hydro}."
+    )
     for n, (two_fluid, hydro) in ringing.items():
         assert two_fluid <= max_ringing_ratio * hydro, (
             f"squeeze N = {n}: ringing {two_fluid:.4f} > {max_ringing_ratio} x hydro {hydro:.4f}."

@@ -7,6 +7,35 @@ file is what's actually done against it.
 Phase A test-plan work (`astronomix_CR_phaseA_test_plan.md`) is tracked in `PROGRESS_PHASEA.md`;
 scheme changes that come out of it are still logged here.
 
+## Default (2026-10-13): HLLC + hybrid CR entropy for grey-CR runs (Phase A D2) -- regression done, all pass
+
+- **Decision (user):** grey-CR runs default to HLLC (total-pressure flux) plus the hybrid CR
+  entropy (`cr_entropy_transfer = CR_ENTROPY_TRANSFER_SHOCKS`):
+  - the energy scheme everywhere;
+  - `e_cr := e(s_cr)` only in detected shock zones, the difference going to the gas.
+- **Mechanism:** `simulation_config.resolve_auto_defaults` resolves
+  `riemann_solver = RIEMANN_SOLVER_AUTO` and `cr_entropy = None`. Runs without CRs keep HLL;
+  explicit settings win.
+- **Why:**
+  - Post-shock `K_cr` error ~1e-4 instead of 0.4-13.6% (HLL energy scheme), also in 3D (Sedov).
+  - Total energy, contacts and grid mixing as exact as the energy scheme.
+  - The previous entropy modes gained CR energy by grid mixing (+1.7-4.3% per crossing of a
+    10x density contact), which explains the 2026-10-09 M7 results.
+- **Not validated:**
+  - M7 (sets HLLC and `cr_entropy=False` explicitly, unchanged);
+  - M5/M6/probe (use the defaults);
+  - HLLC + P2 with gravity (open option a/b).
+- **Regression (full grey-CR suite, update mode):** all pass (ring "cap alone"
+  is the strict xfail). `test_cr_hydro_equivalence` (A2.3a two-fluid vs gamma = 4/3 hydro)
+  converges at order 1.70 with HLLC (not the hybrid: identical with `cr_entropy=False`),
+  with a 20x smaller gap than HLL; its vs-hydro gate is now 1.6 (user).
+  Item 9 gets worse within its gates (Test B du/dx 24% -> 33%, gate 40%). Registry, figures
+  and docstrings re-baselined.
+- **Details:**
+  - DESIGN.md "Decided: CR shock partition, HLLC + hybrid CR entropy as the CR-run default";
+  - PROGRESS_PHASEA.md 2026-10-13 "D2 restarted" and "HLLC + hybrid CR entropy as the grey-CR
+    default" (per-test results).
+
 ## Reverted (2026-10-09): cr_entropy default back to off
 
 The user reverted the default after the analysis in PROGRESS_PHASEA.md (2026-10-09). The

@@ -125,6 +125,12 @@ Test A post-shock rho / u / P errors 0.17 / 0.21 / 0.22% [0.13 / 0.15 / 0.15%]; 
 **Re-measured 2026-10-10 with the ETD2RK F_cr relaxation** (DESIGN.md "F_cr relaxation time
 accuracy: ETD2RK"; stage-wise backward Euler of 2026-10-09 in brackets): Test A 0.17 / 0.21 /
 0.22% [same]; Test B du/dx 23.0% [20.9%], dP_cr/dx 1.30% [1.60%], dF_cr/dx 0.47% [0.74%].
+
+**Re-measured 2026-10-13 with HLLC + hybrid CR entropy, the grey-CR default** (DESIGN.md
+"Decided: CR shock partition"; HLL with van Leer CR rows, e230c25, in brackets): Test A
+0.30 / 0.49 / 0.53% [0.17 / 0.21 / 0.22%]; Test B du/dx 32.9% [24.2%], dP_cr/dx 1.34%
+[1.34%], dF_cr/dx 1.74% [1.73%]. Within the gates (2% and 40% / 5% / 5%), but the default
+is the less accurate scheme here; which of HLLC and the hybrid causes it is not measured.
 """
 
 # ==== GPU selection ====

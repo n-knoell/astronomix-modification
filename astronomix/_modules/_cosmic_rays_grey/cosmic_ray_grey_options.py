@@ -9,7 +9,7 @@ Mirrors the split used by the older ``cosmic_ray_options.py``.
 """
 
 # typing
-from typing import NamedTuple, Union
+from typing import NamedTuple, Optional, Union
 
 from jax import Array
 
@@ -41,9 +41,14 @@ DSA_EFFICIENCY_KANG_RYU_2013 = 1
 #: 2026-10-09).
 CR_ENTROPY_TRANSFER_GLOBAL = 0
 
-#: only in shock zones (cr_grey_sources.cr_entropy_shock_mask); elsewhere
-#: e_cr := e(s_cr) and the difference is discarded, so total energy is exact
-#: only to truncation error. Semenov, Kravtsov & Diemer (2021, Sec. 2.2) style.
+#: hybrid (2026-10-13): the energy scheme everywhere, except in shock zones
+#: (cr_grey_sources.cr_entropy_shock_mask), where e_cr := e(s_cr) and the
+#: difference goes to the gas. s_cr is re-synced from e_cr every step, so it only
+#: carries the adiabatic change across the shock; total energy is exact. Gupta et
+#: al. (2021)-style shock-zone redistribution with Semenov et al. (2021)'s adiabatic
+#: CRs. Until 2026-10-13 this mode took e(s_cr) everywhere and discarded the
+#: difference outside shocks, which created CR energy by grid mixing
+#: (PROGRESS_PHASEA.md 2026-10-13, "D2 restarted").
 CR_ENTROPY_TRANSFER_SHOCKS = 1
 
 
@@ -219,27 +224,30 @@ class CosmicRayGreyConfig(NamedTuple):
 
     #: conservative CR entropy (DESIGN.md "Open: conservative CR entropy at
     #: shocks"): advect s_cr = P_cr rho^(1 - gamma_cr) as an extra passive row,
-    #: with no -P_cr div u work, and at the end of every hydro step set
-    #: e_cr = e(s_cr), giving the difference to the gas thermal energy (total
-    #: energy stays exact). CRs then pass through shocks adiabatically instead
-    #: of taking part of the numerical shock dissipation (Phase A plan A6.1-
-    #: A6.3: K_cr 0.4-11% too high). The closure (diffusion) part of the e_cr
-    #: flux is added to s_cr cell by cell (cr_grey_sources.
-    #: cr_entropy_closure_source), so diffusion is unchanged. FV, unsplit RK2,
-    #: HLL/HLLC only. Not with streaming (out of scope: the CR model is the
-    #: diffusion limit of Jiang & Oh 2018). Gas-positivity safeguard:
-    #: CosmicRayGreyParams.cr_entropy_max_thermal_drain. Off by default: it
-    #: was the default for part of 2026-10-09 and was reverted after the
-    #: analysis in PROGRESS_PHASEA.md (2026-10-09). The energy-conserving
-    #: transfer drains the thermal energy of CR-dominated gas (M7 halo P_th
-    #: x1e-3..1e-4, item-2 gas entropy errors up to 84%).
-    cr_entropy: bool = False
+    #: re-synced from e_cr every hydro step; where cr_entropy_transfer says so,
+    #: set e_cr = e(s_cr) at the end of the step and give the difference to the
+    #: gas thermal energy (total energy stays exact). CRs then pass through shocks
+    #: adiabatically instead of taking part of the numerical shock dissipation
+    #: (Phase A plan A6.1-A6.3: K_cr up to 13.6% too high with HLL). The closure
+    #: (diffusion) part of the e_cr flux is added to s_cr cell by cell
+    #: (cr_grey_sources.cr_entropy_closure_source), so diffusion is unchanged.
+    #: FV, Cartesian, unsplit RK2, HLL/HLLC only; not with streaming (out of
+    #: scope: the CR model is the diffusion limit of Jiang & Oh 2018).
+    #: Gas-positivity safeguard: CosmicRayGreyParams.cr_entropy_max_thermal_drain.
+    #: None (default, since 2026-10-13, user decision): on wherever supported,
+    #: off elsewhere (simulation_config.resolve_auto_defaults); True / False
+    #: force it (True raises where unsupported). History: default on with the
+    #: global transfer for part of 2026-10-09, reverted (that transfer drains
+    #: CR-dominated gas and, as found 2026-10-13, gains CR energy by grid
+    #: mixing); off until 2026-10-13.
+    cr_entropy: Optional[bool] = None
 
     #: where the cr_entropy energy difference goes to the gas: one of
-    #: CR_ENTROPY_TRANSFER_GLOBAL (default) or CR_ENTROPY_TRANSFER_SHOCKS (only
-    #: in shock zones; DESIGN.md "Open: conservative CR entropy at shocks",
-    #: shock-only variant).
-    cr_entropy_transfer: int = CR_ENTROPY_TRANSFER_GLOBAL
+    #: CR_ENTROPY_TRANSFER_SHOCKS (default since 2026-10-13: the hybrid, s_cr
+    #: used only in shock zones and the energy scheme elsewhere; DESIGN.md
+    #: "Open: conservative CR entropy at shocks", refined plan 2026-10-13) or
+    #: CR_ENTROPY_TRANSFER_GLOBAL (every cell; kept for comparison).
+    cr_entropy_transfer: int = CR_ENTROPY_TRANSFER_SHOCKS
 
     #: cells by which the cr_entropy shock mask is widened along every axis
     #: (CR_ENTROPY_TRANSFER_SHOCKS only), so that a shock smeared over a few

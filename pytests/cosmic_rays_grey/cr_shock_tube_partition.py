@@ -87,10 +87,27 @@ t such that the shock travels 0.35), N = 3200 (N = 1600 identical to 3 digits):
 
 So the partition error is a property of the scheme, not a truncation error, and at weak,
 CR-loaded shocks it is as large as typical DSA efficiencies. This is decision D2 of the plan.
-Until D2 is made the partition is a tracked metric: the gates only bound it from above (so a
-fix that drives it to 0 still passes) and check the smooth control. Since 2026-10-12 (Phase A
-plan X1/X2) the upper bounds are 1.5x the measured values in ``baselines.json``
+The energy-scheme numbers above stay as the control curves (dashed in the figures); the gates
+only bound them from above and check the smooth control. Since 2026-10-12 (Phase A plan
+X1/X2) the upper bounds are 1.5x the measured values in ``baselines.json``
 (``cr_baselines.py``), on top of the looser fixed bounds in the test signatures.
+
+**D2 decided (2026-10-13): HLLC + hybrid CR entropy is the grey-CR default** (``DEFAULT_SCHEME``;
+DESIGN.md "Decided: CR shock partition"). Solid curves and black markers in the figures; gated
+at ``max_default_error = 1e-3`` and against ``baselines.json``. Measured (float64, ``C_cfl =
+0.4``):
+
+  - A6.1 item-6 tube: dK_cr,2 = -2.8e-5 / +8.4e-5 / +8.6e-5 / +8.6e-5 / +8.6e-5 at N = 100 /
+    200 / 400 / 800 / 1600 (energy scheme 1.27%). N = 400: ``C_cfl`` 0.1 / 0.8 give 6.9e-5 /
+    3.9e-4, MC -1.1e-5, ``VAN_ALBADA`` 4.7e-6.
+  - A6.2 (N = 4000): tube A dK_cr,2 = +1.3e-4, ``P_th`` -2.0e-4, spurious fraction 3.7e-4
+    (energy scheme 6.83% / -11.3% / 21%); tube B +7.2e-6 (12.9%).
+  - A6.3 (N = 3200): dK_cr,2 = 1.03e-4 / 1.00e-4 / 1.31e-4 / 9.3e-6 / 9.1e-6 / 9.0e-6 / 9.0e-6
+    at M = 1.4 / 2 / 3 / 6 / 10 / 30 / 100; ``abs(dP_th,2)`` <= 1.3e-4, spurious fraction <=
+    2.3e-4. The left-plateau control ``dK_cr,L`` grows to -2e-4 at M >= 30 (energy scheme
+    <= 7e-7; not investigated, two orders below the partition error it replaces).
+  - 3D Sedov (``test_cr_entropy_hybrid_sedov_3d``, N = 48): shell mean ``abs(dK_cr)`` 1.9e-4
+    (energy scheme 1.4e-2).
 
 Runtime on CPU (``JAX_PLATFORMS=cpu``): A6.1 ~1 min, A6.2 ~1 min, A6.3 ~4 min.
 
@@ -178,6 +195,11 @@ class ShockTube(NamedTuple):
 ITEM6 = ShockTube(left=(1.0, 0.0, 0.6, 0.4), right=(0.125, 0.0, 0.06, 0.04), t_end=0.2)
 
 PICS_DIR = Path(__file__).resolve().parent / "pics" / "06_shock_tube"
+
+# The CR-run default since 2026-10-13 (simulation_config.resolve_auto_defaults): HLLC with the
+# total-pressure flux and the hybrid CR entropy (DESIGN.md "Decided: CR shock partition").
+# run_shock_tube's own defaults are the energy scheme with HLL, the control.
+DEFAULT_SCHEME = dict(riemann_solver=HLLC, cr_entropy=True, cr_entropy_transfer=CR_ENTROPY_TRANSFER_SHOCKS)
 
 
 def _reference(tube, x):
@@ -329,8 +351,11 @@ def test_cr_shock_tube_partition(
     max_partition_error=0.02,
     min_control_order=0.7,
     max_control_error=1e-3,
+    max_default_error=1e-3,
 ):
-    """A6.1: post-shock ``K_cr`` vs N and vs method.
+    """A6.1: post-shock ``K_cr`` vs N and vs method, for the energy scheme with HLL (the
+    control; the scheme the module docstring's tables describe) and the CR-run default since
+    2026-10-13 (``DEFAULT_SCHEME``: HLLC + hybrid CR entropy).
 
     Args:
         resolutions: Cell counts of the convergence study.
@@ -340,8 +365,15 @@ def test_cr_shock_tube_partition(
             (smooth flow, fitted over N >= 200; measured 1.12).
         max_control_error: Bound on the left-plateau ``|K_cr / K_cr,L - 1|`` at the finest N
             (measured 7.5e-7 at N = 1600).
+        max_default_error: Bound on the default scheme's ``|dK_cr,2|`` at every N and for every
+            method variant.
     """
     ref = reference_structure(ITEM6)
+    default_runs = {n: run_shock_tube(ITEM6, n, **DEFAULT_SCHEME) for n in resolutions}
+    default_dK = np.array([
+        partition_metrics(ITEM6, x, rho, p_th, p_cr, ref)["dK_2"]
+        for (x, rho, _, p_th, p_cr) in default_runs.values()
+    ])
 
     runs = {n: run_shock_tube(ITEM6, n) for n in resolutions}
     metrics = {
@@ -362,6 +394,12 @@ def test_cr_shock_tube_partition(
     for name, kwargs in variants.items():
         x, rho, _, p_th, p_cr = runs[n_method] if not kwargs else run_shock_tube(ITEM6, n_method, **kwargs)
         method_dK[name] = partition_metrics(ITEM6, x, rho, p_th, p_cr, ref)["dK_2"]
+    default_method_dK = {}
+    for name, kwargs in variants.items():
+        if name == "HLLC":
+            continue
+        x, rho, _, p_th, p_cr = run_shock_tube(ITEM6, n_method, **{**DEFAULT_SCHEME, **kwargs})
+        default_method_dK[name] = partition_metrics(ITEM6, x, rho, p_th, p_cr, ref)["dK_2"]
 
     ns = np.array(resolutions, dtype=float)
     dK_2 = np.array([metrics[n]["dK_2"] for n in resolutions])
@@ -378,16 +416,20 @@ def test_cr_shock_tube_partition(
         )
     print(f"left-plateau K_cr order {control_order:.2f}")
     print("method dependence (N = 400): " + ", ".join(f"{k} {v:+.3e}" for k, v in method_dK.items()))
+    print("default (HLLC + hybrid) dK_2 vs N: " + ", ".join(f"{n} {v:+.2e}" for n, v in zip(resolutions, default_dK)))
+    print("default method dependence (N = 400): " + ", ".join(f"{k} {v:+.2e}" for k, v in default_method_dK.items()))
 
     # ---- figure ----
     fig, axes = plt.subplots(1, 4, figsize=(22, 5))
     ax_profile, ax_conv, ax_control, ax_method = axes
 
     k_right = ITEM6.right[3] / ITEM6.right[0] ** GAMMA_CR
-    for n in resolutions[::2]:
-        x, rho, _, _, p_cr = runs[n]
-        m = (x > ref["x_contact"] - 0.05) & (x < ref["x_shock"] + 0.03)
-        ax_profile.plot(x[m], p_cr[m] / rho[m] ** GAMMA_CR / k_right - 1.0, label=f"N = {n}")
+    for i, n in enumerate(resolutions[::2]):
+        for scheme_runs, style, name in ((runs, "--", "energy, HLL"), (default_runs, "-", "default")):
+            x, rho, _, _, p_cr = scheme_runs[n]
+            m = (x > ref["x_contact"] - 0.05) & (x < ref["x_shock"] + 0.03)
+            ax_profile.plot(x[m], p_cr[m] / rho[m] ** GAMMA_CR / k_right - 1.0, style, color=f"C{i}",
+                            label=f"N = {n}, {name}")
     ax_profile.axhline(0.0, color="black", label="reference (adiabatic CRs)")
     for xv in (ref["x_contact"], ref["x_shock"]):
         ax_profile.axvline(xv, color="grey", ls=":")
@@ -404,11 +446,12 @@ def test_cr_shock_tube_partition(
         ("drho_2", r"$\rho_2$"),
     ]:
         ax_conv.plot(ns, [metrics[n][key] for n in resolutions], "o-", label=label)
+    ax_conv.plot(ns, default_dK, "s-", color="black", label=r"$K_{cr,2}$, default (HLLC + hybrid)")
     ax_conv.axhline(0.0, color="black", lw=0.8)
     ax_conv.set_xscale("log")
     ax_conv.set_xlabel("N")
     ax_conv.set_ylabel("plateau mean / reference - 1")
-    ax_conv.set_title("Shocked plateau: does not converge")
+    ax_conv.set_title("Shocked plateau (energy scheme: does not converge)")
     ax_conv.legend()
 
     ax_control.loglog(ns, dK_L, "o-", label=r"$|K_{cr}/K_{cr,L} - 1|$, left star plateau")
@@ -418,14 +461,21 @@ def test_cr_shock_tube_partition(
     ax_control.legend()
 
     names = list(method_dK)
-    ax_method.bar(names, [100 * method_dK[k] for k in names], color="C0")
-    ax_method.set_ylabel(r"$K_{cr,2}/K_{cr,R} - 1$ [%]")
+    xs = np.arange(len(names))
+    ax_method.bar(xs - 0.2, [max(abs(100 * method_dK[k]), 1e-6) for k in names], 0.4, color="C0",
+                  label="energy scheme (HLL; last bar HLLC)")
+    ax_method.bar(xs[:-1] + 0.2, [max(abs(100 * default_method_dK[k]), 1e-6) for k in names[:-1]], 0.4,
+                  color="black", label="default (HLLC + hybrid)")
+    ax_method.set_xticks(xs, names, rotation=30)
+    ax_method.set_yscale("log")
+    ax_method.set_ylabel(r"$|K_{cr,2}/K_{cr,R} - 1|$ [%]")
     ax_method.set_title(f"Method dependence, N = {n_method}")
-    ax_method.tick_params(axis="x", rotation=30)
+    ax_method.legend(fontsize=8)
 
     fig.suptitle(
-        f"A6.1 post-shock CR/thermal partition: dK_cr,2 = {100 * dK_2[-1]:+.2f}% at N = "
-        f"{resolutions[-1]} (spread over N {100 * np.ptp(dK_2):.2f}%), "
+        f"A6.1 post-shock CR/thermal partition. Default (HLLC + hybrid CR entropy): dK_cr,2 = "
+        f"{100 * default_dK[-1]:+.3f}% at N = {resolutions[-1]}, <= {100 * np.abs(list(default_method_dK.values())).max():.3f}% "
+        f"over methods. Energy scheme (HLL): {100 * dK_2[-1]:+.2f}%, "
         f"{100 * min(method_dK.values()):.2f}-{100 * max(method_dK.values()):.2f}% over methods"
     )
     fig.tight_layout()
@@ -445,7 +495,12 @@ def test_cr_shock_tube_partition(
     assert dK_L[-1] < max_control_error, (
         f"Left-plateau K_cr error {dK_L[-1]:.3e} at N = {resolutions[-1]} exceeds {max_control_error}."
     )
+    default_worst = max(np.abs(default_dK).max(), max(abs(v) for v in default_method_dK.values()))
+    assert default_worst < max_default_error, (
+        f"Default scheme post-shock CR entropy error {default_worst:.3e} exceeds {max_default_error}."
+    )
     baselines = Baselines("cr_shock_tube_partition.py::test_cr_shock_tube_partition")
+    baselines.upper("default_abs_dK_2_worst", float(default_worst), floor=2e-4)
     baselines.upper(f"abs_dK_2_n{resolutions[-1]}", abs(float(dK_2[-1])), floor=1e-3)
     baselines.upper("abs_dK_2_worst_method", max(abs(v) for v in method_dK.values()), floor=1e-3)
     baselines.upper(f"dK_L_n{resolutions[-1]}", float(dK_L[-1]), floor=1e-6)
@@ -487,8 +542,11 @@ def test_cr_shock_tube_gupta(
     max_partition_error_a=0.1,
     max_partition_error_b=0.2,
     min_resolved_cells=8,
+    max_default_error=1e-3,
 ):
-    """A6.2: Gupta et al. (2021) shock tubes A and B.
+    """A6.2: Gupta et al. (2021) shock tubes A and B: the energy scheme with HLL (control,
+    dashed) at all N, and the CR-run default (``DEFAULT_SCHEME``, HLLC + hybrid CR entropy,
+    solid) at the finest N.
 
     Args:
         resolutions_a: Cell counts for tube A (Gupta et al. use 1000).
@@ -498,8 +556,17 @@ def test_cr_shock_tube_gupta(
             12.9%).
         min_resolved_cells: Minimum cells in the shock-side window for a run to count as
             resolved (tube B: 4 at N = 1000, 9 at N = 2000).
+        max_default_error: Bound on the default scheme's ``|dK_cr,2|`` (finest N).
     """
     results = {}
+    default = {}
+    for label, tube, n in [("A", GUPTA_A, resolutions_a[-1]), ("B", GUPTA_B, resolutions_b[-1])]:
+        ref = reference_structure(tube)
+        x, rho, _, p_th, p_cr = run_shock_tube(tube, n, **DEFAULT_SCHEME)
+        default[label] = (x, rho, p_th, p_cr, ref, partition_metrics(tube, x, rho, p_th, p_cr, ref))
+        m = default[label][-1]
+        print(f"Gupta {label} default (HLLC + hybrid) N={n:5d}  dK_2={m['dK_2']:+.3e}  dP_th_2={m['dP_th_2']:+.3e}  "
+              f"dP_cr_2={m['dP_cr_2']:+.3e}  spurious={m['spurious_fraction']:+.3e}")
     for label, tube, resolutions in [("A", GUPTA_A, resolutions_a), ("B", GUPTA_B, resolutions_b)]:
         ref = reference_structure(tube)
         for n in resolutions:
@@ -532,7 +599,11 @@ def test_cr_shock_tube_gupta(
             for n in resolutions:
                 r = results[label, n]
                 m = (r[0] > lo) & (r[0] < hi)
-                ax.plot(r[0][m], getter(r)[m], ls="--", label=f"N = {n}")
+                ax.plot(r[0][m], getter(r)[m], ls="--", label=f"N = {n}, energy scheme (HLL)")
+            r = default[label]
+            m = (r[0] > lo) & (r[0] < hi)
+            ax.plot(r[0][m], getter(r)[m], ls="-", color="C3", lw=1.2,
+                    label=f"N = {resolutions[-1]}, default (HLLC + hybrid)")
             ax.set_xlim(lo, hi)
             ax.set_xlabel("x")
             ax.set_title(f"Gupta {label} (M = {ref['mach']:.2f}): {name}")
@@ -541,8 +612,11 @@ def test_cr_shock_tube_gupta(
         axes[row, 0].legend()
     m_a = results["A", resolutions_a[-1]][-1]
     m_b = results["B", resolutions_b[-1]][-1]
+    d_a, d_b = default["A"][-1], default["B"][-1]
     fig.suptitle(
-        f"A6.2 Gupta et al. (2021) tubes, N = {resolutions_a[-1]}: A dK_cr,2 = {100 * m_a['dK_2']:+.2f}%, "
+        f"A6.2 Gupta et al. (2021) tubes, N = {resolutions_a[-1]}. Default (HLLC + hybrid): A dK_cr,2 = "
+        f"{100 * d_a['dK_2']:+.3f}%, P_th,2 {100 * d_a['dP_th_2']:+.2f}% | B dK_cr,2 = {100 * d_b['dK_2']:+.3f}%.\n"
+        f"Energy scheme (HLL): A dK_cr,2 = {100 * m_a['dK_2']:+.2f}%, "
         f"P_th,2 {100 * m_a['dP_th_2']:+.1f}%, spurious {100 * m_a['spurious_fraction']:.1f}% | "
         f"B dK_cr,2 = {100 * m_b['dK_2']:+.2f}%, spurious {100 * m_b['spurious_fraction']:.2f}%"
     )
@@ -559,7 +633,12 @@ def test_cr_shock_tube_gupta(
         if m["cells_in_window"] >= min_resolved_cells:
             assert abs(m["dK_2"]) < max_partition_error_b, f"Gupta B N={n}: dK_cr,2 = {m['dK_2']:.3e}."
     assert results["B", resolutions_b[-1]][-1]["cells_in_window"] >= min_resolved_cells
+    for label in ("A", "B"):
+        dK = default[label][-1]["dK_2"]
+        assert abs(dK) < max_default_error, f"Gupta {label} default scheme: dK_cr,2 = {dK:.3e}."
     baselines = Baselines("cr_shock_tube_partition.py::test_cr_shock_tube_gupta")
+    for label in ("A", "B"):
+        baselines.upper(f"default_{label}_abs_dK_2", abs(default[label][-1]["dK_2"]), floor=2e-4)
     for (label, n), result in results.items():
         baselines.upper(f"{label}_abs_dK_2_n{n}", abs(result[-1]["dK_2"]), floor=1e-3)
     baselines.check()
@@ -570,16 +649,21 @@ def test_cr_shock_tube_mach_scan(
     resolutions=(1600, 3200),
     max_partition_error=0.2,
     max_control_error=1e-3,
+    max_default_error=1e-3,
 ):
-    """A6.3: CR entropy error vs Mach number (Pfrommer et al. 2006 Sec. 5.2 tubes).
+    """A6.3: CR entropy error vs Mach number (Pfrommer et al. 2006 Sec. 5.2 tubes), energy
+    scheme with HLL (control) at both N and the CR-run default (``DEFAULT_SCHEME``, HLLC +
+    hybrid CR entropy) at the finer N.
 
     Args:
         machs: Shock Mach numbers (the paper's eight).
         resolutions: Cell counts; the shock-side window has >= 42 cells at N = 1600 for all M.
         max_partition_error: Bound on ``|dK_cr,2|`` (measured <= 13.6%, 14.3% at ``C_cfl = 0.8``).
         max_control_error: Bound on the left-plateau ``|dK_cr,L|`` (measured <= 6.5e-7).
+        max_default_error: Bound on the default scheme's ``|dK_cr,2|``.
     """
     rows = []
+    default_rows = []
     for mach in machs:
         tube = pfrommer_mach_tube(mach)
         ref = reference_structure(tube)
@@ -593,6 +677,11 @@ def test_cr_shock_tube_mach_scan(
                 f"dP_th_2={m['dP_th_2']:+.3e}  dP_cr_2={m['dP_cr_2']:+.3e}  "
                 f"spurious={m['spurious_fraction']:+.3e}  dK_L={m['dK_L']:+.2e}"
             )
+        x, rho, _, p_th, p_cr = run_shock_tube(tube, resolutions[-1], **DEFAULT_SCHEME)
+        m = partition_metrics(tube, x, rho, p_th, p_cr, ref)
+        default_rows.append(dict(mach=mach, **m))
+        print(f"M={mach:6.1f} N={resolutions[-1]:5d} default (HLLC + hybrid)  dK_2={m['dK_2']:+.3e}  "
+              f"dP_th_2={m['dP_th_2']:+.3e}  spurious={m['spurious_fraction']:+.3e}  dK_L={m['dK_L']:+.2e}")
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     for n, marker in zip(resolutions, ("o", "s")):
@@ -600,7 +689,12 @@ def test_cr_shock_tube_mach_scan(
         ms = [r["mach"] for r in sel]
         axes[0].semilogx(ms, [100 * r["dK_2"] for r in sel], marker + "-", label=rf"$K_{{cr,2}}$, N = {n}")
         axes[0].semilogx(ms, [100 * r["dP_th_2"] for r in sel], marker + ":", label=rf"$P_{{th,2}}$, N = {n}")
-        axes[1].loglog(ms, [r["spurious_fraction"] for r in sel], marker + "-", label=f"N = {n}")
+        axes[1].loglog(ms, [abs(r["spurious_fraction"]) for r in sel], marker + "--", label=f"N = {n}, energy scheme (HLL)")
+    ms = [r["mach"] for r in default_rows]
+    axes[0].semilogx(ms, [100 * r["dK_2"] for r in default_rows], "D-", color="black",
+                     label=rf"$K_{{cr,2}}$, default (HLLC + hybrid), N = {resolutions[-1]}")
+    axes[1].loglog(ms, [max(abs(r["spurious_fraction"]), 1e-8) for r in default_rows], "D-", color="black",
+                   label=f"N = {resolutions[-1]}, default (HLLC + hybrid)")
     axes[0].axhline(0.0, color="black", lw=0.8)
     axes[0].set_xlabel("Mach number")
     axes[0].set_ylabel("post-shock plateau / reference - 1 [%]")
@@ -613,8 +707,9 @@ def test_cr_shock_tube_mach_scan(
     axes[1].set_title("Spurious CR energy (compare: DSA efficiency)")
     axes[1].legend()
     fig.suptitle(
-        "A6.3 Pfrommer et al. (2006) Mach scan (X_cr = 2 | 1): dK_cr,2 saturates at "
-        f"{100 * max(r['dK_2'] for r in rows):.1f}%; spurious fraction peaks at "
+        "A6.3 Pfrommer et al. (2006) Mach scan (X_cr = 2 | 1). Default (HLLC + hybrid): |dK_cr,2| <= "
+        f"{100 * max(abs(r['dK_2']) for r in default_rows):.3f}%. Energy scheme (HLL): dK_cr,2 saturates at "
+        f"{100 * max(r['dK_2'] for r in rows):.1f}%, spurious fraction peaks at "
         f"{100 * max(r['spurious_fraction'] for r in rows):.1f}%"
     )
     fig.tight_layout()
@@ -625,7 +720,10 @@ def test_cr_shock_tube_mach_scan(
     for r in rows:
         assert abs(r["dK_2"]) < max_partition_error, f"M={r['mach']} N={r['n']}: dK_cr,2 = {r['dK_2']:.3e}."
         assert abs(r["dK_L"]) < max_control_error, f"M={r['mach']} N={r['n']}: dK_cr,L = {r['dK_L']:.3e}."
+    for r in default_rows:
+        assert abs(r["dK_2"]) < max_default_error, f"M={r['mach']} default scheme: dK_cr,2 = {r['dK_2']:.3e}."
     baselines = Baselines("cr_shock_tube_partition.py::test_cr_shock_tube_mach_scan")
+    baselines.upper("default_abs_dK_2_worst", max(abs(r["dK_2"]) for r in default_rows), floor=2e-4)
     for r in rows:
         if r["n"] == resolutions[-1]:
             baselines.upper(f"m{r['mach']:g}_abs_dK_2_n{r['n']}", abs(r["dK_2"]), floor=1e-3)
@@ -744,7 +842,12 @@ def test_cr_shock_tube_energy_conservation(num_cells=800, tol=1e-12):
                     left_boundary=REFLECTIVE_BOUNDARY, right_boundary=REFLECTIVE_BOUNDARY
                 ),
                 numerical_precision=DOUBLE_PRECISION,
-                cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, cr_entropy=flag),
+                # A6.5 as calibrated: the energy scheme and the global transfer, HLL. The hybrid's
+                # closed-box energy is checked in test_cr_entropy_shock_only (HLL and HLLC).
+                riemann_solver=HLL,
+                cosmic_ray_grey_config=CosmicRayGreyConfig(
+                    grey_cosmic_rays=True, cr_entropy=flag, cr_entropy_transfer=CR_ENTROPY_TRANSFER_GLOBAL
+                ),
             )
             registered_variables = get_registered_variables(config)
             x = get_helper_data(config).geometric_centers
@@ -834,7 +937,12 @@ def test_cr_entropy_cold_rarefaction(
                     left_boundary=PERIODIC_BOUNDARY, right_boundary=PERIODIC_BOUNDARY
                 ),
                 numerical_precision=DOUBLE_PRECISION,
-                cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, cr_entropy=flag),
+                # This test is about the global transfer's safeguard (the hybrid does not act in a
+                # rarefaction), with the HLL solver it was calibrated with.
+                riemann_solver=HLL,
+                cosmic_ray_grey_config=CosmicRayGreyConfig(
+                    grey_cosmic_rays=True, cr_entropy=flag, cr_entropy_transfer=CR_ENTROPY_TRANSFER_GLOBAL
+                ),
             )
             registered_variables = get_registered_variables(config)
             x = np.asarray(get_helper_data(config).geometric_centers)
@@ -885,8 +993,8 @@ def test_cr_entropy_cold_rarefaction(
     assert r["d_energy"] < max_energy_drift, f"cr_entropy: energy drift {r['d_energy']:.2e}."
 
 
-def _run_1d(variant, num_cells, state_fn, t_end, boundary, reduced_streaming_speed=0.0):
-    """1D float64 run for the shock-only test. ``variant``: "off", "global" or "shocks";
+def _run_1d(variant, num_cells, state_fn, t_end, boundary, reduced_streaming_speed=0.0, riemann_solver=HLL):
+    """1D float64 run for the hybrid tests. ``variant``: "off", "global" or "shocks";
     ``state_fn(x, registered_variables)`` returns the initial primitive state."""
     cr_kwargs = dict(
         off=dict(cr_entropy=False),
@@ -900,6 +1008,7 @@ def _run_1d(variant, num_cells, state_fn, t_end, boundary, reduced_streaming_spe
         box_size=1.0,
         boundary_settings=BoundarySettings1D(left_boundary=boundary, right_boundary=boundary),
         numerical_precision=DOUBLE_PRECISION,
+        riemann_solver=riemann_solver,
         cosmic_ray_grey_config=CosmicRayGreyConfig(grey_cosmic_rays=True, **cr_kwargs),
     )
     registered_variables = get_registered_variables(config)
@@ -929,43 +1038,78 @@ def _total_energy(state, registered_variables):
 
 
 def test_cr_entropy_shock_only(
-    max_entropy_error=1e-6,
-    max_energy_drift=1e-3,
+    max_entropy_error_hllc=1e-3,
+    max_entropy_error_hll=5e-3,
+    min_gain_hllc=10.0,
+    min_gain_hll=4.0,
+    tol=1e-12,
     max_gas_entropy_error=1e-2,
+    max_rarefaction_difference=1e-5,
 ):
-    """``CR_ENTROPY_TRANSFER_SHOCKS``: the cr_entropy energy difference goes to the gas only in
-    shock zones (``cr_grey_sources.cr_entropy_shock_mask``, Gupta et al. 2021 detector), in the
-    style of Semenov, Kravtsov & Diemer (2021, Sec. 2.2). Checks against the energy scheme
-    ("off") and the global transfer:
+    """``CR_ENTROPY_TRANSFER_SHOCKS``, the hybrid (2026-10-13; DESIGN.md "Decided: CR shock
+    partition", refined plan): the energy scheme everywhere, except in the shock zones
+    of ``cr_grey_sources.cr_entropy_shock_mask`` (Gupta et al. 2021 detector), where ``e_cr :=
+    e(s_cr)`` and the difference goes to the gas. ``s_cr`` is re-synced from ``e_cr`` every
+    step. Checks:
 
-    1. Post-shock CR entropy exact, as with the global transfer: item-6, Gupta A, M = 10 tubes
-       (measured <= 1.7e-10; energy scheme 1.3-13.6%).
-    2. Total energy in the closed (reflecting) item-6 box: no longer exact, but bounded
-       (measured 3.0e-4; off and global 3e-14).
-    3. CR-dominated smooth squeeze (item-2 setup, P_cr/P_th = 33, N = 512): no transfer outside
-       shocks, so the gas entropy is not damaged (measured max abs(K_th - 1) 3.2e-6; global
-       1.5e-3, off 2.7e-6) and the ringing is no larger than the energy scheme's (0.0003 vs
-       0.0007; global 0.0005).
-    4. Cold, CR-dominated double rarefaction (P_th/P_cr = 1e-4, periodic): K_cr exact (1.1e-14).
+    1. Post-shock CR entropy: item-6, Gupta A, M = 2 (below the DSA threshold) and M = 10
+       tubes, HLL and HLLC (total-pressure flux). Gates: ``abs(dK_cr,2)`` below
+       ``max_entropy_error_hllc`` / ``_hll`` and at least ``min_gain`` below the energy scheme.
+    2. Total energy in the closed (reflecting) item-6 box: exact (the transfer moves energy
+       between ``e_cr`` and the gas only).
+    3. CR-dominated smooth squeeze (item-2 setup, P_cr/P_th = 33): the gas entropy is not
+       damaged and the ringing is no larger than the energy scheme's.
+    4. Cold, CR-dominated double rarefaction: the rarefaction (``abs(x - 1/2) < 0.15``) is no
+       shock zone, so it is identical to the energy scheme there (the global transfer is what
+       fixes the start-up error, at the price of the mixing error of 5). The converging flow
+       at the periodic edge does shock, and the hybrid acts there; what that changes reaches
+       the window at the 5e-7 level (measured 4.8e-7, ``max_rarefaction_difference``).
+    5. Mixing at a pressure-balanced, advected density contact (contrast 10, one crossing, HLLC):
+       ``E_cr`` and the total pressure as exact as the energy scheme. The global transfer gains
+       CR energy there (Jensen: ``e(s_cr)`` of a mixed cell exceeds the mixed ``e_cr``); that
+       error, first order in dx, is why the mode before 2026-10-13 (``e(s_cr)`` everywhere,
+       the difference discarded outside shocks) created 11-15% of the CR injection in M7.
 
-    Values measured with the stage-wise CR coupling (2026-10-09). With the earlier operator-split
-    coupling the squeeze showed the item-2 ringing (off 0.044, global 0.136 with a gas entropy
-    error of 0.34, shocks 0.019) and the closed-box drift was 9.9e-5.
+    Measured (2026-10-13, PROGRESS_PHASEA.md "D2 restarted"):
+    1. ``dK_cr,2`` HLLC 9e-6 ... 1.3e-4, HLL 1.5-2.4e-3 (energy scheme HLLC 0.42-6.2%, HLL
+       1.3-12.9%); shock within 0.9 cells of the reference.
+    2. Drift 3.0e-14 (HLL and HLLC).
+    3. Squeeze identical to the energy scheme (ringing 0.0007, gas entropy 2.7e-6; global 1.5e-3).
+    4. ``K_cr`` error 5.29e-2 in both; ``e_cr`` differs by 4.8e-7.
+    5. ``dE_cr`` -1e-14, ``max abs(P_tot - 1)`` 6e-14, as the energy scheme; global +2.3e-2 / 2.4e-2.
 
     Args:
-        max_entropy_error: Bound on the post-shock ``abs(dK_cr,2)``.
-        max_energy_drift: Bound on the closed-box total-energy drift.
+        max_entropy_error_hllc: Bound on ``abs(dK_cr,2)`` with HLLC.
+        max_entropy_error_hll: Bound on ``abs(dK_cr,2)`` with HLL.
+        min_gain_hllc: Minimum ratio of the energy scheme's ``abs(dK_cr,2)`` to the hybrid's,
+            HLLC (measured 49-6900).
+        min_gain_hll: The same for HLL (measured 5.7 for item 6, the weakest shock).
+        tol: Bound on the closed-box energy drift and on the mixing-test changes.
         max_gas_entropy_error: Bound on ``max abs(K_th / K_th,0 - 1)`` in the squeeze.
+        max_rarefaction_difference: Bound on the relative ``e_cr`` difference hybrid vs energy
+            scheme inside the cold rarefaction.
     """
     # 1. shocks
-    for label, tube, n in (("item 6", ITEM6, 800), ("Gupta A", GUPTA_A, 2000), ("M = 10", pfrommer_mach_tube(10.0), 1600)):
-        ref = reference_structure(tube)
-        x, rho, _, p_th, p_cr = run_shock_tube(
-            tube, n, cr_entropy=True, cr_entropy_transfer=CR_ENTROPY_TRANSFER_SHOCKS
-        )
-        m = partition_metrics(tube, x, rho, p_th, p_cr, ref)
-        print(f"{label:8s} N={n}: dK_cr,2 {m['dK_2']:+.2e}, dP_th,2 {m['dP_th_2']:+.2e}, drho_2 {m['drho_2']:+.2e}")
-        assert abs(m["dK_2"]) < max_entropy_error, f"{label}: dK_cr,2 = {m['dK_2']:.3e}."
+    tubes = (("item 6", ITEM6, 800), ("Gupta A", GUPTA_A, 2000), ("M = 2", pfrommer_mach_tube(2.0), 1600),
+             ("M = 10", pfrommer_mach_tube(10.0), 1600))
+    for solver, bound, min_gain in ((HLLC, max_entropy_error_hllc, min_gain_hllc), (HLL, max_entropy_error_hll, min_gain_hll)):
+        name = "HLLC" if solver == HLLC else "HLL"
+        for label, tube, n in tubes:
+            ref = reference_structure(tube)
+            m = {}
+            for flag in (False, True):
+                x, rho, _, p_th, p_cr = run_shock_tube(
+                    tube, n, riemann_solver=solver, cr_entropy=flag,
+                    cr_entropy_transfer=CR_ENTROPY_TRANSFER_SHOCKS,
+                )
+                m[flag] = partition_metrics(tube, x, rho, p_th, p_cr, ref)
+            print(f"{name:4s} {label:8s} N={n}: dK_cr,2 hybrid {m[True]['dK_2']:+.2e} (energy scheme "
+                  f"{m[False]['dK_2']:+.2e}), dP_th,2 {m[True]['dP_th_2']:+.2e}, shock offset "
+                  f"{m[True]['shock_offset_cells']:+.2f} cells")
+            assert abs(m[True]["dK_2"]) < bound, f"{name} {label}: dK_cr,2 = {m[True]['dK_2']:.3e}."
+            assert abs(m[False]["dK_2"]) > min_gain * abs(m[True]["dK_2"]), (
+                f"{name} {label}: hybrid {m[True]['dK_2']:.3e} vs energy scheme {m[False]['dK_2']:.3e}."
+            )
 
     # 2. closed box
     def tube_state(tube):
@@ -977,10 +1121,12 @@ def test_cr_entropy_shock_only(
             return state.at[rv.cosmic_ray_e_index].set(jnp.where(left, tube.left[3], tube.right[3]) / (GAMMA_CR - 1.0))
         return fn
 
-    _, s0, f, rv = _run_1d("shocks", 800, tube_state(ITEM6), 3 * ITEM6.t_end, REFLECTIVE_BOUNDARY)
-    drift = abs(_total_energy(f, rv) / _total_energy(s0, rv) - 1.0)
-    print(f"closed item-6 box: total-energy drift {drift:.2e}")
-    assert drift < max_energy_drift, f"shock-only energy drift {drift:.3e}."
+    for solver in (HLL, HLLC):
+        _, s0, f, rv = _run_1d("shocks", 800, tube_state(ITEM6), 3 * ITEM6.t_end, REFLECTIVE_BOUNDARY,
+                               riemann_solver=solver)
+        drift = abs(_total_energy(f, rv) / _total_energy(s0, rv) - 1.0)
+        print(f"closed item-6 box ({'HLLC' if solver == HLLC else 'HLL'}): total-energy drift {drift:.2e}")
+        assert drift < tol, f"hybrid energy drift {drift:.3e}."
 
     # 3. CR-dominated smooth squeeze (item 2)
     def squeeze(x, rv):
@@ -997,20 +1143,109 @@ def test_cr_entropy_shock_only(
         ringing[variant] = float(rho[window].max() - rho[window].min())
         gas_error[variant] = float(np.max(np.abs(f[rv.pressure_index][interior] / rho[interior] ** GAMMA / 0.01 - 1.0)))
         print(f"squeeze {variant:6s}: rho ringing {ringing[variant]:.4f}, max abs(K_th - 1) {gas_error[variant]:.2e}")
-    assert gas_error["shocks"] < max_gas_entropy_error, f"shock-only gas entropy error {gas_error['shocks']:.3e}."
-    assert ringing["shocks"] <= ringing["off"], "shock-only ringing exceeds the energy scheme's."
+    assert gas_error["shocks"] < max_gas_entropy_error, f"hybrid gas entropy error {gas_error['shocks']:.3e}."
+    assert ringing["shocks"] <= ringing["off"] * (1.0 + 1e-6), "hybrid ringing exceeds the energy scheme's."
 
-    # 4. cold rarefaction
+    # 4. cold rarefaction: no shock zone
     def rarefaction(x, rv):
         state = jnp.zeros((rv.num_vars, x.size)).at[rv.density_index].set(1.0)
         state = state.at[rv.velocity_index].set(jnp.where(x < 0.5, -1.5, 1.5)).at[rv.pressure_index].set(1e-4)
         return state.at[rv.cosmic_ray_e_index].set(1.0 / (GAMMA_CR - 1.0))
 
-    x, _, f, rv = _run_1d("shocks", 400, rarefaction, 0.15, PERIODIC_BOUNDARY)
-    k_cr = f[rv.cosmic_ray_e_index] * (GAMMA_CR - 1.0) / f[rv.density_index] ** GAMMA_CR
-    k_err = float(np.max(np.abs(k_cr[np.abs(x - 0.5) < 0.15] - 1.0)))
-    print(f"cold rarefaction: max abs(K_cr - 1) {k_err:.2e}")
-    assert k_err < max_entropy_error, f"cold rarefaction K_cr error {k_err:.3e}."
+    e_cr = {}
+    for variant in ("off", "shocks"):
+        x, _, f, rv = _run_1d(variant, 400, rarefaction, 0.15, PERIODIC_BOUNDARY)
+        e_cr[variant] = f[rv.cosmic_ray_e_index][np.abs(x - 0.5) < 0.15]
+        k_cr = f[rv.cosmic_ray_e_index] * (GAMMA_CR - 1.0) / f[rv.density_index] ** GAMMA_CR
+        print(f"cold rarefaction {variant:6s}: max abs(K_cr - 1) {np.max(np.abs(k_cr[np.abs(x - 0.5) < 0.15] - 1.0)):.2e}")
+    diff = float(np.max(np.abs(e_cr["shocks"] / e_cr["off"] - 1.0)))
+    print(f"cold rarefaction: hybrid vs energy scheme, max relative e_cr difference {diff:.2e}")
+    assert diff < max_rarefaction_difference, f"cold rarefaction: hybrid differs from the energy scheme by {diff:.3e}."
+
+    # 5. mixing at an advected, pressure-balanced density contact
+    def contact(x, rv):
+        state = jnp.zeros((rv.num_vars, x.size))
+        state = state.at[rv.density_index].set(jnp.where(np.abs(x - 0.5) < 0.25, 1.0, 0.1))
+        state = state.at[rv.velocity_index].set(1.0).at[rv.pressure_index].set(0.5)
+        return state.at[rv.cosmic_ray_e_index].set(0.5 / (GAMMA_CR - 1.0))
+
+    for variant in ("off", "global", "shocks"):
+        _, s0, f, rv = _run_1d(variant, 512, contact, 1.0, PERIODIC_BOUNDARY, riemann_solver=HLLC)
+        d_ecr = float(f[rv.cosmic_ray_e_index].sum() / s0[rv.cosmic_ray_e_index].sum() - 1.0)
+        dp = float(np.max(np.abs(f[rv.pressure_index] + (GAMMA_CR - 1.0) * f[rv.cosmic_ray_e_index] - 1.0)))
+        print(f"mixing {variant:6s}: dE_cr/E_cr {d_ecr:+.2e}, max abs(P_tot - 1) {dp:.2e}")
+        if variant != "global":
+            assert abs(d_ecr) < tol and dp < tol, f"mixing {variant}: dE_cr {d_ecr:.2e}, dP_tot {dp:.2e}."
+
+
+def test_cr_entropy_hybrid_sedov_3d(num_cells=48, t_end=0.07, max_entropy_error=1e-2, min_gain=5.0):
+    """Multi-D check of the hybrid: a 3D Sedov blast (the item-7 setup, thermal explosion,
+    ``E = 1`` in ``rho = 1``, ``P_th = 1e-4``) into a uniform CR background ``P_cr = 1e-4``.
+    The CRs only see adiabatic compression, so the exact ``K_cr = P_cr / rho^gamma_cr`` stays
+    at its ambient value everywhere, at every shock orientation. HLLC (total-pressure flux) and
+    HLL, energy scheme vs hybrid: the mass-weighted mean of ``abs(K_cr / K_0 - 1)`` over the
+    shocked shell (``rho > 1.5``), and its maximum.
+
+    Gates: hybrid mean below ``max_entropy_error`` and at least ``min_gain`` below the energy
+    scheme. The shell is ~2-4 cells thick at N = 48, so this checks the mask in 3D, not the
+    plateau value.
+
+    Measured (2026-10-13, float32 default precision): shell mean ``abs(dK_cr)`` HLLC 1.4e-2
+    (energy scheme) -> 1.9e-4 (hybrid), maximum 3.4e-2 -> 3.6e-3; HLL 3.5e-2 -> 2.1e-4, maximum
+    0.10 -> 4.8e-3.
+
+    Args:
+        num_cells: Cells per axis.
+        t_end: End time (the shock stays inside the box, as in item 7).
+        max_entropy_error: Bound on the hybrid's shell mean ``abs(dK_cr)``.
+        min_gain: Minimum ratio energy scheme / hybrid of that mean.
+    """
+    from astronomix import CARTESIAN, construct_primitive_state
+
+    results = {}
+    for solver in (HLLC, HLL):
+        for flag in (False, True):
+            config = SimulationConfig(
+                geometry=CARTESIAN,
+                solver_mode=FINITE_VOLUME,
+                riemann_solver=solver,
+                limiter=MINMOD,
+                dimensionality=3,
+                num_cells=num_cells,
+                exact_end_time=True,
+                cosmic_ray_grey_config=CosmicRayGreyConfig(
+                    grey_cosmic_rays=True, cr_entropy=flag, cr_entropy_transfer=CR_ENTROPY_TRANSFER_SHOCKS
+                ),
+            )
+            helper_data = get_helper_data(config)
+            rv = get_registered_variables(config)
+            dx = 1.0 / num_cells
+            weight = 0.5 * (1.0 - jnp.tanh((helper_data.r - 0.05) / (2.0 * dx)))
+            gas_pressure = 1e-4 + (GAMMA - 1.0) / (jnp.sum(weight) * dx**3) * weight
+            zeros = jnp.zeros((num_cells,) * 3)
+            state = construct_primitive_state(
+                config=config, registered_variables=rv, density=zeros + 1.0, velocity_x=zeros,
+                velocity_y=zeros, velocity_z=zeros, gas_pressure=gas_pressure,
+            )
+            state = state.at[rv.cosmic_ray_e_index].set(1e-4 / (GAMMA_CR - 1.0))
+            config = finalize_config(config, state.shape)
+            params = SimulationParams(
+                t_end=t_end, gamma=GAMMA,
+                cosmic_ray_grey_params=CosmicRayGreyParams(gamma_cr=GAMMA_CR, reduced_streaming_speed=0.0),
+            )
+            final = np.asarray(time_integration(state, config, params, rv))
+            assert not np.any(np.isnan(final))
+            rho = final[rv.density_index]
+            dk = np.abs(final[rv.cosmic_ray_e_index] * (GAMMA_CR - 1.0) / rho**GAMMA_CR / 1e-4 - 1.0)
+            shell = rho > 1.5
+            results[solver, flag] = (float((dk * rho)[shell].sum() / rho[shell].sum()), float(dk[shell].max()))
+            print(f"Sedov 3D N={num_cells} {'HLLC' if solver == HLLC else 'HLL':4s} "
+                  f"{'hybrid' if flag else 'energy':6s}: shell mean abs(dK_cr) {results[solver, flag][0]:.2e}, "
+                  f"max {results[solver, flag][1]:.2e}, shell cells {int(shell.sum())}")
+    for solver in (HLLC, HLL):
+        hybrid, energy = results[solver, True][0], results[solver, False][0]
+        assert hybrid < max_entropy_error, f"Sedov 3D hybrid shell dK_cr {hybrid:.3e}."
+        assert energy > min_gain * hybrid, f"Sedov 3D: hybrid {hybrid:.3e} vs energy scheme {energy:.3e}."
 
 
 if __name__ == "__main__":
@@ -1021,3 +1256,4 @@ if __name__ == "__main__":
     test_cr_shock_tube_energy_conservation()
     test_cr_entropy_cold_rarefaction()
     test_cr_entropy_shock_only()
+    test_cr_entropy_hybrid_sedov_3d()

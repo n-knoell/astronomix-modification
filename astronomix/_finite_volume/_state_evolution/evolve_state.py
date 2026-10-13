@@ -1226,10 +1226,11 @@ def _evolve_gas_state_unsplit(
         # entropy do not take part in the energy transfer (their total-energy
         # residue is already discarded as truncation error).
         gas_energy_cells = None
-        # Shock-only transfer (CR_ENTROPY_TRANSFER_SHOCKS): the gas takes the
-        # difference only in shock zones; elsewhere it is discarded.
+        # Hybrid (CR_ENTROPY_TRANSFER_SHOCKS): s_cr is used only in shock zones;
+        # elsewhere e_cr and the gas keep their energy-scheme values.
+        shock_cells = None
         if config.cosmic_ray_grey_config.cr_entropy_transfer == CR_ENTROPY_TRANSFER_SHOCKS:
-            gas_energy_cells = cr_entropy_shock_mask(
+            shock_cells = cr_entropy_shock_mask(
                 primitive_state, config, registered_variables, params
             )
         if registered_variables.entropy_active:
@@ -1238,11 +1239,9 @@ def _evolve_gas_state_unsplit(
                 primitive_state, p_gas, p_gas, shock_mask, gamma, config, params,
                 registered_variables,
             )
-            gas_energy_cells = (
-                ~use_entropy if gas_energy_cells is None else gas_energy_cells & ~use_entropy
-            )
+            gas_energy_cells = ~use_entropy
         primitive_state = cr_entropy_to_energy(
-            primitive_state, gamma, registered_variables, params, gas_energy_cells
+            primitive_state, gamma, registered_variables, params, gas_energy_cells, shock_cells
         )
         # The transfer changed the gas pressure; keep the dual-energy entropy
         # row consistent with it (the next step re-syncs it anyway).

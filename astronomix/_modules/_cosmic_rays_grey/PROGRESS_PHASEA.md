@@ -23,7 +23,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | **Item 2: adiabatic compression** | | | | | |
 | A2.1 ballistic homologous compression/expansion | 3 | todo | | | |
 | A2.2 CR-modified linear sound wave | 1 | done; fixed by the stage-wise coupling | `cr_adiabatic_coupling.py` | **fails with the operator-split coupling**: order 1.09 / 0.68 / -0.09 at P_cr/P_th 0.5 / 2 / 10, an instability at 8-12 cells, unstable above C_cfl ~0.2. Stage-wise coupling prototype: order 1.85-1.87, stable at C_cfl 0.8 | 2026-10-09 |
-| A2.3 CR-dominated fluid vs gamma=4/3 hydro | 1 | done; fixed by the stage-wise coupling | `cr_adiabatic_coupling.py` | item-2 ringing is **not** in gamma=4/3 hydro (0.0012), only in the operator-split two-fluid run (0.36 at N 2048). Stage-wise: 0.0026, and the simple wave matches hydro at order 1.85 | 2026-10-09 |
+| A2.3 CR-dominated fluid vs gamma=4/3 hydro | 1 | done; fixed by the stage-wise coupling; under the 2026-10-13 default (HLLC) two-fluid vs hydro order 1.70 (gate split, 1.6) with a 20x smaller gap | `cr_adiabatic_coupling.py` | item-2 ringing is **not** in gamma=4/3 hydro (0.0012), only in the operator-split two-fluid run (0.36 at N 2048). Stage-wise: 0.0026, and the simple wave matches hydro at order 1.85 | 2026-10-09 |
 | A2.4 two-moment linear dispersion relation | 2 | todo | | | |
 | **Item 3: anisotropic diffusion** | | | | | |
 | A3.1 Sovinec steady state | 2 | done (with A3.5); led to the van Leer CR limiter + guard retune (2026-10-13, misfire fixed) | `cr_sovinec.py` | **since 2026-10-13 (van Leer, default):** 3.4e-3 / 1.1e-3 / 2.2e-4 / 3.5e-5 at 16-128 cells per unit length, orders 1.6-2.7; guard on = guard off within 0.4%. Before: `kappa_perp,num/kappa_par` (MINMOD, guard off) 2.0e-2 / 8.9e-3 / 3.4e-3 / 1.0e-3 at 16-128 cells per unit length, orders 1.2-1.7; MC 1.2e-3 ... 1.1e-5 (orders 1.9-2.6); field-aligned / projected speeds 2-4x worse in thick cells; additive to physical `kappa_perp` (1e-2: 2.0 / 0.91 / 0.32 / 0.095 of it); steady-state anchor agrees to <= 3.2%; guard on: leak 2x, symmetry broken | 2026-10-13 |
@@ -38,9 +38,9 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | A4.4 steady-state diffusion with source | 2 | done | `cr_steady_state_source.py` (1D + 2D) | steady state dt-independent to <= 4e-13 (C_cfl 0.4/0.2/0.1; ETD2RK and stage-wise; thin and thick); MINMOD second order in thin cells (2.00 at N 512->1024, all v_red), first order thick (1.14 at tau 3.3->1.7); error ~v_red^0.92 at fixed N; MC 2.1-2.4, 4-20x smaller; v_red dependence converges at 1.99; 2D diagonal mode 1.99 | 2026-10-12 |
 | A4.5 passive energy conservation | 3 | todo | | | |
 | **Item 6: shock tube** | | | | | |
-| A6.1 post-shock `K_cr` diagnostic + convergence | 1 | done | `cr_shock_tube_partition.py` | `K_cr,2` +1.27% at every N (100-3200; stage-wise coupling), 1.26-1.31% over C_cfl/limiter, HLLC + P2 0.42%: **not converging**, method-dependent | 2026-10-10 |
-| A6.2 Gupta et al. (2021) tubes A and B | 2 | done | `cr_shock_tube_partition.py` | A (CR-dominated, M 2.6): `K_cr,2` +6.3%, `P_th,2` -10.5%, spurious 19% of e_th; B (M 9.9): +10.6% | 2026-10-08 |
-| A6.3 Mach-number scan (Pfrommer et al. 2006) | 2 | done | `cr_shock_tube_partition.py` | `K_cr,2` error 0.4% (M 1.4) -> saturates 11.2% (M >= 30); spurious/e_th peaks 4.2% at M 3, ~M^-2 above | 2026-10-08 |
+| A6.1 post-shock `K_cr` diagnostic + convergence | 1 | done; fixed by the default (D2) | `cr_shock_tube_partition.py` | `K_cr,2` +1.27% at every N (100-3200; stage-wise coupling), 1.26-1.31% over C_cfl/limiter, HLLC + P2 0.42%: **not converging**, method-dependent. **Default since 2026-10-13 (HLLC + hybrid): 8.6e-5 at N 200-1600**, 3.9e-4 at C_cfl 0.8 | 2026-10-13 |
+| A6.2 Gupta et al. (2021) tubes A and B | 2 | done; fixed by the default (D2) | `cr_shock_tube_partition.py` | stage-wise coupling, HLL: A (CR-dominated, M 2.6): `K_cr,2` +6.83%, `P_th,2` -11.3%, spurious 21% of e_th; B (M 9.9): +12.9% (N >= 2000). Operator-split values (2026-10-08): +6.35% / -10.5% / 19% / +10.6%. **Default (HLLC + hybrid, N 4000): A +1.3e-4, spurious 3.7e-4; B +7.2e-6** | 2026-10-13 |
+| A6.3 Mach-number scan (Pfrommer et al. 2006) | 2 | done; fixed by the default (D2) | `cr_shock_tube_partition.py` | stage-wise coupling, HLL: `K_cr,2` error 0.48% (M 1.4) -> saturates 13.6% (M >= 30); spurious/e_th peaks 5.0% at M 3, ~M^-2 above; C_cfl 0.1 / 0.8: -2 / +5% relative. Operator-split (2026-10-08): 0.4% -> 11.2%, peak 4.2%. **Default (HLLC + hybrid, N 3200): <= 1.3e-4 at every M**, spurious <= 2.3e-4 | 2026-10-13 |
 | A6.4 reference-solver regression tests | 2 | todo | | | |
 | A6.5 conservation in the shock tube | 3 | done | `cr_shock_tube_partition.py` | mass <= 2e-16, E_gas + e_cr <= 5e-14 (reflecting box, both schemes) | 2026-10-08 |
 | A6.6 finite-`kappa` two-moment shock tube | 3 | todo | | | |
@@ -61,7 +61,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | ID | Question | Status | Outcome |
 |---|---|---|---|
 | D1 | Absolute `kappa_perp,num/kappa_par` budget for item 3? | open; data from A3.1 (2026-10-12), default changed 2026-10-13 | measured (Sovinec, 16-128 cells per unit length): van Leer (default since 2026-10-13) 3.4e-3 ... 3.5e-5, MINMOD 2e-2 ... 1e-3, MC ~3x below van Leer; S&H ring N 50-400: 0.015 ... 0.00061 |
-| D2 | Shock partition: change CR energy formulation or prescribe it? | **open again** (2026-10-09) | option a implemented as opt-in `cr_entropy` (default off after the 2026-10-09 analysis: the energy-conserving transfer drains CR-dominated gas); candidate: shock-only transfer (Semenov-style) |
+| D2 | Shock partition: change CR energy formulation or prescribe it? | **decided 2026-10-13** (user): HLLC + hybrid CR entropy is the grey-CR default | hybrid = energy scheme everywhere, `e_cr := e(s_cr)` only in shock zones (Gupta et al. 2021 detector); post-shock `K_cr` ~1e-4 (HLL energy scheme 0.4-13.6%); exact energy, contacts, mixing; M7 not validated (sets its scheme explicitly) |
 | D3 | Hard gates on library default (guard on) or production (guard off)? | open; the A3.1 guard misfire (2026-10-12) is fixed by the five-face sensor (2026-10-13) | A3.1 gates guard on and off since 2026-10-13 (equal within 0.4%) |
 
 ## Infrastructure
@@ -78,6 +78,170 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-13: HLLC + hybrid CR entropy as the grey-CR default (user decision) -- regression done, all pass
+
+- **Code (uncommitted):**
+  - `simulation_config.RIEMANN_SOLVER_AUTO` (the new default of `riemann_solver`) and
+    `resolve_auto_defaults`, called by `finalize_config` and `get_registered_variables`;
+  - `CosmicRayGreyConfig.cr_entropy = None` (auto) and
+    `cr_entropy_transfer = CR_ENTROPY_TRANSFER_SHOCKS`.
+- **Resolution checked** (`auto_default_check.py`):
+  - no CRs -> HLL;
+  - CRs -> HLLC with the hybrid on;
+  - CRs + streaming -> HLLC, hybrid off;
+  - split -> HLL, hybrid off;
+  - explicit settings kept; explicit `cr_entropy=True` with streaming raises.
+- **Tests pinned to their calibrated scheme:**
+  - A6.5 and the cold rarefaction: HLL + global transfer;
+  - A6.1-A6.3: the energy scheme with HLL stays as the control (dashed), the default is the
+    new main curve (solid), with gates `abs(dK_cr,2) < 1e-3` and registry metrics `default_*`.
+- **Regression** (update mode, every grey-CR test file, GPU only): split over two clusters,
+  `/export/scratch/nknoell/phaseA/dflt` (A6 partition, item 1, item 2, item 9, streaming, item 4,
+  gradient, Phase D, oblique, div B) and `/export/scratch/nknoell/phaseA/hllc_hybrid_update`
+  (everything, incl. items 3, 7, 8, 10, 11, 13-15, 18, ring, Sovinec `SOVINEC_VARIANTS=8`).
+  Logs in each `logs/`. Overrides as in earlier full runs: `test_cr_anisotropic_3d` with
+  `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`, pion bump `CR_NUM_CELLS=128`, clumpy medium at 128^3
+  (scratch copy).
+  - **All pass except** (first pass):
+    - `test_cr_hydro_equivalence` (A2.3a): two-fluid vs hydro order **1.70 < 1.8**, also with
+      both runs on HLLC (so the solver mismatch was not the cause). Two-fluid vs exact keeps
+      order 1.87 (8.3e-6 at N 1024), the same as hydro. **Not the hybrid:** with
+      `cr_entropy=False` forced (verified: 5 instead of 6 state rows) the result is identical
+      to all printed digits (`hllc_hybrid_update/diag_hydro_eq/diag.log`, GPU 0, 2026-10-13
+      17:49), so the shock mask never fires in this wave. With HLL in both runs it was 1.85,
+      so the 1.70 comes from HLLC (two-fluid with the total-pressure flux vs gamma = 4/3
+      hydro HLLC are different discretizations). The gap itself is 20x smaller than with HLL
+      (2.4e-7 vs 4.9e-6 at N 1024), squeeze ringing 0.0027 -> 0.0015. **Resolved (user):**
+      separate gate `min_order_vs_hydro = 1.6` (vs exact stays 1.8); rerun on GPU 0 passes,
+      registry entry and figure updated (`/export/scratch/nknoell/phaseA/hydro_eq_rerun`).
+    - `test_cr_ring_flux_cap_alone`: the strict xfail, as designed.
+  - **Fixed during the run** (test-side pins, scheme unchanged): the test-only `e_cr` source
+    hook does not support `cr_entropy`, so `cr_steady_state_source.py` and `cr_sovinec.py`
+    set `cr_entropy=False` (static gas, nothing to gain); `cr_energy_budget.py` sets
+    `cr_entropy=False` in both runs, since the streaming run cannot use it and the comparison
+    must be scheme against scheme; item 6 front gate 1.0 -> 1.5 cells (shock +1.03 cells, a
+    fixed start-up offset in cells, first order in x).
+  - **Better with the default:**
+    - item 6 shocked plateau: `e_cr` 1.7e-2 -> 3.5e-4, `P_th` 9.3e-3 -> 2.9e-4, `rho`
+      3.8e-3 -> 3.7e-4;
+    - A6.1-A6.3: `abs(dK_cr,2)` <= 1.3e-4 for every tube and N >= 200 (energy scheme
+      0.48-13.6%), spurious/e_th <= 3.7e-4 (was up to 21%); 3D Sedov shell 1.4e-2 -> 1.9e-4;
+    - item 2 invariant error 9.8e-4 -> 8.8e-4.
+  - **Worse with the default** (all within their gates):
+    - item 9 Test A post-shock errors 0.17 / 0.21 / 0.22% -> 0.30 / 0.49 / 0.53% (gate 2%),
+      Test B du/dx 24.2% -> 32.9% (gate 40%); HLLC and the hybrid not separated;
+    - A2.2 linear wave at `C_cfl = 0.8`: 3.9e-4 ... 1.1e-3 -> 1.45e-3 eps (finest N at
+      `C_cfl = 0.4` unchanged, 4.3e-4);
+    - item 6 left star `P_th` 3.2e-4 -> 1.4e-3, mean `u` error 4.1e-3 -> 4.5e-3;
+    - A6.3 left-plateau control `dK_cr,L` up to -2.3e-4 at M >= 30 (energy scheme <= 7e-7).
+  - **Unchanged** (registry entries identical or at the 1e-4 relative noise level): items 3, 4,
+    A4.1/A4.2/A4.4, A1.1, A1.3, Sovinec, ring. Items 7, 8, 10, 11, 13-15, 18, 19, gradient
+    checks and Phase D have no registry entries; they pass.
+- **Merged:** `baselines.json` (15 entries re-recorded; the two entries both clusters
+  recorded agree exactly; `_meta` updated by hand); 42 figures copied into `pics/` (all but
+  `cr_hydro_equivalence_test.svg`, added after its rerun). Docstrings re-measured: `cr_shock_tube_partition.py`
+  (default-scheme results), `cr_adiabatic_coupling.py`, `cr_modified_shock_structure.py`,
+  `cr_adiabatic_compression.py`, `cr_advection.py`, `cr_shock_tube.py`.
+
+### 2026-10-13: D2 restarted -- literature check, measurements, and a hybrid prototype that fixes the partition (no repo code change)
+
+Refined plan and literature: DESIGN.md "Open: conservative CR entropy at shocks", "Refined plan
+(2026-10-13)". Scratch scripts: `d2_measure.py` (A6.1-A6.3 tubes), `d2_expansion.py`,
+`d2_mixing.py`, `d2_hybrid_patch.py` (monkeypatch) in the session scratchpad. Logs:
+`/export/scratch/nknoell/phaseA/d2/logs/`. 1D, float64, GPU 0 (UUID-pinned, free at launch).
+
+**1. Energy scheme, HLLC + P2 (Gupta et al. 2021's "Unsplit-pdv" family) vs HLL**
+(`dK_cr,2` = post-shock CR entropy error; spurious = spurious CR energy / post-shock `e_th`;
+N = 1600 for the Mach scan; HLL = the current default).
+
+| tube | HLL | HLLC + P2 | HLLC + P2, spread over C_cfl 0.1-0.8 and MINMOD / MC / van Leer |
+|---|---|---|---|
+| item 6 (M 1.64) | +1.27% / 1.5% | +0.42% / 0.5% | 0.19-0.47% |
+| Gupta A (M 2.59) | +6.83% / 20.6% | +2.59% / 7.6% | 2.22-2.94% |
+| Gupta B (M 9.89) | +12.9% / 0.8% | +6.19% / 0.4% | 5.95-7.06% |
+| M 1.4 / 2 / 3 | 0.48 / 2.98 / 7.09% | 0.12 / 1.12 / 3.10% | M 2: 0.76-1.26% |
+| M 10 / 100 | 12.9 / 13.6% | 6.2 / 6.6% | M 10: 5.96-7.22% |
+
+HLLC + P2 halves the error and narrows the method spread, but it is neither small nor
+method-independent. HLL with van Leer (gas limiter) equals HLL with MINMOD within 1%.
+
+**2. The M7 "smooth-expansion CR error" is not in the energy scheme.**
+- 1D homologous expansion (`v = x - 1/2`, t = 0.5, open boundaries), `P_cr / P_th` = 100, inner
+  half of the box:
+  - subsonic: `|dK_cr|` 1.5e-5 -> 1.5e-8 (N 64 -> 1024), second order;
+  - supersonic (edge Mach ~10): `|dK_cr|` 8.6e-6 -> 3.4e-8;
+  - identical for HLL and HLLC.
+  - The gas carries the error instead: `|dK_th|` 0.32 -> 1.2e-3 in the supersonic case,
+    second order. That is the same absolute error as a gas-only run at the total pressure
+    (3.1e-3 -> 1.2e-5), on a thermal energy 100x smaller (a dual-energy issue, not D2).
+- **Mixing at a pressure-balanced density contact** (periodic, slab rho 1 in 0.1 or 0.5,
+  `P_th = P_cr = 0.5`, u = 1, one crossing; exact: nothing changes). `dE_cr / E_cr`:
+
+  | contrast | energy scheme HLL | HLLC + P2 | `cr_entropy` global | `cr_entropy` shocks (as implemented) |
+  |---|---|---|---|---|
+  | 10, N 128 / 512 | -1.4e-3 / -5.7e-4 | 1e-15 | +4.8e-2 / +2.0e-2 | +4.3e-2 / +1.7e-2, total energy +2.7e-2 / +1.1e-2 |
+  | 2, N 128 / 512 | -2.0e-5 / -7.9e-6 | 1e-15 | +4.2e-3 / +1.7e-3 | +4.1e-3 / +1.7e-3 |
+
+  Advecting `s_cr` conservatively and taking `e_cr = e(s_cr)` creates CR energy wherever the
+  grid mixes gas of different density (Jensen: the mixed `e(s)` exceeds the mixed `e`). This
+  is first order in dx, and both entropy modes also break the contact pressure balance by
+  2-5% (Gupta et al.'s Et+Scr finding).
+  - **This explains the 2026-10-09 M7 results**: shock-only created 11-15% of the CR
+    injection in the halo, and global moved CR energy out of the thin gas. The energy scheme
+    was the more accurate side there, not the less accurate one.
+- The current shock-only mode is also wrong with HLLC + P2: `K_cr` is exact, but `P_th,2` is
+  +2.3-4.3% at M >= 6 and the shock is +5 cells ahead (with HLL: <= 0.3%, shock within 1 cell).
+
+**3. Hybrid prototype (monkeypatch of `cr_entropy_to_energy`, shock-only mode):**
+- **Inside the shock mask** (Gupta et al. detector), `e_cr := e(s_cr)` and the difference goes
+  to the gas.
+- **Outside it**, the energy-scheme `e_cr` is kept.
+- `s_cr` is re-synced from `e_cr` every step, so it acts as a one-step auxiliary and mixing
+  errors cannot accumulate. Total energy is exact by construction.
+
+| | HLL + hybrid | HLL + hybrid, C_cfl 0.8 | HLLC + P2 + hybrid | HLLC + P2 + hybrid, MC |
+|---|---|---|---|---|
+| `dK_cr,2`, all 11 tubes | 0.15-0.31% | 0.21-0.41% | <= 0.013% | <= 0.007% |
+| spurious / `e_th` (max) | 0.69% (M 1.4) | 0.90% | 0.03% | 0.01% |
+| shock offset | <= 0.85 cells | <= 0.94 | <= 0.89 | <= 0.55 |
+
+- Mixing test: identical to the energy scheme (HLLC: `dE_cr` 1e-15, `P_tot` exact; HLL
+  -5.7e-4), total energy 1e-14.
+- Literature anchors:
+  - Gupta et al. (2021): a cell-wise, energy-conserving redistribution in detected shock
+    zones, with the energy scheme elsewhere.
+  - Ryu et al. (1993) / Bryan et al. (1995): a dual-energy selection by shock detection.
+  - Semenov et al. (2021): CRs adiabatic through shocks.
+  - DSA stays finder-based in energy form, so Weber et al.'s (2023) entropy-injection
+    oscillations do not arise; `s_cr` is re-synced after injection.
+**4. Implemented as opt-in (user decision: "implement opt in + test", without M7).**
+- **Code:** `cr_entropy_to_energy(..., shock_cells)`; `CR_ENTROPY_TRANSFER_SHOCKS` is now the
+  hybrid, and its docs are updated. Default unchanged (`cr_entropy=False`).
+- **Tests**, run in the scratch copy `/export/scratch/nknoell/phaseA/d2/tests` on GPU 0
+  (UUID-pinned; logs `d2/logs/h_*.log`):
+  - `cr_shock_tube_partition.py`: all 9 tests pass.
+    - `test_cr_entropy_shock_only` was rewritten for the hybrid. Two gates were corrected on
+      the way: the HLL gain is 4x (measured 5.7x for item 6); the rarefaction comparison
+      excludes the edge shock and is bounded at 1e-5 (measured 4.8e-7).
+    - Shocks: HLLC 9e-6 ... 1.3e-4, HLL 1.5-2.4e-3.
+    - Closed box: drift 3e-14.
+    - Squeeze: identical to the energy scheme.
+    - Mixing: `dE_cr` 1e-14 and `P_tot` 6e-14, as the energy scheme (global +2.3e-2).
+  - `test_cr_entropy_hybrid_sedov_3d` (new; 3D Sedov into a uniform CR background, exact
+    `K_cr` = const): shell mean `abs(dK_cr)` HLLC 1.4e-2 -> 1.9e-4, HLL 3.5e-2 -> 2.1e-4, so
+    the mask works at every shock orientation.
+  - With the hybrid forced on (`hybrid_side_run.py`; registry printed, not gated: no misses),
+    everything passes:
+    - item 2 (compression, linear sound wave, hydro equivalence);
+    - item 9 (all 3);
+    - A1.3 1D + 3D (contacts stay exact with HLLC, so the mask has no false positives there);
+    - all 5 gradient checks;
+    - item 7: `E_cr/E_tot` 0.0411 (energy scheme 0.0401), identity 3.6e-6;
+    - item 8: KR13 0.0826, CS14-like 0.0432.
+  - Flag off: untouched code path (the mask argument is None).
+- **Open:** M7 (excluded for now), the default decision, and whether `CR_ENTROPY_TRANSFER_GLOBAL`
+  (mixing error) should stay.
 
 ### 2026-10-13: CR-row limiter switched to van Leer, guard retuned (user decisions; uncommitted)
 

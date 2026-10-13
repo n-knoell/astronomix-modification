@@ -1,88 +1,88 @@
 {
  "_meta": {
   "about": "Measured baselines of the grey-CR Phase A tests (cr_baselines.py; Phase A plan X1/X2). Gates: errors <= 1.5x, orders >= value - margin, physical quantities two-sided.",
-  "measured": "2026-10-12, GPU (RTX 2080 Ti), branch feature/cosmic-rays-grey at 1008ccb plus the uncommitted ETD2RK / A4 / X1-X2 changes",
+  "measured": "2026-10-12, GPU (RTX 2080 Ti), branch feature/cosmic-rays-grey at 1008ccb plus the uncommitted ETD2RK / A4 / X1-X2 changes; entries dated 2026-10-13 re-measured after the van Leer CR rows (e230c25) and the HLLC + hybrid CR entropy default (uncommitted)",
   "refresh": "CR_UPDATE_BASELINES=1 python <test file>  (records instead of comparing; review the diff)",
-  "scheme": "ETD2RK F_cr relaxation (default), stage-wise CR coupling, MINMOD; Riemann solver as set per test (HLL default, HLLC + total-pressure flux where the test sets HLLC)"
+  "scheme": "ETD2RK F_cr relaxation (default), stage-wise CR coupling, MINMOD gas / van Leer CR rows; Riemann solver RIEMANN_SOLVER_AUTO (HLLC + total-pressure flux for unsplit FV Cartesian grey-CR runs, HLL otherwise) and cr_entropy auto (hybrid, SHOCKS transfer) unless the test sets them explicitly"
  },
  "cr_adiabatic_compression.py::test_cr_adiabatic_compression": {
   "max_invariant_error": {
-   "date": "2026-10-12",
-   "value": 0.0009798
+   "date": "2026-10-13",
+   "value": 0.0008845
   },
   "max_rho_ratio": {
-   "date": "2026-10-12",
-   "value": 1.145
+   "date": "2026-10-13",
+   "value": 1.153
   }
  },
  "cr_adiabatic_coupling.py::test_cr_hydro_equivalence": {
   "simple_wave_l1_finest": {
-   "date": "2026-10-12",
-   "value": 7.116e-06
+   "date": "2026-10-13",
+   "value": 8.314e-06
   },
   "simple_wave_vs_hydro_finest": {
-   "date": "2026-10-12",
-   "value": 4.893e-06
+   "date": "2026-10-13",
+   "value": 2.447e-07
   },
   "squeeze_ringing_n2048": {
-   "date": "2026-10-12",
-   "value": 0.002734
+   "date": "2026-10-13",
+   "value": 0.001463
   },
   "squeeze_ringing_n512": {
-   "date": "2026-10-12",
-   "value": 0.002596
+   "date": "2026-10-13",
+   "value": 0.001423
   }
  },
  "cr_adiabatic_coupling.py::test_cr_linear_sound_wave": {
   "ratio_0.5_l1_cfl08": {
-   "date": "2026-10-12",
-   "value": 0.0009619
+   "date": "2026-10-13",
+   "value": 0.001446
   },
   "ratio_0.5_l1_finest": {
-   "date": "2026-10-12",
-   "value": 0.0004079
+   "date": "2026-10-13",
+   "value": 0.0004312
   },
   "ratio_0_l1_cfl08": {
-   "date": "2026-10-12",
-   "value": 0.001115
+   "date": "2026-10-13",
+   "value": 0.001448
   },
   "ratio_0_l1_finest": {
-   "date": "2026-10-12",
-   "value": 0.0004296
+   "date": "2026-10-13",
+   "value": 0.0004312
   },
   "ratio_10_l1_cfl08": {
-   "date": "2026-10-12",
-   "value": 0.0003878
+   "date": "2026-10-13",
+   "value": 0.00145
   },
   "ratio_10_l1_finest": {
-   "date": "2026-10-12",
-   "value": 0.0003676
+   "date": "2026-10-13",
+   "value": 0.0004312
   },
   "ratio_2_l1_cfl08": {
-   "date": "2026-10-12",
-   "value": 0.0006733
+   "date": "2026-10-13",
+   "value": 0.001448
   },
   "ratio_2_l1_finest": {
-   "date": "2026-10-12",
-   "value": 0.0003865
+   "date": "2026-10-13",
+   "value": 0.0004312
   }
  },
  "cr_advection.py::test_cr_advection": {
   "centroid_cells": {
-   "date": "2026-10-12",
-   "value": -0.0731
+   "date": "2026-10-13",
+   "value": -0.07773
   },
   "flux_ratio_error": {
-   "date": "2026-10-12",
-   "value": 0.000301
+   "date": "2026-10-13",
+   "value": 0.000311
   },
   "l2_error": {
-   "date": "2026-10-12",
-   "value": 0.006049
+   "date": "2026-10-13",
+   "value": 0.006048
   },
   "peak_loss": {
-   "date": "2026-10-12",
-   "value": 0.03718
+   "date": "2026-10-13",
+   "value": 0.03716
   }
  },
  "cr_advection_by_gas.py::test_cr_advection_by_gas_1d": {
@@ -212,7 +212,7 @@
   },
   "in_plane_d_perp_finest": {
    "date": "2026-10-13",
-   "value": 0.001413
+   "value": 0.001414
   }
  },
  "cr_diffusion_rate.py::test_cr_anisotropic_kappa_perp": {
@@ -224,51 +224,51 @@
  "cr_diffusion_rate.py::test_cr_anisotropic_no_leak": {
   "d_perp_change": {
    "date": "2026-10-13",
-   "value": 6.499e-08
+   "value": 6.229e-08
   }
  },
  "cr_diffusion_rate.py::test_cr_anisotropic_out_of_plane_b": {
   "abs_ratio_error_fine": {
    "date": "2026-10-13",
-   "value": 0.001925
+   "value": 0.001926
   },
   "spread": {
    "date": "2026-10-13",
-   "value": 2.209e-06
+   "value": 2.21e-06
   }
  },
  "cr_diffusion_rate.py::test_cr_anisotropic_out_of_plane_wave_speed": {
   "abs_speed_error": {
    "date": "2026-10-13",
-   "value": 0.0001451
+   "value": 0.0001452
   }
  },
  "cr_diffusion_rate.py::test_cr_anisotropic_parallel_rate": {
   "theta_0_abs_d_par_error_finest": {
    "date": "2026-10-13",
-   "value": 0.0009642
+   "value": 0.0009644
   },
   "theta_30_abs_d_par_error_finest": {
    "date": "2026-10-13",
-   "value": 0.0009409
+   "value": 0.0009411
   },
   "theta_45_abs_d_par_error_finest": {
    "date": "2026-10-13",
-   "value": 0.000996
+   "value": 0.0009962
   }
  },
  "cr_diffusion_rate.py::test_cr_anisotropic_perpendicular_numerical": {
   "theta_0_d_perp_finest": {
    "date": "2026-10-13",
-   "value": 8.992e-05
+   "value": 9.012e-05
   },
   "theta_30_d_perp_finest": {
    "date": "2026-10-13",
-   "value": 0.0007725
+   "value": 0.0007727
   },
   "theta_45_d_perp_finest": {
    "date": "2026-10-13",
-   "value": 0.0009875
+   "value": 0.0009877
   }
  },
  "cr_diffusion_rate.py::test_cr_diffusion_rate_1d": {
@@ -280,7 +280,7 @@
  "cr_diffusion_rate.py::test_cr_diffusion_stiff_1d": {
   "abs_d_error": {
    "date": "2026-10-13",
-   "value": 0.0004735
+   "value": 0.0004731
   }
  },
  "cr_diffusion_rate.py::test_cr_diffusion_time_step_independence_1d": {
@@ -292,147 +292,163 @@
  "cr_isotropic_diffusion_convergence.py::test_cr_isotropic_diffusion_convergence": {
   "l2_n1024": {
    "date": "2026-10-13",
-   "value": 0.000109
+   "value": 0.0001093
   },
   "l2_n128": {
    "date": "2026-10-13",
-   "value": 0.0004707
+   "value": 0.0004705
   },
   "l2_n256": {
    "date": "2026-10-13",
-   "value": 0.0001617
+   "value": 0.0001615
   },
   "l2_n512": {
    "date": "2026-10-13",
-   "value": 0.0001143
+   "value": 0.0001145
   }
  },
  "cr_shock_tube.py::test_cr_shock_tube": {
   "left_star_e_cr_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.002179
+   "date": "2026-10-13",
+   "value": 0.002063
   },
   "left_star_p_th_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.0003244
+   "date": "2026-10-13",
+   "value": 0.001442
   },
   "left_star_rho_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.002111
+   "date": "2026-10-13",
+   "value": 0.00153
   },
   "left_star_u_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.0009381
+   "date": "2026-10-13",
+   "value": 0.0001866
   },
   "mean_abs_error_e_cr": {
-   "date": "2026-10-12",
-   "value": 0.003676
+   "date": "2026-10-13",
+   "value": 0.002802
   },
   "mean_abs_error_p_th": {
-   "date": "2026-10-12",
-   "value": 0.001807
+   "date": "2026-10-13",
+   "value": 0.001489
   },
   "mean_abs_error_rho": {
-   "date": "2026-10-12",
-   "value": 0.002998
+   "date": "2026-10-13",
+   "value": 0.002777
   },
   "mean_abs_error_u": {
-   "date": "2026-10-12",
-   "value": 0.004125
+   "date": "2026-10-13",
+   "value": 0.004546
   },
   "shocked_e_cr_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.01683
+   "date": "2026-10-13",
+   "value": 0.0003501
   },
   "shocked_p_th_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.009276
+   "date": "2026-10-13",
+   "value": 0.000288
   },
   "shocked_rho_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.003788
+   "date": "2026-10-13",
+   "value": 0.0003698
   },
   "shocked_u_abs_rel_error": {
-   "date": "2026-10-12",
-   "value": 0.0007572
+   "date": "2026-10-13",
+   "value": 9.012e-05
   }
  },
  "cr_shock_tube_partition.py::test_cr_shock_tube_gupta": {
   "A_abs_dK_2_n1000": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.06828
   },
   "A_abs_dK_2_n250": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.06868
   },
   "A_abs_dK_2_n4000": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.06828
   },
   "B_abs_dK_2_n1000": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.07385
   },
   "B_abs_dK_2_n2000": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.129
   },
   "B_abs_dK_2_n4000": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.1287
+  },
+  "default_A_abs_dK_2": {
+   "date": "2026-10-13",
+   "value": 0.0001305
+  },
+  "default_B_abs_dK_2": {
+   "date": "2026-10-13",
+   "value": 7.221e-06
   }
  },
  "cr_shock_tube_partition.py::test_cr_shock_tube_mach_scan": {
+  "default_abs_dK_2_worst": {
+   "date": "2026-10-13",
+   "value": 0.0001308
+  },
   "m1.4_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.004845
   },
   "m100_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.1363
   },
   "m10_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.1289
   },
   "m2_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.02983
   },
   "m30_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.1356
   },
   "m3_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.07091
   },
   "m60_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.1362
   },
   "m6_abs_dK_2_n3200": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.1164
   }
  },
  "cr_shock_tube_partition.py::test_cr_shock_tube_partition": {
   "abs_dK_2_n1600": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.0127
   },
   "abs_dK_2_worst_method": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 0.01309
   },
   "control_order": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 1.117
   },
   "dK_L_n1600": {
-   "date": "2026-10-12",
+   "date": "2026-10-13",
    "value": 7.506e-07
+  },
+  "default_abs_dK_2_worst": {
+   "date": "2026-10-13",
+   "value": 0.000386
   }
  },
  "cr_sovinec.py::test_sovinec_resolution": {

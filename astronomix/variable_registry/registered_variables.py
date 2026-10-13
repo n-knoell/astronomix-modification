@@ -26,6 +26,7 @@ from astronomix.option_classes.simulation_config import (
     IDEAL_GAS,
     ISOTHERMAL,
     XAXIS,
+    resolve_auto_defaults,
     YAXIS,
     ZAXIS,
 )
@@ -147,6 +148,10 @@ def get_registered_variables(config: SimulationConfig) -> RegisteredVariables:
     Returns:
         The registered variables.
     """
+
+    # The CR entropy row depends on the auto defaults (riemann_solver,
+    # cosmic_ray_grey_config.cr_entropy); resolve them as finalize_config does.
+    config = resolve_auto_defaults(config)
 
     registered_variables = RegisteredVariables()
 

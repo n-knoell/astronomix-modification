@@ -249,6 +249,9 @@ def _sovinec_run(
             anisotropic_transport=not isotropic,
             cr_wave_speed_model=model,
             cr_limiter=limiter,
+            # The test-only e_cr source does not support the CR entropy row (on by default
+            # since 2026-10-13); static gas has no shocks, so the hybrid would not act anyway.
+            cr_entropy=False,
         ),
     )
     registered_variables = get_registered_variables(config)

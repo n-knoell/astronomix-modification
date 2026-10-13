@@ -98,6 +98,11 @@ HLLC_LM = 2
 LAX_FRIEDRICHS = 3
 HYBRID_HLLC = 4
 AM_HLLC = 5
+#: Default of SimulationConfig.riemann_solver, resolved by resolve_auto_defaults
+#: (finalize_config, get_registered_variables): HLLC for finite-volume runs with
+#: grey cosmic rays (total-pressure HLLC flux, cosmic-ray DESIGN.md "Resolved:
+#: total-pressure HLLC flux"; shock partition D2, 2026-10-13), HLL otherwise.
+RIEMANN_SOLVER_AUTO = -1
 
 # time integrators
 # currently only for finite volume
@@ -571,8 +576,9 @@ class SimulationConfig(NamedTuple):
     limiter: int = MINMOD
 
     #: The Riemann solver used
-    #: Only for finite volume mode.
-    riemann_solver: int = HLL
+    #: Only for finite volume mode. Default RIEMANN_SOLVER_AUTO: HLLC with grey
+    #: cosmic rays, HLL otherwise (resolve_auto_defaults).
+    riemann_solver: int = RIEMANN_SOLVER_AUTO
 
     #: Dimensional splitting / unsplit mode.
     #: Note that the UNSPLIT scheme currently
@@ -758,6 +764,52 @@ def gpu_compute_capability_at_least_80() -> bool:
     return all(compute_cap >= (8, 0) for compute_cap in compute_caps)
 
 
+def resolve_auto_defaults(config: SimulationConfig) -> SimulationConfig:
+    """Resolve the configuration-dependent defaults of the grey cosmic-ray runs
+    (user decision 2026-10-13, cosmic-ray PROGRESS_PHASEA.md, D2):
+
+    - ``riemann_solver == RIEMANN_SOLVER_AUTO``: HLLC for finite-volume, Cartesian,
+      unsplit runs with grey cosmic rays (the total-pressure HLLC flux), HLL for
+      everything else.
+    - ``cosmic_ray_grey_config.cr_entropy is None``: on (the hybrid CR entropy scheme)
+      wherever it is supported -- grey CRs, finite volume, Cartesian, unsplit RK2,
+      HLL / HLLC(_LM), no streaming -- and off elsewhere.
+
+    Explicit settings are kept. Called by ``finalize_config`` and by
+    ``get_registered_variables`` (which allocates the CR entropy row before the
+    configuration is finalized), so both see the same resolution.
+
+    Args:
+        config: The user-supplied simulation configuration.
+
+    Returns:
+        The configuration with both defaults resolved.
+    """
+    cr_config = config.cosmic_ray_grey_config
+    fv_cr_run = (
+        cr_config.grey_cosmic_rays
+        and config.solver_mode == FINITE_VOLUME
+        and config.geometry == CARTESIAN
+    )
+    if config.riemann_solver == RIEMANN_SOLVER_AUTO:
+        # The total-pressure flux acts only in the unsplit scheme
+        # (cr_grey_transport.cr_total_pressure_flux); split runs keep HLL.
+        hllc = fv_cr_run and config.split == UNSPLIT
+        config = config._replace(riemann_solver=HLLC if hllc else HLL)
+    if cr_config.cr_entropy is None:
+        supported = (
+            fv_cr_run
+            and config.split == UNSPLIT
+            and config.time_integrator == RK2_SSP
+            and config.riemann_solver in (HLL, HLLC, HLLC_LM)
+            and not cr_config.streaming
+        )
+        config = config._replace(
+            cosmic_ray_grey_config=cr_config._replace(cr_entropy=bool(supported))
+        )
+    return config
+
+
 def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
     """Fill in derived configuration fields and validate the configuration.
 
@@ -775,6 +827,8 @@ def finalize_config(config: SimulationConfig, state_shape) -> SimulationConfig:
     Returns:
         The finalized simulation configuration.
     """
+
+    config = resolve_auto_defaults(config)
 
     # Resolve the OPTIMAL_BACKEND request into a concrete backend before any
     # downstream code inspects ``config.backend_config.backend``. PALLAS needs an Ampere-class
@@ -1136,6 +1190,8 @@ def riemann_solver_to_string(riemann_solver: int) -> str:
         return "Hybrid HLLC"
     elif riemann_solver == AM_HLLC:
         return "AM HLLC"
+    elif riemann_solver == RIEMANN_SOLVER_AUTO:
+        return "auto (HLLC with grey CRs, else HLL)"
 
 
 def limiter_to_string(limiter: int) -> str:
