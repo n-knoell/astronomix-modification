@@ -294,7 +294,7 @@ FLUX_CAP = "--no-flux-cap" not in sys.argv
 # "_noguard" in OUT_SUFFIX, so they never overwrite the earlier guard-on outputs.
 GUARD = "--guard" in sys.argv
 # --cr-entropy[=global|shocks]: conservative CR entropy (CosmicRayGreyConfig.cr_entropy, off by
-# default; DESIGN.md "Open: conservative CR entropy at shocks"). "global" (the bare flag) hands the
+# default; DESIGN.md "Decided: CR shock partition"). "global" (the bare flag) hands the
 # energy difference to the gas everywhere ("_crent" in OUT_SUFFIX), "shocks" only in shock zones
 # (CR_ENTROPY_TRANSFER_SHOCKS, "_crentshock").
 CR_ENTROPY = "--cr-entropy" in sys.argv or "cr-entropy" in _OPTS
