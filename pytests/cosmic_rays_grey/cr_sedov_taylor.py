@@ -46,6 +46,14 @@ the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2
 stage-wise source coupling in brackets):
 ``E_cr / E_total`` 0.0401 [0.0434], energy-partition identity 1.0e-6 [3.0e-6], total-energy
 conservation 1.3e-5 (control) / 1.3e-5 (DSA) [same].
+
+**Baselines (Phase B test plan Y6, 2026-10-14).** The numbers above are history; the current
+values are in ``baselines.json`` per resolution (``CR_NUM_CELLS``, metric suffix ``_N<cells>``,
+registered for N = 48, 96 and 160): ``E_cr/E`` and its ratio to the self-similar two-fluid
+Sedov reference (B7.1, code convention ``"gas_rh"``, ``zeta = 0.1``: ``E_cr/E = 0.1398``),
+two-sided within 5%; the shock-front radius within 2%; the conservation and partition-identity
+errors as upper bounds (1.5x, floor 1e-4: float32 round-off). The ratio to the reference is
+~0.3 at N = 48 and not converged (B7.3 decomposes it); the gate only keeps it from drifting.
 """
 
 # ==== GPU selection ====
@@ -63,6 +71,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import CARTESIAN, FINITE_VOLUME, HLLC, MINMOD
@@ -82,6 +93,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     CosmicRayGreyConfig,
     CosmicRayGreyParams,
 )
+from astronomix.test_setups.reference_solutions.sedov_two_fluid import solve_sedov_two_fluid
 
 # ---- physical setup (matches pytests/shock_finder3D/_sedov_setup.py) ----
 GAMMA = 5.0 / 3.0
@@ -241,9 +253,13 @@ def test_cr_sedov_taylor(
     total_volume = 1.0**3  # box_size = 1.0 (default)
     E_ambient_initial = P_AMBIENT / (GAMMA - 1.0) * total_volume
     E_total_initial = E_ambient_initial + E_EXPLOSION
+    baselines = Baselines("cr_sedov_taylor.py::test_cr_sedov_taylor")
+    suffix_n = f"_N{NUM_CELLS}"
+    baselines.close("r_shock" + suffix_n, r_shock, rel=0.02)
     for name, run in (("control", control), ("dsa", dsa)):
         rel_err = abs(run["E_total"] - E_total_initial) / E_total_initial
         print(f"{name}: total-energy rel. err {rel_err:.3e}")
+        baselines.upper(f"conservation_{name}" + suffix_n, rel_err, floor=1e-4)
         assert rel_err < conservation_tol, (
             f"{name} run's total energy is not conserved: final "
             f"{run['E_total']:.6f} vs. initial {E_total_initial:.6f} "
@@ -257,7 +273,13 @@ def test_cr_sedov_taylor(
     # check of 2026-10-07 -- see cr_dsa_mach_dependence.py; 4.0% with the
     # total-pressure HLLC flux of 2026-10-10).
     cr_fraction = dsa["E_cr"] / E_total_initial
-    print(f"E_cr / E_total = {cr_fraction:.4f}")
+    # self-similar two-fluid Sedov in the code's convention (B7.1)
+    cr_fraction_ref = solve_sedov_two_fluid(DSA_EFFICIENCY, convention="gas_rh").f_cr
+    print(f"E_cr / E_total = {cr_fraction:.4f} ({cr_fraction / cr_fraction_ref:.3f} of the "
+          f"self-similar reference {cr_fraction_ref:.4f})")
+    baselines.close("cr_fraction" + suffix_n, cr_fraction, rel=0.05)
+    baselines.close("cr_fraction_over_selfsimilar" + suffix_n, cr_fraction / cr_fraction_ref,
+                    rel=0.05)
     assert 0.01 < cr_fraction < 0.3, (
         f"DSA run's CR energy fraction ({cr_fraction:.4f}) is outside the "
         f"expected [0.01, 0.3] band for dsa_efficiency={DSA_EFFICIENCY} -- "
@@ -272,6 +294,7 @@ def test_cr_sedov_taylor(
     energy_diverted = thermal_kinetic_control - thermal_kinetic_dsa
     partition_rel_err = abs(energy_diverted - dsa["E_cr"]) / dsa["E_cr"]
     print(f"energy-partition identity rel. err {partition_rel_err:.3e}")
+    baselines.upper("partition_identity" + suffix_n, partition_rel_err, floor=1e-4)
     assert partition_rel_err < energy_partition_tol, (
         f"Energy-partition identity violated: thermal+kinetic energy "
         f"diverted from the control run ({energy_diverted:.6f}) does not "
@@ -316,8 +339,11 @@ def test_cr_sedov_taylor(
     pics_dir = Path(__file__).resolve().parent / "pics" / "07_sedov_taylor"
     pics_dir.mkdir(parents=True, exist_ok=True)
     suffix = "" if NUM_CELLS == 48 else f"_{NUM_CELLS}"
-    fig.savefig(pics_dir / f"cr_sedov_taylor_test{suffix}.svg")
+    # PNG: the profile panel plots every cell (SVG reached 0.9 GB at N = 160)
+    fig.savefig(pics_dir / f"cr_sedov_taylor_test{suffix}.png", dpi=150)
     plt.close(fig)
+
+    baselines.check()
 
 
 if __name__ == "__main__":

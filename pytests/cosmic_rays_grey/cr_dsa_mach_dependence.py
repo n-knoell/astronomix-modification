@@ -74,6 +74,19 @@ the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2
 stage-wise source coupling in brackets):
 (N = 48) ``E_cr / E_total`` KR13 0.0810 [0.0876], CS14-like 0.0423 [0.0457]; CS14/KR13 ratio
 0.5217 [0.5215], rel. err 4.34% [4.30%]; surface Mach numbers unchanged.
+
+**Baselines (Phase B test plan Y6, 2026-10-14).** The numbers above are history; the current
+values are in ``baselines.json`` per resolution (``CR_NUM_CELLS``, metric suffix ``_N<cells>``,
+registered for N = 48, 96 and 160): ``E_cr/E`` of the KR13 and CS14-like runs and the KR13 ratio to
+the self-similar two-fluid Sedov reference (B7.1, ``"gas_rh"`` at the strong-shock plateau
+``zeta = 0.211``), two-sided within 5%; the strong blast's median surface Mach number over the
+exact Sedov value and every weak blast's median within 5%; the CS14/KR13 ratio error, the
+conservation errors (floor 1e-4) and the formula cross-check errors (floor 1e-6) as upper bounds
+(1.5x). The physics gates in the signature are unchanged, except that the weak-blast Mach
+coverage gate applies at N <= 48 only: its bounds are the finder's medians at 48, which move
+towards the true Mach numbers with N (plan Y5), so it fails at N >= 96 by construction. The
+medians are tracked instead; B8.4 replaces the gate. The CS14/KR13 ratio error grows with N
+(4.6 / 6.4 / 7.6% at 48 / 96 / 160) and approaches ``scale_ratio_tol`` = 0.08.
 """
 
 # ==== GPU selection ====
@@ -91,6 +104,9 @@ import jax.numpy as jnp
 
 # plotting
 import matplotlib.pyplot as plt
+
+# baseline registry
+from cr_baselines import Baselines
 
 # astronomix containers
 from astronomix import CARTESIAN, FINITE_VOLUME, HLLC, MINMOD
@@ -119,6 +135,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
     dsa_shock_finder_kwargs,
     inject_crs_at_shocks,
 )
+from astronomix.test_setups.reference_solutions.sedov_two_fluid import solve_sedov_two_fluid
 
 # ---- physical setup (matches cr_sedov_taylor.py / _sedov_setup.py) ----
 GAMMA = 5.0 / 3.0
@@ -401,6 +418,7 @@ def test_cr_dsa_mach_dependence(
             Mach numbers must reach below ``weak_mach_low`` and above
             ``weak_mach_high``, so that together they cover KR13's rising
             part and the cross-checks on them exercise the Mach dependence.
+            Applied at N <= 48 only (calibrated there; see the gate).
     """
     control = _run_sedov(dsa_efficiency_model=DSA_EFFICIENCY_CONSTANT, dsa_efficiency=0.0)
     weak = {
@@ -443,8 +461,11 @@ def test_cr_dsa_mach_dependence(
     total_volume = 1.0**3
     E_ambient_initial = P_AMBIENT / (GAMMA - 1.0) * total_volume
     E_total_initial = E_ambient_initial + E_EXPLOSION
+    baselines = Baselines("cr_dsa_mach_dependence.py::test_cr_dsa_mach_dependence")
+    suffix_n = f"_N{NUM_CELLS}"
     for name, run in (("kr13", kr13), ("cs14", cs14)):
         rel_err = abs(run["E_total"] - E_total_initial) / E_total_initial
+        baselines.upper(f"conservation_{name}" + suffix_n, rel_err, floor=1e-4)
         assert rel_err < conservation_tol, (
             f"{name} run's total energy is not conserved: final "
             f"{run['E_total']:.6f} vs. initial {E_total_initial:.6f} "
@@ -481,8 +502,18 @@ def test_cr_dsa_mach_dependence(
     # dsa_efficiency_mach_scale=0.5 should give almost exactly half the CR
     # energy of scale=1.0, in a real run -- confirms the scale multiplies
     # the per-cell efficiency field itself (see module docstring).
+    # self-similar two-fluid Sedov at KR13's strong-shock plateau, code convention (B7.1)
+    kr13_ref = solve_sedov_two_fluid(0.211, convention="gas_rh").f_cr
+    print(f"KR13 E_cr / E_total {kr13['E_cr'] / E_total_initial:.4f} = "
+          f"{kr13['E_cr'] / E_total_initial / kr13_ref:.3f} of the self-similar reference "
+          f"{kr13_ref:.4f}")
+    for name, run in (("kr13", kr13), ("cs14", cs14)):
+        baselines.close(f"cr_fraction_{name}" + suffix_n, run["E_cr"] / E_total_initial, rel=0.05)
+    baselines.close("cr_fraction_kr13_over_selfsimilar" + suffix_n,
+                    kr13["E_cr"] / E_total_initial / kr13_ref, rel=0.05)
     ratio = cs14["E_cr"] / kr13["E_cr"]
     ratio_rel_err = abs(ratio - 0.5) / 0.5
+    baselines.upper("scale_ratio_error" + suffix_n, ratio_rel_err, floor=0.01)
     print(
         f"E_cr / E_total: KR13 {kr13['E_cr'] / E_total_initial:.4f}, CS14-like "
         f"{cs14['E_cr'] / E_total_initial:.4f}; ratio {ratio:.4f} (rel. err "
@@ -499,6 +530,9 @@ def test_cr_dsa_mach_dependence(
     sf_result, rel_err = _formula_cross_check(control, cross_check_tol)
     mach_strong = _surface_mach(sf_result)
     mach_sedov = sedov_mach(T_END, P_AMBIENT)
+    baselines.upper("cross_check_strong" + suffix_n, rel_err, floor=1e-6)
+    baselines.close("mach_median_strong_over_sedov" + suffix_n,
+                    float(jnp.median(mach_strong)) / mach_sedov, rel=0.05)
     print(
         f"strong blast (p_amb={P_AMBIENT:g}): surface Ms median "
         f"{float(jnp.median(mach_strong)):.1f} (exact Sedov {mach_sedov:.1f}), "
@@ -508,6 +542,9 @@ def test_cr_dsa_mach_dependence(
     for p_ambient, run in weak.items():
         sf_weak, rel_err_weak = _formula_cross_check(run, cross_check_tol)
         mach_weak[p_ambient] = _surface_mach(sf_weak)
+        baselines.upper(f"cross_check_weak_p{p_ambient:g}" + suffix_n, rel_err_weak, floor=1e-6)
+        baselines.close(f"mach_median_weak_p{p_ambient:g}" + suffix_n,
+                        float(jnp.median(mach_weak[p_ambient])), rel=0.05)
         print(
             f"weak blast (p_amb={p_ambient:g}): surface Ms median "
             f"{float(jnp.median(mach_weak[p_ambient])):.2f}, cross-check rel. "
@@ -554,16 +591,22 @@ def test_cr_dsa_mach_dependence(
     pics_dir = Path(__file__).resolve().parent / "pics" / "08_dsa_mach_dependence"
     pics_dir.mkdir(parents=True, exist_ok=True)
     suffix = "" if NUM_CELLS == 48 else f"_{NUM_CELLS}"
-    fig.savefig(pics_dir / f"cr_dsa_mach_dependence_test{suffix}.svg")
+    # PNG: the curve panel plots every shock cell (SVG reached 54 MB at N = 224)
+    fig.savefig(pics_dir / f"cr_dsa_mach_dependence_test{suffix}.png", dpi=150)
     plt.close(fig)
 
-    # Together the weak blasts must cover KR13's rising part, Ms ~ 2-10.
+    # Together the weak blasts must cover KR13's rising part, Ms ~ 2-10. The bounds are the
+    # finder's medians at the calibrated N = 48; with N they move towards the true Mach numbers
+    # (finder bias, Phase B plan Y5), so the gate fails at N >= 96 by construction (weakest
+    # median 2.67 at 96). Above 48 the medians are tracked in baselines.json instead; B8.4
+    # replaces this gate by one against a 1D spherical reference.
     medians = [float(jnp.median(m)) for m in mach_weak.values()]
-    assert min(medians) < weak_mach_low and max(medians) > weak_mach_high, (
+    assert NUM_CELLS > 48 or (min(medians) < weak_mach_low and max(medians) > weak_mach_high), (
         f"The weak blasts' median surface Mach numbers {medians} no longer "
         f"span [{weak_mach_low}, {weak_mach_high}] -- they do not cover "
         f"KR13's rising part; retune WEAK_P_AMBIENTS."
     )
+    baselines.check()
 
 
 if __name__ == "__main__":

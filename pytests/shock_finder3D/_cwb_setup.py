@@ -259,16 +259,19 @@ def run_cwb(
     dual_energy=False,
     dual_energy_shock_dilation=1,
     wind_floor_kelvin=None,
+    cosmic_rays=True,
 ):
     """Run one 3D stationary colliding-wind-binary simulation and find its shocks.
 
-    Grey two-moment cosmic rays are always active (``grey_cosmic_rays=True``,
+    Grey two-moment cosmic rays are active by default (``grey_cosmic_rays=True``,
     ``diffusive_shock_acceleration=True``) so the registered-variable layout
     (and hence array shapes/indices) is identical across calls -- only
     ``dsa_efficiency`` varies between a CR-off control (``dsa_efficiency=0``,
     DSA code path live but injecting nothing) and a CR-on run. Everything
     else about the physical setup (wind/ambient/cooling/resolution/BCs) is
-    unchanged from the original hydro-only CWB setup.
+    unchanged from the original hydro-only CWB setup. ``cosmic_rays=False``
+    drops the CR module entirely (pure hydro, smaller state, no per-step DSA
+    shock finding): the N=256 control does not fit an 11 GB GPU with CRs on.
 
     Args:
         num_cells: The number of cells per dimension (cubic domain).
@@ -295,6 +298,10 @@ def run_cwb(
         wind_floor_kelvin: Wind temperature floor in K
             (``WindConfig.wind_temperature_floor``), e.g. ``1e4``. ``None``
             (default) leaves the wind unfloored.
+        cosmic_rays: Enable the grey-CR module (default ``True``). With
+            ``False`` the run is pure hydro, ``dsa_efficiency`` is ignored and
+            the state has no CR rows (``axis_profile`` then returns a zero CR
+            pressure).
 
     Returns:
         A dict with the final primitive ``state``, the ``config``,
@@ -392,7 +399,7 @@ def run_cwb(
             central_object_only=False,
         ),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
-            grey_cosmic_rays=True, diffusive_shock_acceleration=True
+            grey_cosmic_rays=cosmic_rays, diffusive_shock_acceleration=cosmic_rays
         ),
         # FIXES_TODO.md item 1b, round 14: radiative cooling, disabled by
         # default (CoolingConfig()'s own default is cooling=False), enabled
@@ -546,7 +553,7 @@ def axis_profile(run):
         ``(x, density, pressure, pressure_cr, velocity_x)``, each a 1D numpy
         array in box-centered x-coordinates. ``pressure_cr`` is
         ``(gamma_cr - 1) * e_cr`` and is exactly zero everywhere for a
-        ``dsa_efficiency=0`` control run.
+        ``dsa_efficiency=0`` control run or a ``cosmic_rays=False`` run.
     """
     state = run["state"]
     registered_variables = run["registered_variables"]
@@ -558,8 +565,12 @@ def axis_profile(run):
     z = num_cells // 2
     density = np.array(state[registered_variables.density_index])[:, y, z]
     pressure = np.array(state[registered_variables.pressure_index])[:, y, z]
-    e_cr = np.array(state[registered_variables.cosmic_ray_e_index])[:, y, z]
-    pressure_cr = (params.cosmic_ray_grey_params.gamma_cr - 1.0) * e_cr
+    if run["config"].cosmic_ray_grey_config.grey_cosmic_rays:
+        e_cr = np.array(state[registered_variables.cosmic_ray_e_index])[:, y, z]
+        pressure_cr = (params.cosmic_ray_grey_params.gamma_cr - 1.0) * e_cr
+    else:
+        # cosmic_ray_e_index is -1 without CRs, i.e. it would read the last row
+        pressure_cr = np.zeros_like(density)
     velocity_x = np.array(
         state[registered_variables.velocity_index.x]
     )[:, y, z]
