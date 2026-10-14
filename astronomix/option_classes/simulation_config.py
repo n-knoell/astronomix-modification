@@ -101,7 +101,8 @@ AM_HLLC = 5
 #: Default of SimulationConfig.riemann_solver, resolved by resolve_auto_defaults
 #: (finalize_config, get_registered_variables): HLLC for finite-volume runs with
 #: grey cosmic rays (total-pressure HLLC flux, cosmic-ray DESIGN.md "Resolved:
-#: total-pressure HLLC flux"; shock partition D2, 2026-10-13), HLL otherwise.
+#: total-pressure HLLC flux"; shock partition D2, 2026-10-13; the total-pressure flux
+#: is off with gravity, cr_grey_transport.cr_total_pressure_flux), HLL otherwise.
 RIEMANN_SOLVER_AUTO = -1
 
 # time integrators

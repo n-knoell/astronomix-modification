@@ -260,6 +260,7 @@ def run_cwb(
     dual_energy_shock_dilation=1,
     wind_floor_kelvin=None,
     cosmic_rays=True,
+    num_injection_cells=None,
 ):
     """Run one 3D stationary colliding-wind-binary simulation and find its shocks.
 
@@ -302,6 +303,14 @@ def run_cwb(
             ``False`` the run is pure hydro, ``dsa_efficiency`` is ignored and
             the state has no CR rows (``axis_profile`` then returns a zero CR
             pressure).
+        num_injection_cells: Wind injection radius in cells. ``None``
+            (default) keeps ``num_cells // 32``, i.e. a fixed 1/32 of the box at
+            every resolution. The EI wind is thermally driven, and its Mach number
+            at the termination shock is the Chevalier & Clegg (1985) value at
+            (shock distance / injection radius) -- about 10 for the default at
+            every N (FIXES_TODO.md, 2026-10-14). A fixed value (e.g. ``2``) lets
+            that ratio, and so the pre-shock Mach number, grow as ``N^(2/3)``.
+            ``1`` injects nothing (the stars sit on cell corners in y/z).
 
     Returns:
         A dict with the final primitive ``state``, the ``config``,
@@ -386,7 +395,9 @@ def run_cwb(
         dual_energy_shock_dilation=dual_energy_shock_dilation,
         wind_config=WindConfig(
             stellar_wind=True,
-            num_injection_cells=num_cells // 32,
+            num_injection_cells=(
+                num_cells // 32 if num_injection_cells is None else num_injection_cells
+            ),
             # wind_injection_scheme=EI,
             trace_wind_density=False,
             analytic_wind_zone=analytic_wind_zone,

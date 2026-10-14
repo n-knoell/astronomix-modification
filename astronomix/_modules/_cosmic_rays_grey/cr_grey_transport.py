@@ -302,12 +302,22 @@ def cr_total_pressure_flux(
     Not used for HLL (it would also have to dissipate ``e_cr`` at the gas
     speed to balance a static contact, which degrades CR transport), AM-HLLC
     or the split scheme; those keep the source-term coupling.
+
+    Not used with gravity (self-gravity or an external potential; user decision
+    2026-10-14, PROGRESS_PHASEA.md 2026-10-10 "gravity is not well-balanced with
+    P2"): the FV gravity source is not well-balanced against the Riemann flux,
+    so with ``P_cr`` in the flux a CR-supported hydrostatic column inherits the
+    thermal residual (core Mach 0.14 instead of 0.01-0.015 with the centred
+    source coupling, which balances the centred gravity source to O(dx^2)).
+    Gravity runs keep the source-term coupling.
     """
+    gravity = config.gravity_config.self_gravity or config.gravity_config.external_potential
     return bool(
         registered_variables.cosmic_ray_e_active
         and config.solver_mode == FINITE_VOLUME
         and config.split == UNSPLIT
         and config.riemann_solver in (HLLC, HLLC_LM)
+        and not gravity
     )
 
 

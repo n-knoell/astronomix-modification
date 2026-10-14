@@ -63,6 +63,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | D1 | Absolute `kappa_perp,num/kappa_par` budget for item 3? | open; data from A3.1 (2026-10-12), default changed 2026-10-13 | measured (Sovinec, 16-128 cells per unit length): van Leer (default since 2026-10-13) 3.4e-3 ... 3.5e-5, MINMOD 2e-2 ... 1e-3, MC ~3x below van Leer; S&H ring N 50-400: 0.015 ... 0.00061 |
 | D2 | Shock partition: change CR energy formulation or prescribe it? | **decided 2026-10-13** (user): HLLC + hybrid CR entropy is the grey-CR default | hybrid = energy scheme everywhere, `e_cr := e(s_cr)` only in shock zones (Gupta et al. 2021 detector); post-shock `K_cr` ~1e-4 (HLL energy scheme 0.4-13.6%); exact energy, contacts, mixing; M7 not validated (sets its scheme explicitly) |
 | D3 | Hard gates on library default (guard on) or production (guard off)? | open; the A3.1 guard misfire (2026-10-12) is fixed by the five-face sensor (2026-10-13) | A3.1 gates guard on and off since 2026-10-13 (equal within 0.4%) |
+| D4 | P2 (total-pressure HLLC) with gravity: (a) exclude gravity runs or (b) well-balanced P_th + P_cr reconstruction? | **decided 2026-10-14** (user): (a), automatic | `cr_total_pressure_flux` is False with self-gravity or an external potential; those runs keep the source coupling. CR-supported column core Mach 0.0098 / 0.0138 (N_z 128 / 256) vs 0.137 with P2 |
 
 ## Infrastructure
 
@@ -78,6 +79,28 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 - [ ] `baselines.json` next to `pics/` (X1)
 
 ## Log (newest first)
+
+### 2026-10-14: D4 decided -- P2 off with gravity (option a, automatic)
+
+- **Code:** `cr_grey_transport.cr_total_pressure_flux` returns False when
+  `gravity_config.self_gravity or gravity_config.external_potential`. All callers (`hll`,
+  `evolve_state`, `_time_integrator_sources`) use the predicate, so gravity runs get the source
+  coupling (-grad P_cr, -v.grad P_cr, centred -P_cr div v) with HLLC, as before 2026-10-10.
+  `resolve_auto_defaults` is unchanged (HLLC + hybrid stays the default; the hybrid also works
+  with the source coupling).
+- **Check** (scratch `/export/scratch/nknoell/m7_rerun/scripts/cr_hydrostatic_check.py`: the
+  `stratified_hydrostatic_column.py` potential, 4 x 4 x N_z, P_cr = 0.9 P_tot, v_red = 0, HLLC,
+  t = 4, float64; max core |v| / sqrt(gamma C2)):
+
+  | | N_z 128 | N_z 256 |
+  |---|---|---|
+  | CR, new rule (no P2, hybrid entropy) | 0.0098 | 0.0138 |
+  | CR, P2 forced on | 0.137 | -- |
+  | thermal only | 0.110 | -- |
+
+  Same as 2026-10-10 (0.011 / 0.015, P2 0.147 / 0.142, thermal 0.110).
+- **Affected:** only runs with grey CRs and gravity (M5, M6, M7); no committed pytest combines
+  them, so the regression suite is unchanged.
 
 ### 2026-10-13: HLLC + hybrid CR entropy as the grey-CR default (user decision) -- regression done, all pass
 

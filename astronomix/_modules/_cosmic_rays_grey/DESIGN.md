@@ -1712,7 +1712,9 @@ comparison rather than a tuned-to-pass one.
   - In the advected case the gas work `-v . grad(P_cr)` also differentiates the jump of `P_cr`:
     the "vdp" form that fails Gupta, Sharma & Mignone (2021)'s Fig. 3.
 - **Change** (`cr_grey_transport.cr_total_pressure_flux`: grey CRs, FV, unsplit, HLLC or
-  HLLC-LM; hydro, and MHD since 2026-10-10 evening). This is Gupta et al. (2021)'s "Eg+Ecr Unsplit-pdv", as in Kudoh & Hanawa
+  HLLC-LM; hydro, and MHD since 2026-10-10 evening; **not with gravity** since 2026-10-14, user
+  decision: the FV gravity source is not well-balanced against the flux, so gravity runs keep the
+  source coupling, `PROGRESS_PHASEA.md` 2026-10-14). This is Gupta et al. (2021)'s "Eg+Ecr Unsplit-pdv", as in Kudoh & Hanawa
   (2016), Pfrommer et al. (2017) and the two-moment scheme of Thomas, Pfrommer & Pakmor (2021).
   - `hll._hllc_solver`:
     - `P_th + P_cr` in the normal momentum flux, in the gas energy flux `u (E_g + P_th +

@@ -2862,6 +2862,83 @@ limitation (2026-10-02)". Not fixed.
 
 ---
 
+## 2026-10-14: does a larger binary separation raise the CWB Mach number? No; the shock distance in injection radii sets it
+
+Question (user): the pre-shock wind is too hot because the injection radius is numerically large.
+Would a larger physical separation fix it? Tested with the default plain-EI, pure-hydro
+(`cosmic_rays=False`) stationary setup at N=64 (plus two N=128 checks), extended finder. Scripts,
+logs and raw states: `/export/scratch/nknoell/cwb_separation/{scripts,logs,data}`
+(`run_variant.py NAME SEP_AU SEP_FRAC NUM_INJ [N]` overrides `_cwb_setup`'s module constants;
+`_cwb_setup.py` itself is unchanged). Figures: `figures/cwb_separation/`.
+
+Star-1 (strong wind) apex on the binary axis; `R` = injection radius, `r_s` = star-to-shock distance.
+"local" = max `|v_x|/c_s` in the free wind upstream of the shock; CC85 = Chevalier & Clegg (1985)
+Mach number of a thermally driven wind at `r_s/R`:
+
+| run | sep (au) | sep / box | `R` (cells) | N | `r_s/R` | finder M | local M | CC85 M | median M (all cells) |
+|---|---|---|---|---|---|---|---|---|---|
+| sep_5au | 5 | 0.4 | 2 | 64 | 9.2 | 10.1 | 9.4 | 10.8 | 5.02 |
+| base_50au | 50 | 0.4 | 2 | 64 | 9.2 | 10.2 | 9.4 | 10.8 | 5.02 |
+| sep_500au | 500 | 0.4 | 2 | 64 | 8.7 | 7.4 | 8.8 | 10.4 | 5.02 |
+| sep_5000au | 5000 | 0.4 | 2 | 64 | 9.2 | 10.0 | 9.4 | 10.8 | 9.70* |
+| frac06 | 50 | 0.6 | 2 | 64 | 12.3 | 11.8 | 12.4 | 13.3 | 7.51 |
+| frac07 | 50 | 0.7 | 2 | 64 | 14.9 | 14.0 | 14.6 | 15.2 | 8.52 |
+| ninj3 | 50 | 0.4 | 3 | 64 | 5.8 | 6.7 | 7.3 | 7.9 | 4.55 |
+| n128_ninj4 (default) | 50 | 0.4 | 4 | 128 | 8.0 | 9.5 | 10.1 | 9.9 | 6.21 |
+| n128_ninj2 | 50 | 0.4 | 2 | 128 | 16.1 | 14.8 | 15.5 | 15.9 | 8.28 |
+
+*sep_5000au: the extra cells are the swept-up shell's forward shock into the cold ambient medium
+(M ~55-60, at the box edge), still inside the box at T_END because the wind density there drops
+below ambient (`rho_wind/rho_amb ~ 1/L^2`). The wind-collision shocks are unchanged.
+
+Findings:
+- **Physical separation alone does nothing.** Without cooling or gravity the setup has no length
+  scale: rescaling `code_length` changes no dimensionless ratio that reaches the termination shock
+  (5, 50, 500 au give identical axis profiles of `T/T_amb` and local Mach; the 500 au apex sits one cell
+  closer, hence 7.4). Only the ambient medium sees the scale (`rho_wind/rho_amb ~ 1/L^2`), and it only
+  affects the outer shell.
+- **The pre-shock Mach number is the Chevalier & Clegg value at `r_s/R`**, to within 3-14% (local)
+  for every run: `M ~ 2.5 (r_s/R)^(2/3)`. The EI source is a thermally driven wind launched from a
+  sphere of radius `R`; its adiabatic expansion is resolved and gives exactly this Mach number. The
+  "too hot" wind (`T_up/T_amb ~ 230` at baseline) is the correct solution for that source, not
+  numerical heating.
+- **This is why resolution never helped (rounds 12-13).** `num_injection_cells = num_cells // 32`
+  keeps `R` at 1/32 of the box, so `r_s/R ~ 9` and `M ~ 10` at every N. Confirmed at N=128: the
+  default (`R` = 4 cells) gives 10.1, the same as N=64; a fixed 2-cell `R` gives 15.5 (CC85: 15.9).
+- **Separation as a box fraction is a modest lever:** 0.6 / 0.7 give `M` 12.4 / 14.6 (x1.3 / x1.55),
+  median 7.5 / 8.5. Beyond ~0.7 the shock cone of star 2 leaves the box (star 2 sits 9.6 cells from
+  the edge at 0.7).
+- **Reaching M ~150 this way needs `r_s/R ~ 460`**, i.e. N ~ 3200 with a 2-cell source. Not
+  feasible. M ~150 needs a different wind state (analytic zone, round 19-20; temperature floor +
+  dual energy, round 22-23: apex 147-151).
+- `num_injection_cells = 1` injects nothing: the mask is `dist <= R - dx/2 = 0.5 dx`, and the stars
+  sit on cell corners in y/z (`dist >= 0.71 dx`). The plain-EI Mdot fraction (round 20 bug) is
+  0.36 (2 cells), 0.57 (3), 0.66 (4).
+- Star-2 apex values are unreliable at N=64: `r_s/R ~ 2-3.5`, the shock sits next to the injection
+  region.
+
+Cheap change: decouple `num_injection_cells` from N (fixed 2
+cells) so the Mach number grows as `N^(2/3)`: CC85 predicts ~28 at N=256 and ~44 at N=512.
+
+**Done (user decision, 2026-10-14):** opt-in `run_cwb(..., num_injection_cells=2)` (default
+unchanged, `num_cells // 32`); runner `_regen_fixed_injection.py N`, figures
+`figures/cwb_fixed_injection/cwb_shocked_cells_{2d,3d}_ninj2_<N>.png`, raw states
+`/export/scratch/nknoell/cwb_separation/data/ninj2_N<N>.npz`. Pure hydro, no NaNs:
+
+| N | `r_s/R` star 1 | finder M | local M | CC85 | `T_up/T_amb` | star 2: finder / local / CC85 | median / p90 / max (all cells) |
+|---|---|---|---|---|---|---|---|
+| 64 | 9.2 | 10.2 | 9.4 | 10.8 | 230 | unreliable (`r_s/R` 3.7) | 5.0 / 6.5 / 11.7 |
+| 96 | 12.3 | 11.0 | 12.4 | 13.3 | -- | 4.7 / 5.7 / 6.9 | 6.9 / 9.1 / 12.7 |
+| 128 | 16.1 | 14.8 | 15.5 | 15.9 | 87 | 5.2 / 6.1 / 8.1 | 8.3 / 10.8 / 16.0 |
+| 196 | 24.8 | 20.1 | 22.4 | 21.4 | -- | 7.7 / 9.7 / 10.6 | 11.1 / 14.8 / 24.0 |
+| 256 | 33.9 | 27.9 | 28.7 | 26.3 | 26 | 10.6 / 11.3 / 12.6 | 13.3 / 18.0 / 31.1 |
+
+The apex Mach follows CC85 (`~N^(2/3)`), ~3x the default's ~10 at N=256. Plot of Mach vs `r_s/R_inj`
+with the CC85 curve: `_plot_fixed_injection_mach.py` -> `figures/cwb_fixed_injection/cwb_mach_vs_distance_ninj2.png`. The plain-EI Mdot bug
+(round 20) still applies: a 2-cell source injects 36% of the nominal Mdot at every N.
+
+---
+
 ## Suggested order for next session
 
 1. **Done 2026-09-26 (round 24):** flux ported, DSA injection switched

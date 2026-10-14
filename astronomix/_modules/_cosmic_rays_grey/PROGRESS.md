@@ -7,6 +7,166 @@ file is what's actually done against it.
 Phase A test-plan work (`astronomix_CR_phaseA_test_plan.md`) is tracked in `PROGRESS_PHASEA.md`;
 scheme changes that come out of it are still logged here.
 
+## Launched (2026-10-14 19:41): M7 rerun with the current default scheme, v_red = 1e4 and 3000 km/s
+
+User decisions (2026-10-14), for a possible M7 section in the status report:
+- **P2 with gravity:** off, automatically (Phase A D4 = option a; `PROGRESS_PHASEA.md`
+  2026-10-14). M7 has gravity, so it uses HLLC with the CR source coupling.
+- **CR entropy:** the library default, i.e. the hybrid (new `--cr-entropy=auto`, suffix `_hybrid`).
+- **Guard:** off, as in the 10-07 production run. The user first picked the library default
+  (on), then switched to off once told that the guard's dissipation scales with v_red (DESIGN.md
+  step 5a): with it on, the v_red pair would not test convergence.
+- **Others:** realizability cap on, 33 pc accepted (`--res=0.9375`), seed 42.
+- **Open z boundary:** book-keeping only. Each step logs the CR energy through the z faces
+  (advective and F_z, inflow separately), the gas mass flux and the `-P_cr div u` estimate
+  (wrapper `/export/scratch/nknoell/m7_rerun/scripts/m7_run_budget.py` = the 10-08 `m7_budget.py`
+  without the figure redirect).
+  - In a 1 Myr smoke test the residual (evolve minus `W_ad` minus boundary) is 1.1% of E_cr,
+    against ~1e-5 on 10-08. The `W_ad` estimate (centred, on the pre-step state) no longer
+    matches the in-stage coupling, and the hybrid's shock-zone transfer is not logged
+    separately. The boundary terms are measured directly.
+
+Runs (`both --res=0.9375 --seed=42 --cr-entropy=auto`, guard off):
+
+| v_red | GPU (UUID) | PID | log | rate after ~16 min |
+|---|---|---|---|---|
+| 1e4 km/s | GPU-4d3abdbb... (1) | 559931 | `/export/scratch/nknoell/m7_rerun/logs/prod_v1e4.log` | 0.7% / 10 min |
+| 3000 km/s | GPU-26db40a0... (3) | 559932 | `.../logs/prod_v3000.log` | 1.5% / 10 min |
+
+- **Outputs:**
+  - `pytests/stratified_ism/pics/m7_pilot_*_both_mhd_sg_vred{10000,3000}_seed42_noguard_hybrid_150.{svg,gif}`;
+  - `/export/scratch/nknoell/m7_pilot_data_..._noguard_hybrid_150.npz`;
+  - budget `/export/scratch/nknoell/m7_budget_..._noguard_hybrid_150.npz`.
+- **Comparison partners:** the 10-07 production run (v1e4, guard off, energy scheme,
+  pre-stage-wise) and the 10-06 v3000 run (guard on, old scheme).
+
+## Results (2026-10-14): item 11 SNR at 240^3 under the current default -- Check 2 fails
+
+All four `{uniform, clumpy} x {control, DSA (eta = 0.1)}` runs of `cr_snr_clumpy_medium.py` at
+N = 240 (dx = 83 mpc; 256^3 needs 12.9 GB and does not fit the 11 GB RTX 2080 Ti, 240^3 needs
+8.6 GB). Run with `donate_state=True`, one GPU each, ~1 h 15 min. This is the higher-resolution
+rerun the 2026-09-11 item-11 follow-up entry asked for.
+- **Setup:** the scripts are in `/export/scratch/nknoell/phaseB/item11_hires/` (`run_snr.py`
+  imports the test module and calls `_run_snr`; `analyse_snr.py` prints the test checks and
+  makes the slice figure; `plot_test_svg.py` redraws the test's own figure). Final states plus
+  finder surface/Mach/flux are in `data/N240_*.npz`. Note:
+  - `R_EXPLOSION_PHYS` is computed at import from the file's `NUM_CELLS = 256`, so it is
+    0.156 pc (1.9 cells) here. The 128^3 regression copy edited `NUM_CELLS`, so there it was
+    0.31 pc (2 cells).
+- **Numbers** (128^3 = the 2026-10-13 HLLC + hybrid regression, job6c; the source is unchanged
+  since):
+
+  | | 48^3 (09-11) | 128^3 | 240^3 |
+  |---|---|---|---|
+  | `E_cr / E_total` uniform / clumpy | 0.0244 / -- | 0.0542 / 0.0507 | 0.0674 / 0.0654 |
+  | clumpy vs uniform DSA `E_cr` | -17.9% | -6.43% | **-2.98%** |
+  | partition identity uniform / clumpy | 6.5e-4 / 2e-4 | 1.8e-5 / 1.7e-5 | 8.2e-5 / 8.7e-5 |
+  | total-energy error (4 runs) | ~1.5e-6 | 3.7e-5 - 4.0e-5 | 1.2e-4 - 1.3e-4 |
+  | `r_shock_max` uniform / clumpy (DSA) | | | 5.45 / 5.48 pc |
+
+  - Control runs inject nothing (floor-level `e_cr`). Both conservation checks pass
+    (gates 1e-2 / 1e-3), but both errors grow from 128^3 to 240^3.
+  - **Check 2 fails:** |-2.98%| < `clumpy_effect_min` = 5%. So the full test would raise before
+    drawing its figure.
+- **Finder at t = 1000 yr (DSA runs):**
+  - Surface cells: 43008 (uniform) and 43763 (clumpy).
+  - Uniform: every surface cell is the outer blast at M 150-158 (median 156; the upstream is
+    1e4 K gas).
+  - Clumpy: 389 surface cells have M < 100, at r = 2.9-4.1 pc around the clumps:
+    - ~200 weak-shock cells (0 < M < 20, median 1.3) at the clump edges, 0.8-1.2 pc from the
+      clump centres. These are not clearly reflected shocks: the -grad P direction points
+      partly outward.
+    - 97 cells rejected by the finder (M = 0: velocity check, or the walk did not leave the
+      zone).
+    - 52 cells with 0 < M < 1.3. They are valid and do inject (the constant model has no
+      M gate at injection; `M_min` only enters the zone thresholds), but delta(M) ~ 0.
+  - The clumpy median (156) and 90th percentile (163) match the outer blast.
+  - Transmitted shocks: ~80 cells per clump at M 225-285 (median 265).
+    - They sit 0.68 pc outward of the initial clump centres, in gas at 14-25 rho_0, 0.3 pc
+      inside the compressed clump's outer edge (dense gas from -0.1 to +1.0 pc, up to
+      40 rho_0). So they are inside the clumps, not on their faces.
+    - The blast hit the clumps at M ~ 420, so the current M 177 is no direct reference.
+- **Verdict:**
+  - The clumps effect on total `E_cr` converges: -17.9 -> -6.4 -> -3.0%, with steps of 11.5
+    then 3.4 points.
+    - A fit `a + b N^-p` through the signed values gives a = +1.5%, p = 0.92. Caveats: three
+      points and three parameters, so no error bar; 48^3 used an older scheme, and 128^3 a
+      0.31 pc explosion region.
+    - By the fit, the 5% gate fails above N ~ 160 and cannot hold in the converged limit. It
+      was calibrated on the under-resolved 48^3 value and should be re-thought (not
+      changed).
+  - `E_cr / E_total` still grows: 2.4 -> 5.4 -> 6.7% (increments 3.0 then 1.3 points). This is
+    consistent with the Phase B finding that the finder's area under-count and Mach bias
+    shrink with resolution (B7.3, DB4/DB7, `PROGRESS_PHASEB.md`). That settles the 09-11
+    hypotheses: (a), not (b).
+  - The committed test at 128^3 is unaffected.
+- **Figures** (`pics/11_snr_clumpy_medium/`):
+  - `cr_snr_clumpy_medium_ecr_mach_slice_N240.png` (new): e_cr slices (uniform, plus clumpy
+    through each clump centre), with the slice's surface cells coloured by finder Mach.
+  - `cr_snr_clumpy_medium_test.svg`: redrawn from the 240^3 data with the test's own plotting
+    code. The previous 128^3 version is in git (c2b197a).
+- **Extra figures** (`plot_extra.py`, same folder):
+  - **`cr_snr_finder_mach_N240.png`:** finder Mach against the simulated shock. R is from
+    the shell-averaged front and pressure peak, as in B7.3; V = (2/5) R / t.
+    - Control: R = 5.32 pc (reference 5.33), R/dx = 64, M_true 177. The finder median is 160:
+      ratio **0.903**, cubed 0.736.
+    - DSA: R = 5.28 pc (reference 5.23), M_true 176, finder median 156: ratio **0.886**,
+      cubed 0.695. The control-DSA gap of ~2% is Y11 (DB8), as in B7.3.
+    - Plotted against R_s/dx, these points continue item 7's 0.76 / 0.84 / 0.87 (R_s/dx 16 /
+      33 / 54). So the DB4 Mach bias is still ~10% at 64 cells per radius.
+    - Clumpy: the transmitted shocks inside the clumps reach M 225-285 (r ~ 3.7 pc); the
+      forward shock behind the clumps is slowed to M 110-150.
+  - **`cr_snr_radial_profiles_N240.png`:** shell averages of the uniform runs against
+    `sedov_two_fluid` (zeta 0, and 0.1 `gas_rh`).
+    - Hydro matches: `u_r` and `P_th` follow the reference; the density peak is smeared from 4
+      to 3.
+    - `E_cr / E_SN` is 0.0675, against 0.140 for the reference (0.48).
+    - Just behind the shock, `P_cr` is ~0.6 of the reference. That matches the late-time
+      injection of area 0.83 x Mach^3 0.695 = 0.58.
+    - Inside r < 2 pc the simulation has almost no CRs, where the reference's CR fraction
+      tends to 1 at the centre (3.5% of E_cr is inside 2 pc).
+      - By mass, that gas started within 0.42 pc (5 cells). Inside 1 pc it is the initial
+        explosion region (0.156 pc), which was never shocked. The rest was shocked at
+        R_s <~ 5 cells (t <~ 2 yr).
+      - In the reference, 22% of E_cr is in gas shocked before R_s = 0.1 R. This is the
+        early-time deficit.
+      - Near the shock, P_cr is 0.61-0.63 of the reference at r/R 0.9-0.95, falling to 0.47
+        at r/R 0.6.
+  - **`cr_snr_projections_N240.png`:** z-projections of e_cr and of n e_cr (pion gamma-ray
+    proxy).
+    - The uniform e_cr column shows an axis-aligned grid imprint (the per-cell `|n|_inf` area
+      factor, DB7).
+    - Clumpy: the clumps light up in n e_cr (peak/median 17, against 2 for uniform). The total
+      `int n e_cr dV` is **1.17x** uniform, while `E_cr` is 3% lower. So the clumps matter for
+      the gamma-ray proxy, not for total `E_cr`.
+
+## Regenerated (2026-10-14): item 9 resolution figure under the current default
+
+`pics/09_modified_shock_structure/cr_modified_shock_structure_resolution.svg` was from 2026-10-07
+(before stage-wise coupling, P2, ETD2RK, van Leer CR rows and HLLC + hybrid). Rerun with the same
+scratch scripts (`/export/scratch/nknoell/cr_regen_20261007/scripts/run_shock_job.py`,
+`plot_shock_resolution.py`; they import the test module, so they use the current defaults),
+output in `/export/scratch/nknoell/phaseB/item9_res/`. N = 1000 / 2000 / 4000 (old values in
+brackets):
+
+- **Test A** (`v_red = 1`, `eta = 0.1`), Mach 1.97 at every N (unchanged):
+  - jump errors rho/u/P, 3 cells past the shock zone: 0.30-0.53% [0.14-0.16%] / 0.34-0.54%
+    [0.37-0.64%] / 0.36-0.56% [0.38-0.67%];
+  - at fixed `|xi| = 0.02`: 0.03-0.11% [0.07-0.18%] / 0.05-0.16% [0.02-0.05%] / 0.02-0.06%
+    [0.01-0.04%];
+  - CR flux jump / injection: 1.06 / 1.00 / 1.01 [1.10 / 1.03 / 1.04], inside the bracket;
+  - post-shock `P_cr`: 0.0406 / 0.0393 / 0.0396 [0.0427 / 0.0407 / 0.0410], 3-5% lower.
+- **Test B** (`v_red = 32`, `eta = 0.01`, `kappa = 0.2/3`):
+  - precursor ODE `dP_cr/dx` 1.3 / 1.2 / 1.2% [1.6 / 1.4 / 1.3%], `dF_cr/dx` 1.7 / 1.6 / 1.6%
+    [0.8 / 1.4 / 1.6%];
+  - `du/dx` 33 / 41 / 49% [26 / 31 / 42%]; over the fixed stride (4 cells at N 1000) 24 / 23 / 23%
+    [21 / 22 / 23%]: the per-cell growth is still the float32 cancellation, the floor is
+    unchanged. The test's gate (40%) applies at its N = 1000 only (33%, as in the 10-13
+    regression);
+  - mass-flux spread <= 0.14% [<= 0.05%].
+- Verdict: same picture as 10-07. Test A's N = 1000 point got worse (the 10-13 regression saw
+  the same), the CR flux jump closes better, Test B's derivative floors are unchanged.
+
 ## Default (2026-10-13): HLLC + hybrid CR entropy for grey-CR runs (Phase A D2) -- regression done, all pass
 
 - **Decision (user):** grey-CR runs default to HLLC (total-pressure flux) plus the hybrid CR
@@ -3661,7 +3821,7 @@ are resolution-sensitive, not converged.**
   single, specific `NUM_CELLS` and should now be read as resolution-specific, not as a converged
   physical prediction, until this is actually investigated.
 
-**Next step (user-scheduled, not yet run):** the user plans to rerun the same test at
+**Next step (done 2026-10-14 at 240^3, see the top entry "item 11 SNR at 240^3"):** the user plans to rerun the same test at
 `NUM_CELLS=256` next. When that happens, extend the table above with the 256^3 numbers (`E_cr`
 uniform-DSA/clumpy-DSA, the fractional clumps-effect, and the `E_cr`/`E_total` fraction) and
 check whether the trend (`2.44% -> 5.07%` so far) is converging, still growing, or oscillating --

@@ -55,7 +55,7 @@ Usage::
 
     python m7_girichidis_pilot.py [both|thermal|cr] [--setup-only] [--res=F] [--t-end-myr=T] [--snapshots=N] [--sn-radius-pc=R] [--out-dir=DIR]
         [--no-mhd] [--no-self-gravity] [--no-jeans-floor] [--mhd-tolerance=double|single]
-        [--half-height-kpc=H] [--kappa-perp-cgs=K] [--v-red-kms=V] [--seed=N] [--no-flux-cap] [--guard] [--cr-entropy[=global|shocks]] [--tag=NAME]
+        [--half-height-kpc=H] [--kappa-perp-cgs=K] [--v-red-kms=V] [--seed=N] [--no-flux-cap] [--guard] [--cr-entropy[=global|shocks|auto]] [--tag=NAME]
 
 ``both`` (default) is their "thermal + CR" run (1e51 erg thermal + 1e50 erg CR
 per SN), ``thermal`` their thermal-only run (no CR transport at all, as in the
@@ -296,10 +296,11 @@ GUARD = "--guard" in sys.argv
 # --cr-entropy[=global|shocks]: conservative CR entropy (CosmicRayGreyConfig.cr_entropy, off by
 # default; DESIGN.md "Decided: CR shock partition"). "global" (the bare flag) hands the
 # energy difference to the gas everywhere ("_crent" in OUT_SUFFIX), "shocks" only in shock zones
-# (CR_ENTROPY_TRANSFER_SHOCKS, "_crentshock").
+# (CR_ENTROPY_TRANSFER_SHOCKS, "_crentshock"). "auto" leaves cr_entropy unset, i.e. the library
+# default of 2026-10-13 (the hybrid scheme: HLLC + CR entropy in shock zones; "_hybrid").
 CR_ENTROPY = "--cr-entropy" in sys.argv or "cr-entropy" in _OPTS
 CR_ENTROPY_MODE = _OPTS.get("cr-entropy", "global")
-assert CR_ENTROPY_MODE in ("global", "shocks"), CR_ENTROPY_MODE
+assert CR_ENTROPY_MODE in ("global", "shocks", "auto"), CR_ENTROPY_MODE
 # --tag=NAME is appended to OUT_SUFFIX (e.g. short check runs that must not overwrite outputs).
 TAG = _OPTS.get("tag")
 OUT_SUFFIX = (f"_{MODE}{'_mhd' if MHD else ''}{'_sg' if SELF_GRAVITY else ''}"
@@ -308,7 +309,7 @@ OUT_SUFFIX = (f"_{MODE}{'_mhd' if MHD else ''}{'_sg' if SELF_GRAVITY else ''}"
               f"{f'_vred{V_RED_KMS:g}' if V_RED_KMS != 1000.0 else ''}"
               f"{f'_seed{SEED}' if SEED is not None else ''}"
               f"{'_nocap' if not FLUX_CAP else ''}{'_noguard' if not GUARD else ''}"
-              f"{('_crentshock' if CR_ENTROPY_MODE == 'shocks' else '_crent') if CR_ENTROPY else ''}"
+              f"{dict(shocks='_crentshock', auto='_hybrid').get(CR_ENTROPY_MODE, '_crent') if CR_ENTROPY else ''}"
               f"{f'_{TAG}' if TAG else ''}_{N_Z}")
 OUT_DIR = Path(_OPTS.get("out-dir", "/export/scratch/nknoell"))
 
@@ -434,8 +435,10 @@ def _base_config() -> SimulationConfig:
             grey_cosmic_rays=CR_ACTIVE, diffusive_relaxation=CR_ACTIVE,
             anisotropic_transport=CR_ACTIVE and MHD,
             flux_realizability_cap=FLUX_CAP,
-            cr_entropy=CR_ACTIVE and CR_ENTROPY,
-            cr_entropy_transfer=1 if CR_ENTROPY_MODE == "shocks" else 0,  # CR_ENTROPY_TRANSFER_*
+            **(dict(cr_entropy=None) if CR_ACTIVE and CR_ENTROPY and CR_ENTROPY_MODE == "auto" else dict(
+                cr_entropy=CR_ACTIVE and CR_ENTROPY,
+                cr_entropy_transfer=1 if CR_ENTROPY_MODE == "shocks" else 0,  # CR_ENTROPY_TRANSFER_*
+            )),
         ),
         progress_bar=True,
         random_seed=42 if SEED is None else SEED,
