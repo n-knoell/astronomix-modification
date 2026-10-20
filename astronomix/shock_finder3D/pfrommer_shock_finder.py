@@ -20,6 +20,7 @@ from astronomix.shock_finder3D._shock_zones import (
     get_post_pre_shock_values,
     get_post_pre_shock_values_adaptive,
     identify_shock_zones,
+    sample_along_direction,
 )
 from astronomix.shock_finder3D._shock_surface import identify_shock_surface
 from astronomix.shock_finder3D._shock_mach import (
@@ -32,6 +33,14 @@ from astronomix.shock_finder3D._energy_dissipation import (
     thermal_energy_flux_from_pre_state,
 )
 
+def _velocity_components(primitive_state, config, registered_variables):
+    vel_idx = registered_variables.velocity_index
+    return (
+        [primitive_state[vel_idx]] if isinstance(vel_idx, int)
+        else [primitive_state[i] for i in (vel_idx.x, vel_idx.y, vel_idx.z)[:config.dimensionality]]
+    )
+
+
 def _velocity_consistent(primitive_state, config, registered_variables, shock_direction, fraction):
     """Local Rankine-Hugoniot check, see find_shocks_pfrommer's
     ``mach_velocity_consistency``: True where the immediate-neighbour
@@ -40,11 +49,7 @@ def _velocity_consistent(primitive_state, config, registered_variables, shock_di
     gamma_gas = 5 / 3
     pressure = primitive_state[registered_variables.pressure_index]
     density = primitive_state[registered_variables.density_index]
-    vel_idx = registered_variables.velocity_index
-    velocity = (
-        [primitive_state[vel_idx]] if isinstance(vel_idx, int)
-        else [primitive_state[i] for i in (vel_idx.x, vel_idx.y, vel_idx.z)[:config.dimensionality]]
-    )
+    velocity = _velocity_components(primitive_state, config, registered_variables)
     normal_velocity = sum(v * d for v, d in zip(velocity, shock_direction))
     p_post, p_pre, u_post, u_pre = get_post_pre_shock_values(shock_direction, pressure, normal_velocity)
     _, _, _, rho_pre = get_post_pre_shock_values(shock_direction, pressure, density)
@@ -63,6 +68,7 @@ def _velocity_consistent(primitive_state, config, registered_variables, shock_di
         "mach_sampling_adaptive",
         "mach_sampling_extend",
         "mach_velocity_consistency",
+        "mach_estimator",
     ],
 )
 def find_shocks_pfrommer(
@@ -75,6 +81,7 @@ def find_shocks_pfrommer(
     mach_sampling_adaptive: bool = False,
     mach_sampling_extend: bool = False,
     mach_velocity_consistency: float = 0.0,
+    mach_estimator: str = "pressure",
 ) -> ShockFinderResult:
     """
     Main entry point: Identify shocks using Pfrommer et al. 2017 methodology.
@@ -148,6 +155,27 @@ def find_shocks_pfrommer(
             not-yet-formed blast of the first steps, >= 1 for resolved
             shocks (M_u / M_p >= 0.97 at the 1st percentile, Mach 2-9 locally).
             The reported Mach number is unchanged.
+        mach_estimator: ``"pressure"`` (default): the Mach number from the
+            gas-pressure jump between the walk's post- and pre-shock samples.
+            ``"velocity"`` (only with ``mach_sampling_adaptive=True``): from
+            the normal-velocity jump at the same two points,
+            ``u_2 - u_1 = 2 c_1 (M^2 - 1) / ((gamma + 1) M)``
+            (``mach_from_velocity_jump``); cells where it is not above
+            ``mach_min`` are dropped, and so are cells whose pressure jump at
+            the same points does not confirm the shock (``M_p > mach_min`` and
+            ``M_p - 1 >= f (M_u - 1)`` with ``f = mach_velocity_consistency``,
+            0.5 if that is off): the converse of the velocity check. Phase B decision DB4 (2026-10-19,
+            ``PROGRESS_PHASEB.md``): behind a thin, curved shock (the Sedov
+            shell) the pressure falls steeply, so the smeared post-shock
+            pressure peak is low and the pressure Mach number reads
+            0.76/0.84/0.87 of the true one at 48^3/96^3/160^3; the velocity
+            falls about half as fast (0.88/0.94/0.94). On planar shocks both
+            are within 1% (B8.2). On shocks that inject CRs the velocity jump
+            reads high (exact 1D shocks: +1.2% at zeta = 0.1, +2.6% at KR13's
+            strong-shock 0.21; the gas-pressure jump reads -2% / -4.5%), since
+            the CR-loaded shock compresses more than the gas-only RH relation
+            assumes. The thermal-energy flux uses this Mach number with the
+            same pre-shock state.
 
     Returns:
         ShockFinderResult
@@ -156,6 +184,10 @@ def find_shocks_pfrommer(
         raise ValueError("mach_sampling_extend requires mach_sampling_adaptive=True.")
     if mach_velocity_consistency > 0 and not mach_sampling_adaptive:
         raise ValueError("mach_velocity_consistency requires mach_sampling_adaptive=True.")
+    if mach_estimator not in ("pressure", "velocity"):
+        raise ValueError(f"Unknown mach_estimator {mach_estimator!r}.")
+    if mach_estimator == "velocity" and not mach_sampling_adaptive:
+        raise ValueError("mach_estimator='velocity' requires mach_sampling_adaptive=True.")
 
     pressure = primitive_state[registered_variables.pressure_index]
     density  = primitive_state[registered_variables.density_index]
@@ -191,7 +223,7 @@ def find_shocks_pfrommer(
             _calculate_velocity_divergence(primitive_state, config, registered_variables, r) < 0
             if mach_sampling_extend else None
         )
-        p_post, p_pre, _, rho_pre, exited_post, exited_pre, post_shock_steps, _ = (
+        p_post, p_pre, _, rho_pre, exited_post, exited_pre, post_shock_steps, pre_shock_steps = (
             get_post_pre_shock_values_adaptive(
                 shock_direction, pressure, density, shock_zones,
                 max_steps=mach_sampling_steps, extend_monotone=mach_sampling_extend,
@@ -206,7 +238,40 @@ def find_shocks_pfrommer(
                 primitive_state, config, registered_variables, shock_direction,
                 mach_velocity_consistency,
             )
-        mach_numbers = jnp.where(valid, mach_pressure, 0.0)
+        if mach_estimator == "velocity":
+            # normal-velocity jump between the walk's own sample points
+            # (+shock_direction points to the pre-shock side)
+            # The projection carries no gradient through the normal: -grad T /
+            # |grad T| has a singular derivative where |grad T| -> 0 (uniform
+            # ambient gas), which a masked-out cell turns into 0 * inf = NaN
+            # in a rollout adjoint (as for the walk, FIXES_TODO.md round 24).
+            normal = jax.lax.stop_gradient(shock_direction)
+            velocity = _velocity_components(primitive_state, config, registered_variables)
+            u_post = sum(sample_along_direction(v, normal, -post_shock_steps) * d
+                         for v, d in zip(velocity, normal))
+            u_pre = sum(sample_along_direction(v, normal, pre_shock_steps) * d
+                        for v, d in zip(velocity, normal))
+            mach_estimate = mach_from_velocity_jump(u_post - u_pre, p_pre, rho_pre, gamma_gas)
+            # The converse of mach_velocity_consistency, at the same sample
+            # points: a velocity jump without the matching pressure jump is
+            # not a shock either. Without this, zone cells whose walk ends in
+            # unrelated gas (e.g. a rarefaction behind a shock, or a walk
+            # clamped at the domain edge) with the pressure *falling* across
+            # them (M_p = 1) but some velocity difference got a velocity Mach
+            # number and the dissipated flux of the far side's sound speed --
+            # on the B8.2 oblique tubes that drained cells to the pressure
+            # floor (NaN). The Sedov shell has M_p ~ 0.87 M_u at 48^3, the
+            # colliding winds M_p > M_u.
+            pressure_fraction = mach_velocity_consistency if mach_velocity_consistency > 0 else 0.5
+            valid = (
+                valid
+                & (mach_estimate > mach_min)
+                & (mach_pressure > mach_min)
+                & (mach_pressure - 1.0 >= pressure_fraction * (mach_estimate - 1.0))
+            )
+        else:
+            mach_estimate = mach_pressure
+        mach_numbers = jnp.where(valid, mach_estimate, 0.0)
         thermal_energy_flux = jnp.where(
             valid,
             thermal_energy_flux_from_pre_state(mach_numbers, p_pre, rho_pre, gamma_gas),

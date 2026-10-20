@@ -35,12 +35,13 @@ uniform gas, a concrete, checkable physical signature (see Check 2 below).
    medium-agnostic by construction -- it must hold whether or not the
    ambient medium has clumps in it.
 
-2. **Clumps-matter signature**: the clumpy-DSA run's total injected
-   ``E_cr`` must differ *measurably* from the uniform-DSA run's, at fixed
-   ``dsa_efficiency``/``dsa_mach_min``. This is the check that actually
+2. **Clumps-matter signature** (tracked in ``baselines.json`` since
+   2026-10-20, no longer a hard gate): the relative difference between the
+   clumpy-DSA run's total injected ``E_cr`` and the uniform-DSA run's, at
+   fixed ``dsa_efficiency``/``dsa_mach_min``. This is the number that
    exercises the clumpy geometry, not just injection bookkeeping (which
    Check 1 alone would pass even if the clumps had zero physical effect).
-   **The calibrated sign of this effect is a ~18% *decrease*, not the
+   **The calibrated sign of this effect is a *decrease*, not the
    naively-expected increase** -- see the calibration note below.
 
 **Calibration note on Check 2's sign (2026-09-11):** the working hypothesis
@@ -73,6 +74,13 @@ stage-wise source coupling in brackets):
 (N = 128) ``E_cr / E_total`` uniform 0.0530 [0.0570], clumpy 0.0494 [0.0532], clumpy-vs-uniform
 DSA ``E_cr`` -6.72% [-6.67%], energy-partition identity 2.3e-5 / 2.6e-5 [2.7e-5 / 2.5e-5],
 total-energy conservation 3.7e-5-4.0e-5 [same].
+
+**Re-measured 2026-10-20 with the DSA velocity-jump Mach number and the 1/|n|_inf area weights**
+(DB4 = a, DB7; ``PROGRESS_PHASEB.md``): (N = 128) ``E_cr / E_total`` uniform 0.0924, clumpy 0.0903,
+clumpy-vs-uniform DSA ``E_cr`` **-2.2%** (was -6.7%). Part of the old difference was the area
+under-count of oblique shock cells, which the corrugated clumpy shock has more of. The former
+hard gate (|difference| > 5%) is therefore tracked only (user decision 2026-10-20). Baselines
+exist for N = 128 (``CR_NUM_CELLS=128``; the default 256 does not fit an 11 GB GPU).
 """
 
 # ==== GPU selection ====
@@ -82,6 +90,7 @@ autocvd(num_gpus=1)
 # =======================
 
 # general
+import os
 from pathlib import Path
 
 # numerics
@@ -119,9 +128,12 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_shock_finder_kwargs
 
+# baseline registry
+from cr_baselines import Baselines
+
 # ---- physical setup (calibrated 2026-09-11) ----
 GAMMA = 5.0 / 3.0
-NUM_CELLS = 256
+NUM_CELLS = int(os.environ.get("CR_NUM_CELLS", 256))
 DSA_MACH_MIN = 1.3
 DSA_EFFICIENCY = 0.1
 
@@ -282,7 +294,6 @@ def _run_snr(dsa_efficiency: float, clumpy: bool):
 def test_cr_snr_clumpy_medium(
     partition_tol: float = 1e-2,
     conservation_tol: float = 1e-3,
-    clumpy_effect_min: float = 0.05,
     domain_half_width: float = BOX_SIZE / 2,
     containment_margin: float = 0.4,
 ):
@@ -299,11 +310,6 @@ def test_cr_snr_clumpy_medium(
             identical across all four runs since ambient pressure (not
             density) sets the initial thermal energy and is uniform even in
             the clumpy configuration. Calibrated observed error ~1.5e-6.
-        clumpy_effect_min: Minimum required *magnitude* of the fractional
-            difference between the clumpy-DSA run's E_cr and the
-            uniform-DSA run's E_cr (Check 2, the clumps-matter signature) --
-            see module docstring's calibration note. Calibrated observed
-            magnitude ~0.179 (a decrease), a >3.5x margin.
         domain_half_width: Half the (code-unit) box size -- the nearest open
             boundary's distance from the explosion center.
         containment_margin: Minimum gap (code units) the forward shock must
@@ -312,6 +318,7 @@ def test_cr_snr_clumpy_medium(
             observed shock radii: 1.431 (uniform), 1.210 (clumpy), vs.
             domain_half_width=2.0.
     """
+    baselines = Baselines("cr_snr_clumpy_medium.py::test_cr_snr_clumpy_medium")
     runs = {
         (clumpy, dsa_eff): _run_snr(dsa_efficiency=dsa_eff, clumpy=clumpy)
         for clumpy in (False, True)
@@ -381,6 +388,7 @@ def test_cr_snr_clumpy_medium(
         energy_diverted = thermal_kinetic_ctrl - thermal_kinetic_dsa
         partition_rel_err = abs(energy_diverted - dsa["E_cr"]) / dsa["E_cr"]
         print(f"{name}: energy-partition identity rel. err {partition_rel_err:.3e}, E_cr / E_total = {dsa['E_cr'] / E_total_initial:.4f}")
+        baselines.close(f"N{NUM_CELLS}_{name}_ecr_over_etot", dsa["E_cr"] / E_total_initial, rel=0.03)
         assert partition_rel_err < partition_tol, (
             f"{name}: energy-partition identity violated -- thermal+kinetic "
             f"energy diverted from the control run ({energy_diverted:.6e}) "
@@ -388,19 +396,10 @@ def test_cr_snr_clumpy_medium(
             f"rel. err {partition_rel_err:.4e} >= tol {partition_tol}."
         )
 
-    # --- Check 2: clumps-matter signature ---
-    # Calibrated sign is a *decrease* (see module docstring's calibration
-    # note) -- check the magnitude of the difference, not a presumed
-    # direction.
+    # --- Check 2: clumps-matter signature, tracked only (module docstring) ---
     clumpy_effect = (clumpy_dsa["E_cr"] - uni_dsa["E_cr"]) / uni_dsa["E_cr"]
     print(f"clumpy vs uniform DSA E_cr: {clumpy_effect:+.4f}")
-    assert abs(clumpy_effect) > clumpy_effect_min, (
-        f"Clumpy-DSA run's E_cr ({clumpy_dsa['E_cr']:.6e}) does not differ "
-        f"measurably from the uniform-DSA run's ({uni_dsa['E_cr']:.6e}) -- "
-        f"fractional difference {clumpy_effect:.4f}, magnitude <= min "
-        f"{clumpy_effect_min} -- the clumpy geometry is not producing any "
-        f"detectable effect on total DSA injection."
-    )
+    baselines.close(f"N{NUM_CELLS}_clumpy_effect", clumpy_effect, abs_tol=0.01)
 
     # Diagnostic plot: energy-partition bar chart (left) and a density slice
     # through the clumpy-DSA run showing the clumps and the shock (right).
@@ -433,6 +432,8 @@ def test_cr_snr_clumpy_medium(
     pics_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(pics_dir / "cr_snr_clumpy_medium_test.svg")
     plt.close(fig)
+
+    baselines.check()
 
 
 if __name__ == "__main__":

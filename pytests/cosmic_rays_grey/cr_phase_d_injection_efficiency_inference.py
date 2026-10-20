@@ -47,6 +47,11 @@ the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2
 stage-wise source coupling in brackets):
 AD-vs-FD at the initial guess 5.1e-3 [2.6e-3]; recovered ``mach_scale`` 1.06340 [1.06375]
 (true 1.0).
+
+**Re-measured 2026-10-20 with the velocity-jump Mach number and area weights** (Phase B DB4/DB7,
+``PROGRESS_PHASEB.md``): AD-vs-FD 2.1e-3, recovered ``mach_scale`` 1.06256. (A first run gave a
+NaN AD gradient: the velocity projection differentiated through the singular shock normal; fixed
+with ``stop_gradient`` in ``find_shocks_pfrommer``.)
 """
 
 # ==== GPU selection ====

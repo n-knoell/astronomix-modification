@@ -484,6 +484,25 @@ def get_post_pre_shock_values_adaptive(
     return outputs
 
 
+def sample_along_direction(field, shock_direction, steps):
+    """Sample ``field`` at ``cell + steps * shock_direction`` for every cell
+    (trilinear, ``mode="nearest"``), i.e. at the points the adaptive walk of
+    ``get_post_pre_shock_values_adaptive`` sampled when ``steps`` is one of
+    its ``return_sample_steps`` outputs (negative for the post-shock side).
+    Lets callers read further fields at the walk's sample points without
+    repeating the walk. The sample positions carry no gradient (as in the
+    walk)."""
+    shape = field.shape
+    base = jnp.stack(
+        jnp.meshgrid(*[jnp.arange(n, dtype=shock_direction.dtype) for n in shape], indexing="ij"),
+        axis=0,
+    )
+    coords = jax.lax.stop_gradient(base + steps[None] * shock_direction)
+    return jax.scipy.ndimage.map_coordinates(
+        field, [coords[d] for d in range(field.ndim)], order=1, mode="nearest"
+    )
+
+
 def _num_origin_blocks(shape, max_cells_per_block=2**21):
     """Smallest number of equal slabs along the first axis such that each
     slab has at most ``max_cells_per_block`` cells (1 for grids up to 128^3)."""

@@ -46,6 +46,7 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 
 # astronomix functions
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
+from astronomix.shock_finder3D._surface_area import surface_area_weights
 
 
 def dsa_shock_finder_kwargs(cr_config) -> dict:
@@ -58,6 +59,7 @@ def dsa_shock_finder_kwargs(cr_config) -> dict:
             mach_sampling_extend=True,
             mach_sampling_steps=cr_config.dsa_shock_sampling_max_steps,
             mach_velocity_consistency=cr_config.dsa_velocity_consistency,
+            mach_estimator="velocity" if cr_config.dsa_mach_from_velocity else "pressure",
         )
     return dict()
 
@@ -232,9 +234,11 @@ def inject_crs_at_shocks(
     ``grid_spacing`` only for now
     (matches every grey-CR ladder test to date, and the plan's own FV-first
     staging): a shock cell's cross-sectional area is
-    ``grid_spacing^(dimensionality - 1)`` and its volume is
+    ``grid_spacing^(dimensionality - 1) / |n|_inf`` (``dsa_area_weighting``,
+    default since 2026-10-19: an oblique shock has ``|n|_inf`` surface cells
+    per ``grid_spacing^(dimensionality - 1)`` of its area) and its volume is
     ``grid_spacing^dimensionality``, so area / volume = ``1 /
-    grid_spacing`` -- mirrors the retired old model's identical Cartesian
+    (|n|_inf grid_spacing)`` (``1 / grid_spacing`` without the weighting) -- mirrors the retired old model's identical Cartesian
     formula (see ``git log`` for ``cr_injection.py``'s prior
     ``config.grid_spacing ** (config.dimensionality - 1)``). Curvilinear/
     spherical geometry is not supported here; extend if a future ladder item
@@ -272,6 +276,15 @@ def inject_crs_at_shocks(
     delta_e_cr_density = (
         efficiency * sf_result.thermal_energy_flux / config.grid_spacing * dt
     )
+
+    if cr_config.dsa_area_weighting:
+        # A surface cell represents dx^(ndim-1) / |n|_inf of shock area, not
+        # dx^(ndim-1) (Phase B DB7; shock_finder3D._surface_area).
+        delta_e_cr_density = delta_e_cr_density * surface_area_weights(
+            primitive_state[registered_variables.pressure_index],
+            primitive_state[registered_variables.density_index],
+            sigma=cr_config.dsa_area_normal_smoothing,
+        )
 
     if cr_config.dsa_adaptive_shock_sampling:
         # Spread each shock's injection over its surface cell and the

@@ -16,45 +16,45 @@ the snapshot fit.
 **Reference.** ``pfrommer_riemann_solver.py`` with ``injection=ShockInjection(zeta(M),
 "gas_rh", mach, 1.3)`` (B7.4) solves the fixed point ``zeta = eta(M(zeta))`` together with the
 shock jump: ``mach="true"`` evaluates KR13 at the true Mach number (the intended
-``delta(M) eta_KR13(M)``), ``mach="gas_pressure"`` at the Mach number of the gas-pressure jump,
-which the injected CRs lower and which the finder reads (B7.4, finding Y11).
+``delta(M) eta_KR13(M)``), ``mach=FINDER_MACH`` at the Mach number the finder reads: since
+2026-10-19 (DB4) the velocity jump, which the extra compression of a CR-loaded shock raises;
+until then the gas-pressure jump, which the injected CRs lower (B7.4, finding Y11).
 
-**Results (2026-10-14, GPU).** N = 400 and 1600 agree to 1e-3, so the deviations are not
-truncation errors.
+**Results (2026-10-20, GPU, velocity-jump Mach number and area weights).** N = 400 and 1600 agree
+to 1e-3, so the deviations are not truncation errors.
 
   ======  ==============  ==============  ===============================
-  M       KR13 vs gas-p.  KR13 vs true    constant vs gas-p. / true
+  M       KR13 vs vel.    KR13 vs true    constant vs vel. / true
   ======  ==============  ==============  ===============================
-  1.8, 2  no injection    (E_cr ~ 1e-10   -1.4% / -1.9% (1.8)
+  1.8     no injection    (E_cr ~ 1e-10   -1.5% / +0.3%
           (floor)         of E_th)
-  2.25    -5.6%           -5.7%           +0.3% / -1.2%
-  2.5     -3.7%           -3.8%           +0.7% / -1.2%
-  3       -2.2%           -2.6%           +1.3% / -1.4%
-  4       -1.3%           -3.9%           +1.9% / -1.9%
-  5       -1.0%           -10.3%          +2.2% / -2.2%
-  7       +1.9%           -7.7%           +2.5% / -2.5%
-  10      +2.5%           -8.6%           +2.6% / -2.7%
-  >= 15   +2.8 ... +2.9%  -8.8%           +2.7% / -2.9%
+  2       threshold: E_cr/E_th 1.7e-8     -0.6% / +1.5%
+  2.25    -5.2%           -5.1%           +0.1% / +2.5%
+  2.5     -3.2%           -3.0%           +0.6% / +3.3%
+  3       -1.6%           -1.2%           +1.2% / +4.3%
+  4       -1.0%           +1.5%           +1.8% / +5.3%
+  5       -3.4%           +7.3%           +2.1% / +5.8%
+  7       +1.4%           +9.3%           +2.4% / +6.2%
+  10      +1.9%           +10.6%          +2.5% / +6.4%
+  >= 15   +1.7 ... +2.3%  +11.0%          +2.6% / +6.5 ... +6.6%
   ======  ==============  ==============  ===============================
 
-- Against the gas-pressure fixed point: within 3% for M >= 3 (gate 5%) and -5.6% at M = 2.25
-  (gate 20%). The net of two parts that partly cancel: an excess from the deposit inside the
-  smeared shock (B7.4: CRs injected there gain adiabatic energy) and the 1D finder's Mach number below
-  the fixed point: -0.45% at M = 2.25 (2.240), -1.0% (KR13) / -0.5% (constant) at M = 10, -0.8%
-  / -0.6% at M = 100 (the flux at saturated ``delta`` goes as ``M^3``, so this is part of the
-  strong-shock budget too). On KR13's steep weak part
-  (``eta ~ M^5.3``) that becomes -5.6% at M 2.25. The plan's "< 0.1%" finder accuracy in 1D
-  (Dubois et al. 2019, 4-cell sampling) is not reached.
-- Against the true Mach number (Y11, DB8 decided 2026-10-14: accepted, finder unchanged): KR13 -9% at strong shocks (``zeta = 0.211`` lowers the finder's
-  Mach number by 3.8%, which also drops the shock speed); at M = 5 the fixed point lands on KR13's
-  steep weak piece (``M_finder`` 4.89 < 5), -10%. The constant model is -1.2% to -2.9%.
-- Sub-critical (B8.7): KR13 injects nothing at M = 1.8 and 2 (``E_cr / E_th`` ~ 1e-10, the
-  ``e_cr`` floor). The constant model injects at every M above ``dsa_mach_min = 1.3`` (DB5).
+- Against the velocity fixed point: within 3.4% for M >= 3 (gate 5%) and -5.2% at M = 2.25
+  (gate 20%), the net of the deposit inside the smeared shock (+2.6%, B7.4) and the 1D finder's
+  Mach number slightly below the fixed point (on KR13's steep weak part, ``eta ~ M^5.3``, that
+  dominates).
+- Against the true Mach number: the velocity jump of a CR-loaded shock reads high (exact 1D: +2.6%
+  in M at KR13's strong-shock ``zeta = 0.211``), so KR13 is +11% at strong shocks and the constant
+  model +0.3% to +6.6% (with the gas-pressure Mach number until 2026-10-19: -9% and -1.2% to -2.9%).
+- Sub-critical (B8.7): KR13 injects nothing at M = 1.8 (``E_cr / E_th`` ~ 1e-10, the ``e_cr``
+  floor). M = 2 is KR13's threshold (1.6e-4 at M = 2, 0 below): the finder reads a hair above 2 in
+  some cells, ``E_cr / E_th`` = 1.7e-8, tracked only. The constant model injects at every M above
+  ``dsa_mach_min = 1.3`` (DB5).
 - The shock speed matches the fixed point to 5e-4 everywhere.
 
-Gates: hard at N = 1600 against the gas-pressure fixed point (bounds in the
+Gates: hard at N = 1600 against the fixed point of the finder's Mach number (bounds in the
 ``test_cr_dsa_efficiency_planar`` signature); the true-Mach ratios and the finder's Mach numbers
-are tracked in ``baselines.json``. Runtime ~40 min on one 2080 Ti (N = 1600 ~65 s per run).
+are tracked in ``baselines.json``. Runtime ~25 min on one 2080 Ti (N = 1600 ~65 s per run).
 Raw values: ``/export/scratch/nknoell/phaseB/b8_1/b8_1.npz``.
 
 See ``PROGRESS_PHASEB.md`` in the module directory.
@@ -83,7 +83,9 @@ import matplotlib.pyplot as plt
 from cr_baselines import Baselines
 
 # B7.4 machinery: 1D runs with DSA, exact injection Riemann reference, plateau metrics
-from cr_shock_tube_injection import GAMMA, GAMMA_CR, Tube, metrics, reference, run_tube
+from cr_shock_tube_injection import (
+    FINDER_MACH, FINDER_MACH_KEY, GAMMA, GAMMA_CR, Tube, metrics, reference, run_tube,
+)
 
 # astronomix
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_efficiency_kang_ryu_2013
@@ -134,23 +136,23 @@ def measure(mach, num_cells, model):
     t_end = TRAVEL / mach
     zeta = kr13 if model == "KR13" else CONSTANT_ZETA
     ref_true = reference(tube, zeta, "true", x0=X0, t_end=t_end)
-    ref_gp = reference(tube, zeta, "gas_pressure", x0=X0, t_end=t_end)
+    ref_fp = reference(tube, zeta, FINDER_MACH, x0=X0, t_end=t_end)
     run = run_tube(tube, num_cells, 0.0 if model == "KR13" else CONSTANT_ZETA, box=BOX, x0=X0,
                    t_end=t_end, kr13_scale=1.0 if model == "KR13" else None)
-    m = metrics(tube, run, ref_gp, box=BOX, x0=X0)
+    m = metrics(tube, run, ref_fp, box=BOX, x0=X0)
     x = run["x"]
-    a, b = ref_gp["x_contact"], ref_gp["x_shock"]
+    a, b = ref_fp["x_contact"], ref_fp["x_shock"]
     window = (x > a + 0.55 * (b - a)) & (x < a + 0.85 * (b - a))
-    v_shock = ref_gp["v_shock"] * (1.0 + m["dv_shock"])
+    v_shock = ref_fp["v_shock"] * (1.0 + m["dv_shock"])
     u_2 = run["u"][window].mean()
     e_cr = run["p_cr"][window].mean() / (GAMMA_CR - 1.0)
     return dict(
         eta_eff=e_cr * (v_shock - u_2) / (0.5 * v_shock**3),
         eta_true=eta_of(ref_true),
-        eta_gp=eta_of(ref_gp),
+        eta_fp=eta_of(ref_fp),
         mach_true=ref_true["mach_gas"],
-        mach_gp_true=ref_gp["mach_gas"],
-        mach_gp_finder=ref_gp["mach_gas_pressure"],
+        mach_fp_true=ref_fp["mach_gas"],
+        mach_fp_finder=ref_fp[FINDER_MACH_KEY],
         mach_finder=run["mach_finder"],
         dv_shock=m["dv_shock"],
         dP_th=m["dP_th"],
@@ -175,8 +177,8 @@ def test_cr_dsa_efficiency_planar(
 ):
     """B8.1 / B8.7: realized ``eta_eff(M)`` at planar shocks, KR13 and the constant model.
 
-    Hard gates at the finest N against the exact solution at the gas-pressure fixed point
-    (``reference(..., "gas_pressure")``, ``zeta = eta(M_finder)``):
+    Hard gates at the finest N against the exact solution at the fixed point of the Mach
+    number the finder reads (``reference(..., FINDER_MACH)``, ``zeta = eta(M_finder)``):
 
     Args:
         max_strong: ``|eta_eff / eta_ref - 1|`` for M >= 3 (plan B8.1).
@@ -185,7 +187,7 @@ def test_cr_dsa_efficiency_planar(
             (no injection below M = 2; plan B8.7).
 
     Tracked in ``baselines.json``: every ratio at every N, against both references (true Mach
-    number and gas-pressure fixed point), and the finder's Mach number.
+    number and the finder's fixed point), and the finder's Mach number.
     """
     baselines = Baselines("cr_dsa_efficiency_planar.py::test_cr_dsa_efficiency_planar")
     RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -196,28 +198,35 @@ def test_cr_dsa_efficiency_planar(
             for mach in MACHS:
                 r = measure(mach, n, model)
                 results[(model, n, mach)] = r
-                ratio_gp = r["eta_eff"] / r["eta_gp"] - 1.0 if r["eta_gp"] > 0 else np.nan
+                ratio_fp = r["eta_eff"] / r["eta_fp"] - 1.0 if r["eta_fp"] > 0 else np.nan
                 ratio_true = r["eta_eff"] / r["eta_true"] - 1.0 if r["eta_true"] > 0 else np.nan
-                print(f"{model:8s} N {n:5d} M {mach:6.2f}: eta_eff {r['eta_eff']:.4e}, vs gas-p. "
-                      f"ref {ratio_gp:+.4f}, vs true-M ref {ratio_true:+.4f}; M_finder "
-                      f"{r['mach_finder']:.3f} (gas-p. ref {r['mach_gp_finder']:.3f}, true "
+                print(f"{model:8s} N {n:5d} M {mach:6.2f}: eta_eff {r['eta_eff']:.4e}, vs finder-M "
+                      f"ref {ratio_fp:+.4f}, vs true-M ref {ratio_true:+.4f}; M_finder "
+                      f"{r['mach_finder']:.3f} (finder-M ref {r['mach_fp_finder']:.3f}, true "
                       f"{r['mach_true']:.3f}); dv {r['dv_shock']:+.4f}")
                 tag = f"{model}_N{n}_M{mach:g}"
-                if r["eta_gp"] > 0:
-                    baselines.close(f"{tag}_eta_over_gp", ratio_gp, abs_tol=0.01)
+                # KR13 is zero below M = 2 but 1.6e-4 at M = 2: the tube at M = 2 sits on the
+                # threshold, where the finder reads a hair below or above it (velocity jump, some
+                # cells), so it injects nothing or ~1e-8 of E_th. Tracked only.
+                threshold = model == "KR13" and mach == 2.0
+                subcritical = not threshold and (r["eta_fp"] == 0.0 or (model == "KR13" and mach < 2.0))
+                if not subcritical and not threshold:
+                    baselines.close(f"{tag}_eta_over_fp", ratio_fp, abs_tol=0.01)
                     baselines.close(f"{tag}_eta_over_true", ratio_true, abs_tol=0.01)
                     baselines.close(f"{tag}_mach_finder_over_true",
                                     r["mach_finder"] / r["mach_true"] - 1.0, abs_tol=0.005)
                 if n != max(RESOLUTIONS):
                     continue
-                if r["eta_gp"] == 0.0:
+                if threshold:
+                    baselines.upper(f"{tag}_ecr_over_eth", r["e_cr_box"] / r["e_box"], floor=1e-6)
+                elif subcritical:
                     frac = r["e_cr_box"] / r["e_box"]
                     if not frac < max_subcritical:
                         failures.append(f"{tag}: E_cr/E_th {frac:.2e} without injection")
-                elif mach >= 3.0 and not abs(ratio_gp) < max_strong:
-                    failures.append(f"{tag}: eta_eff/eta_ref - 1 = {ratio_gp:+.4f}")
-                elif mach < 3.0 and not abs(ratio_gp) < max_steep:
-                    failures.append(f"{tag}: eta_eff/eta_ref - 1 = {ratio_gp:+.4f}")
+                elif mach >= 3.0 and not abs(ratio_fp) < max_strong:
+                    failures.append(f"{tag}: eta_eff/eta_ref - 1 = {ratio_fp:+.4f}")
+                elif mach < 3.0 and not abs(ratio_fp) < max_steep:
+                    failures.append(f"{tag}: eta_eff/eta_ref - 1 = {ratio_fp:+.4f}")
     np.savez(RAW_DIR / "b8_1.npz", **{
         f"{model}_N{n}_M{mach:g}_{k}": v for (model, n, mach), r in results.items()
         for k, v in r.items()})
@@ -249,7 +258,7 @@ def _plot(results):
             if filled:
                 axes[0].loglog(pts[:, 1], pts[:, 2], "x", color=c, ms=5,
                                label=f"{model}, N={n}, at finder M")
-            for ax, key in ((axes[1], "eta_gp"), (axes[2], "eta_true")):
+            for ax, key in ((axes[1], "eta_fp"), (axes[2], "eta_true")):
                 ms = np.array([results[(model, n, m)]["mach_true"] for m in MACHS
                                if results[(model, n, m)][key] > 0])
                 ratio = np.array([results[(model, n, m)]["eta_eff"] / results[(model, n, m)][key]
@@ -259,7 +268,7 @@ def _plot(results):
     axes[0].set(xlabel="true Mach number", ylabel=r"$\eta_{eff}=f_{cr}/(\rho_1 v_s^3/2)$",
                 ylim=(1e-5, 0.5), title="realized efficiency at planar shocks (1D)")
     axes[0].legend(fontsize=7)
-    for ax, title in ((axes[1], "vs exact solution, finder Mach from the gas-pressure jump"),
+    for ax, title in ((axes[1], f"vs exact solution at the finder's Mach number ({FINDER_MACH} jump)"),
                       (axes[2], "vs exact solution at the true Mach number")):
         ax.axhline(1.0, color="grey", lw=0.8)
         ax.axhspan(0.95, 1.05, color="grey", alpha=0.15)

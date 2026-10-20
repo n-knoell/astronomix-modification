@@ -15,50 +15,46 @@ the sampled profile. Two versions of the code's convention (``inject_crs_at_shoc
 is ``zeta`` times the finder's gas-only RH dissipated flux at the finder's Mach number):
 
 - *true Mach number* ``v_1 / c_1``: what the injection is meant to do;
-- *gas-pressure Mach number*: the finder reads the Mach number from the jump of the **gas**
-  pressure; the injected CRs lower the post-shock gas pressure, so the finder reads a lower Mach
-  number and injects less, until the two are consistent. This fixed point is what the code
-  converges to (below).
+- *the finder's Mach number* (``FINDER_MACH``): the injected CRs change the shock the finder
+  samples, so the code converges to the fixed point ``zeta x f(M_finder(zeta))``. Since
+  2026-10-19 (DB4) DSA's finder reads the **velocity** jump, which the extra compression of a
+  CR-loaded shock raises (``mach="velocity"``); until then the **gas-pressure** jump, which the
+  CR pressure lowers (``mach="gas_pressure"``).
 
-  ======  ==================  ==================  ===================  ====================
-  zeta    M true (ref)        M gas-p. (ref)      P_cr,2 true / gas-p.  injected flux / nominal
-  ======  ==================  ==================  ===================  ====================
-  0.1     9.913               9.748               0.585 / 0.554        1 / 0.948
-  0.5     9.600               8.893               3.152 / 2.358        1 / 0.766
-  ======  ==================  ==================  ===================  ====================
+  ======  =======  ================  ==================  =========================  ============
+  zeta    M true   M_u at vel. FP    M_p at gas-p. FP    P_cr,2 true / vel. / gas-p  inj./nominal
+  ======  =======  ================  ==================  =========================  ============
+  0.1     9.913    10.030            9.748               0.585 / 0.608 / 0.554      1.038 / 0.948
+  0.5     9.600    10.164            8.893               3.152 / 3.957 / 2.358      1.226 / 0.766
+  ======  =======  ================  ==================  =========================  ============
 
-**Results (2026-10-14, GPU, default scheme = HLLC + hybrid CR entropy, adaptive sampling with the
-spread deposit).** Against the gas-pressure fixed point, constant for N = 400-3200:
+**Results (2026-10-20, GPU, default scheme = HLLC + hybrid CR entropy, adaptive sampling with the
+spread deposit, velocity-jump Mach number).** ``zeta = 0.1``, against the velocity fixed point,
+constant for N = 400-3200: shock speed within 5e-4, ``P_th`` -0.15%, density +0.1%, finder Mach
+number -0.4% to -0.7%, L1 density order 0.89, and ``P_cr`` **+2.6%** (box CR energy +2.5%):
+injection inside the smeared shock, where the gas is still being compressed, so the injected CRs
+gain adiabatic energy the exact solution does not have (the deposit-location bias of Dubois et
+al. 2019; not resolution-dependent). Against the true Mach number ``P_cr`` +6.6%, rate +6.3%.
 
-  - shock speed (snapshot fit) within 8e-4; plateau ``P_th`` -0.14% / -0.70% (``zeta`` 0.1 /
-    0.5), density +0.1% / +0.3%;
-  - plateau ``P_cr`` **+2.7%** for both ``zeta``, and the box CR energy grows 2.6% / 2.3% faster
-    than the exact injected flux: injection inside the smeared shock, where the gas is still
-    being compressed, so the injected CRs gain adiabatic energy the exact solution does not have
-    (the deposit-location bias of Dubois et al. 2019). Not resolution-dependent;
-  - finder Mach number 9.70 / 8.73-8.77, i.e. -0.5% / -1.8% from the fixed point's 9.75 / 8.89;
-  - L1 density error order 0.89 / 0.78 (N 200-3200).
+``zeta = 0.5`` does not reach the velocity fixed point: ``P_cr`` -14%, ``P_th`` +7.4%, shock
++0.6%, finder Mach number -3% to -6%, L1 order 0.38; the run lies between the two references
+(against the true Mach number ``P_cr`` +8%, rate +6.2%). In the smeared CR-loaded shock the
+sampled velocity jump is smaller than the exact post-shock one. With the gas-pressure Mach number
+(until 2026-10-19) the runs sat at that fixed point for both ``zeta`` (``P_cr`` +2.7%; against the
+true Mach number -2.7% / **-23%**; DB8, accepted 2026-10-14).
 
-Against the true-Mach reference: ``P_cr`` -2.7% (``zeta`` 0.1) and **-23%** (0.5), ``P_th``
-+0.15% / +8.9%, the shock 0.8% too fast at ``zeta = 0.5`` (less CR pressure, stiffer gas), the
-finder Mach number -2.1% / -9%. This CR back-reaction on the finder (Phase B progress Y11,
-decision DB8) is not resolution-dependent and grows with ``zeta``. DB8 was decided as "accept"
-(user, 2026-10-14): the finder is unchanged, so the gates check the fixed point and the
-true-Mach deviations are only tracked.
-
-Schemes (N = 400 / 1600, plateau ``P_cr`` vs the gas-pressure fixed point, ``zeta`` 0.1 / 0.5):
-default +2.7% / +2.7%, energy scheme with HLLC +6.3% / +8.3%, with HLL +10% / +16% (``P_th``
--4.2%, shock speed -0.44% at 0.5): the energy scheme adds the spurious CR shock heating of
-Phase A (A6.1-A6.3) on top. The default's shock speed is right to 8e-4, so the entropy-type CR
-variable's shock-speed error with injection (Weber et al. 2023) does not appear with the
-hybrid. Surface-cell deposit (``dsa_adaptive_shock_sampling =
-False``): the 1-cell finder reads M ~ 6 instead of ~9.7, ``P_cr`` -47% / -45% (tracked; not the
+Schemes (N = 400 / 1600, ``zeta`` = 0.1, ``P_cr`` vs the velocity fixed point): default +2.6%,
+energy scheme with HLLC +6.6%, with HLL +10.8%: the energy scheme adds the spurious CR shock
+heating of Phase A (A6.1-A6.3) on top. Surface-cell deposit (``dsa_adaptive_shock_sampling =
+False``, gas-pressure Mach number from the 1-cell sampler): ``P_cr`` -52% (tracked; not the
 default since 2026-09-26).
 
-Gates: hard on the default scheme at N >= 400 against the gas-pressure fixed point (bounds in
-the ``test_cr_shock_tube_injection`` signature): they check the injection mechanics given the
-finder's Mach number. Everything against the true-Mach reference, the other schemes, the
-surface deposit and the CR tube (``X_cr = 2 | 1``, App. C; B8.5) is tracked in
+Gates: hard on the default scheme at N >= 400 against the fixed point of the finder's Mach number
+(bounds in the ``test_cr_shock_tube_injection`` signature): they check the injection mechanics
+given that Mach number. They apply to ``zeta = 0.1`` only (``GATED_ZETAS``); ``zeta = 0.5`` misses
+the velocity fixed point (above) and is tracked only (user decision 2026-10-20: realistic
+efficiencies stay <= 0.21, and KR13 at 0.21 passes in B8.1). Everything at ``zeta = 0.5``, against
+the true-Mach reference, the other schemes, the surface deposit and the CR tube (``X_cr = 2 | 1``, App. C; B8.5) is tracked in
 ``baselines.json``. Runtime ~20 min on one 2080 Ti. Raw profiles:
 ``/export/scratch/nknoell/phaseB/b7_4/``.
 
@@ -135,6 +131,11 @@ T_END = 0.35
 #: fixed offset of about a cell from the shape of the smeared shock)
 SNAPSHOT_TIMES = np.linspace(0.1, T_END, 6)
 DSA_MACH_MIN = 1.3  # CosmicRayGreyParams default
+#: The Mach number the DSA finder reads (``CosmicRayGreyConfig.dsa_mach_from_velocity``, the
+#: default since 2026-10-19, decision DB4: the normal-velocity jump; ``"gas_pressure"`` before).
+#: The hard gates compare with the exact solution at this fixed point ("fp" metrics).
+FINDER_MACH = "velocity"
+FINDER_MACH_KEY = {"velocity": "mach_gas_velocity", "gas_pressure": "mach_gas_pressure"}[FINDER_MACH]
 PICS_DIR = Path(__file__).resolve().parent / "pics" / "07_sedov_taylor"
 RAW_DIR = Path(os.environ.get("CR_PHASEB_RAW", "/export/scratch/nknoell/phaseB")) / "b7_4"
 
@@ -337,7 +338,7 @@ def test_injection_riemann_reference():
       convention (the Hugoniot root-find only uses their combination).
     - ``"gas_rh"``: the injected flux is ``zeta`` times the finder's gas-RH dissipated flux at
       the true Mach number (``mach="true"``), or at the Mach number of the gas-pressure jump
-      (``mach="gas_pressure"``), to 1e-10.
+      (``mach="gas_pressure"``) or of the velocity jump (``mach="velocity"``), to 1e-10.
     - Strong-shock limit: compression and ``P_cr / P`` equal B7.1's strong-shock state
       (``sedov_two_fluid._strong_shock_state``) for both conventions, to 1e-4.
     - The sampled profile conserves mass and total energy over the box to 1e-4 (trapezoid
@@ -367,7 +368,7 @@ def test_injection_riemann_reference():
 
         for tube in (TH, CR):
             for inj in (ShockInjection(0.5, "total"), injection(0.1), injection(0.5),
-                        injection(0.5, "gas_pressure")):
+                        injection(0.5, "gas_pressure"), injection(0.5, "velocity")):
                 s = pfrommer_shock_structure(*tube.left, *tube.right, GAMMA, GAMMA_CR,
                                              injection=inj)
                 v1 = s["v_shock"] - tube.right[1]
@@ -377,11 +378,11 @@ def test_injection_riemann_reference():
                 assert np.max(np.abs(down / up - 1.0)) < 1e-10, (inj, down / up - 1.0)
                 if inj.convention == "gas_rh" and inj.mach == "true":
                     assert abs(s["f_inj"] / (inj.zeta * s["f_diss_gas"]) - 1.0) < 1e-10
-                if inj.mach == "gas_pressure":
+                if inj.mach in ("gas_pressure", "velocity"):
                     from astronomix.test_setups.reference_solutions.pfrommer_riemann_solver import (
                         thermalization_efficiency,
                     )
-                    m_p = s["mach_gas_pressure"]
+                    m_p = s["mach_gas_pressure" if inj.mach == "gas_pressure" else "mach_gas_velocity"]
                     c_th = np.sqrt(GAMMA * tube.right[2] / tube.right[0])
                     f_p = inj.zeta * thermalization_efficiency(m_p, GAMMA) * 0.5 * tube.right[0] * (
                         m_p * c_th) ** 3
@@ -413,7 +414,7 @@ def test_injection_riemann_reference():
             assert abs(np.trapezoid(rho, xs) / mass_0 - 1.0) < 1e-4
 
 
-def l1_density(tube, run, zeta, mach="gas_pressure"):
+def l1_density(tube, run, zeta, mach=FINDER_MACH):
     """L1 density error over the box against the exact injection solution."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -425,6 +426,7 @@ def l1_density(tube, run, zeta, mach="gas_pressure"):
 DEFAULT_RESOLUTIONS = (100, 200, 400, 800, 1600, 3200)
 VARIANT_RESOLUTIONS = (400, 1600)
 ZETAS = (0.1, 0.5)
+GATED_ZETAS = (0.1,)  # zeta = 0.5 tracked only (module docstring)
 
 
 def test_cr_shock_tube_injection(
@@ -438,8 +440,8 @@ def test_cr_shock_tube_injection(
 ):
     """B7.4: thermal tube of Pfrommer et al. (2017) Table 1 with DSA, ``zeta`` 0.1 and 0.5.
 
-    Hard gates (default scheme, N >= 400) against the exact solution of the code's convention
-    at the Mach number the finder can see (``injection(zeta, "gas_pressure")``, module
+    Hard gates (default scheme, N >= 400, ``zeta`` in ``GATED_ZETAS``) against the exact solution of the code's convention
+    at the Mach number the finder reads (``injection(zeta, FINDER_MACH)``, module
     docstring):
 
     Args:
@@ -449,8 +451,8 @@ def test_cr_shock_tube_injection(
             ~3%, constant in N; the plan's 2% is not met).
         max_drho: Plateau density, relative.
         max_rate: Box CR energy growth rate against the exact injected flux, relative.
-        max_mach_finder: Finder Mach number at the final state against the gas-pressure Mach
-            number of the reference, relative.
+        max_mach_finder: Finder Mach number at the final state against the reference's Mach
+            number of the same kind (``FINDER_MACH``), relative.
         min_l1_order: Least-squares order of the L1 density error over N >= 200.
 
     Everything else (the same metrics against the true-Mach reference, the energy scheme with
@@ -462,57 +464,57 @@ def test_cr_shock_tube_injection(
     results = {}
     failures = []
     for zeta in ZETAS:
-        ref_true, ref_gp = reference(TH, zeta, "true"), reference(TH, zeta, "gas_pressure")
+        ref_true, ref_fp = reference(TH, zeta, "true"), reference(TH, zeta, FINDER_MACH)
         for scheme, kwargs in SCHEMES.items():
             resolutions = DEFAULT_RESOLUTIONS if scheme == "default" else VARIANT_RESOLUTIONS
             for n in resolutions:
                 run = run_tube(TH, n, zeta, **kwargs)
-                gp, true = metrics(TH, run, ref_gp), metrics(TH, run, ref_true)
-                gp["l1_rho"] = l1_density(TH, run, zeta)
-                gp["mach_finder_rel"] = run["mach_finder"] / ref_gp["mach_gas_pressure"] - 1.0
+                fp, true = metrics(TH, run, ref_fp), metrics(TH, run, ref_true)
+                fp["l1_rho"] = l1_density(TH, run, zeta)
+                fp["mach_finder_rel"] = run["mach_finder"] / ref_fp[FINDER_MACH_KEY] - 1.0
                 true["mach_finder_rel"] = run["mach_finder"] / ref_true["mach_gas"] - 1.0
-                results[(zeta, scheme, n)] = dict(run=run, gp=gp, true=true)
+                results[(zeta, scheme, n)] = dict(run=run, fp=fp, true=true)
                 tag = f"z{zeta:g}_{scheme.replace(', ', '_').replace(' ', '_')}_N{n}"
-                print(f"zeta {zeta} {scheme:25s} N {n:5d}: GP dv {gp['dv_shock']:+.4f} dP_th "
-                      f"{gp['dP_th']:+.4f} dP_cr {gp['dP_cr']:+.4f} drho {gp['drho']:+.4f} rate "
-                      f"{gp['rate'] - 1.0:+.4f} M_f {gp['mach_finder_rel']:+.4f} L1 {gp['l1_rho']:.3e}"
+                print(f"zeta {zeta} {scheme:25s} N {n:5d}: FP dv {fp['dv_shock']:+.4f} dP_th "
+                      f"{fp['dP_th']:+.4f} dP_cr {fp['dP_cr']:+.4f} drho {fp['drho']:+.4f} rate "
+                      f"{fp['rate'] - 1.0:+.4f} M_f {fp['mach_finder_rel']:+.4f} L1 {fp['l1_rho']:.3e}"
                       f" | TRUE dP_cr {true['dP_cr']:+.4f} rate {true['rate'] - 1.0:+.4f} M_f "
                       f"{true['mach_finder_rel']:+.4f}")
                 np.savez(RAW_DIR / f"{tag}.npz", x=run["x"], rho=run["rho"], u=run["u"],
                          p_th=run["p_th"], p_cr=run["p_cr"])
                 for key in ("dv_shock", "dP_th", "dP_cr", "drho", "mach_finder_rel"):
-                    baselines.close(f"{tag}_gp_{key}", gp[key], abs_tol=0.01)
-                baselines.close(f"{tag}_gp_rate", gp["rate"], rel=0.02)
+                    baselines.close(f"{tag}_fp_{key}", fp[key], abs_tol=0.01)
+                baselines.close(f"{tag}_fp_rate", fp["rate"], rel=0.02)
                 baselines.close(f"{tag}_true_dP_cr", true["dP_cr"], abs_tol=0.01)
                 baselines.close(f"{tag}_true_mach_finder_rel", true["mach_finder_rel"], abs_tol=0.01)
-                if scheme == "default" and n >= 400:
+                if scheme == "default" and n >= 400 and zeta in GATED_ZETAS:
                     for key, bound in (("dv_shock", max_dv), ("dP_th", max_dP_th),
                                        ("dP_cr", max_dP_cr), ("drho", max_drho),
                                        ("mach_finder_rel", max_mach_finder)):
-                        if not abs(gp[key]) < bound:
-                            failures.append(f"{tag}: {key} {gp[key]:+.4f} (bound {bound})")
-                    if not abs(gp["rate"] - 1.0) < max_rate:
-                        failures.append(f"{tag}: rate {gp['rate']:.4f} (bound {max_rate})")
+                        if not abs(fp[key]) < bound:
+                            failures.append(f"{tag}: {key} {fp[key]:+.4f} (bound {bound})")
+                    if not abs(fp["rate"] - 1.0) < max_rate:
+                        failures.append(f"{tag}: rate {fp['rate']:.4f} (bound {max_rate})")
         ns = np.array([n for n in DEFAULT_RESOLUTIONS if n >= 200])
-        l1 = np.array([results[(zeta, "default", n)]["gp"]["l1_rho"] for n in ns])
+        l1 = np.array([results[(zeta, "default", n)]["fp"]["l1_rho"] for n in ns])
         order = -np.polyfit(np.log(ns), np.log(l1), 1)[0]
         print(f"zeta {zeta}: L1(rho) order {order:.2f}")
         baselines.close(f"z{zeta:g}_l1_order", order, abs_tol=0.1)
-        if not order > min_l1_order:
+        if zeta in GATED_ZETAS and not order > min_l1_order:
             failures.append(f"zeta {zeta}: L1 order {order:.2f} (bound {min_l1_order})")
 
     # CR-loaded tube (Pfrommer et al. 2017 Table 1 "CR"; B8.5 territory), tracked only
-    ref_cr = reference(CR, 0.5, "gas_pressure")
+    ref_cr = reference(CR, 0.5, FINDER_MACH)
     for n in VARIANT_RESOLUTIONS:
         run = run_tube(CR, n, 0.5)
         m = metrics(CR, run, ref_cr)
-        results[(0.5, "CR tube", n)] = dict(run=run, gp=m)
+        results[(0.5, "CR tube", n)] = dict(run=run, fp=m)
         print(f"CR tube zeta 0.5 N {n}: dv {m['dv_shock']:+.4f} dP_th {m['dP_th']:+.4f} dP_cr "
               f"{m['dP_cr']:+.4f} dP_cr_inj {m['dP_cr_inj']:+.4f} M_f {m['mach_finder']:.3f} "
-              f"(gas-pressure reference {ref_cr['mach_gas_pressure']:.3f}, composite "
+              f"(finder-Mach reference {ref_cr[FINDER_MACH_KEY]:.3f}, composite "
               f"{ref_cr['mach_composite']:.3f})")
         for key in ("dv_shock", "dP_th", "dP_cr", "dP_cr_inj"):
-            baselines.close(f"cr_tube_N{n}_gp_{key}", m[key], abs_tol=0.01)
+            baselines.close(f"cr_tube_N{n}_fp_{key}", m[key], abs_tol=0.01)
 
     _plot(results)
     baselines.check()
@@ -526,7 +528,7 @@ def _plot(results):
     for row, zeta in enumerate(ZETAS):
         ax = axes[row, 0]
         run = results[(zeta, "default", 1600)]["run"]
-        for mach, ls in (("true", ":"), ("gas_pressure", "--")):
+        for mach, ls in (("true", ":"), (FINDER_MACH, "--")):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 _, _, p_th, p_cr = pfrommer_riemann_solution(
@@ -537,10 +539,10 @@ def _plot(results):
         sel = (run["x"] > xs[0]) & (run["x"] < xs[-1])
         ax.plot(run["x"][sel], run["p_th"][sel], "k-", lw=1.5, label=r"$P_{th}$")
         ax.plot(run["x"][sel], run["p_cr"][sel], "C3-", lw=1.5, label=r"$P_{cr}$")
-        gp = results[(zeta, "default", 1600)]["gp"]
+        fp = results[(zeta, "default", 1600)]["fp"]
         true = results[(zeta, "default", 1600)]["true"]
         ax.set(xlabel="x", ylabel="pressure",
-               title=rf"$\zeta$={zeta}, N=1600: $P_{{cr}}$ {gp['dP_cr']:+.1%} (gas-p. ref, dashed),"
+               title=rf"$\zeta$={zeta}, N=1600: $P_{{cr}}$ {fp['dP_cr']:+.1%} (finder-M ref, dashed),"
                      f"\n{true['dP_cr']:+.1%} (true-M ref, dotted)")
         ax.legend(fontsize=8)
 
@@ -548,8 +550,8 @@ def _plot(results):
         ns = np.array(DEFAULT_RESOLUTIONS)
         for key, label, c in (("dP_cr", r"$P_{cr}$", "C3"), ("dP_th", r"$P_{th}$", "k"),
                               ("dv_shock", r"$v_s$", "C0"), ("mach_finder_rel", r"$M_{finder}$", "C2")):
-            vals = [results[(zeta, "default", n)]["gp"][key] for n in ns]
-            ax.semilogx(ns, vals, "o-", color=c, label=label + " vs gas-p. ref")
+            vals = [results[(zeta, "default", n)]["fp"][key] for n in ns]
+            ax.semilogx(ns, vals, "o-", color=c, label=label + " vs finder-M ref")
             if key in ("dP_cr", "mach_finder_rel"):
                 vals = [results[(zeta, "default", n)]["true"][key] for n in ns]
                 ax.semilogx(ns, vals, "s:", color=c, mfc="none", label=label + " vs true-M ref")
@@ -560,15 +562,15 @@ def _plot(results):
         ax = axes[row, 2]
         names = list(SCHEMES)
         for j, n in enumerate(VARIANT_RESOLUTIONS):
-            vals = [results[(zeta, s, n)]["gp"]["dP_cr"] for s in names]
+            vals = [results[(zeta, s, n)]["fp"]["dP_cr"] for s in names]
             ax.bar(np.arange(len(names)) + 0.4 * j, vals, 0.4, label=f"N={n}")
         ax.set_xticks(np.arange(len(names)) + 0.2)
         ax.set_xticklabels([s.replace(", ", ",\n") for s in names], fontsize=8)
         ax.axhline(0, color="grey", lw=0.8)
-        ax.set(ylabel=r"$P_{cr}$ vs gas-p. ref", title="schemes and deposit")
+        ax.set(ylabel=r"$P_{cr}$ vs finder-M ref", title="schemes and deposit")
         ax.legend(fontsize=8)
     fig.suptitle("B7.4: thermal tube of Pfrommer et al. (2017) with DSA vs the exact solution "
-                 "(code convention; dashed: finder Mach from the gas-pressure jump, dotted: true Mach)")
+                 f"(code convention; dashed: at the finder's Mach number ({FINDER_MACH} jump), dotted: true Mach)")
     fig.tight_layout()
     PICS_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(PICS_DIR / "cr_shock_tube_injection.png", dpi=130)

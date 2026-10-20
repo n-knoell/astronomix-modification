@@ -58,7 +58,11 @@ across the shock as before -- so the same Hugoniot root-find applies with
   ``M = v_1 / c_th,1``; ``mach="gas_pressure"`` uses the Mach number the
   finder reads from the *gas* pressure jump ``P_th,2 / P_th,1`` (gas-only
   RH), which the injected CR pressure lowers -- the self-consistent state a
-  shock that is resolved and sampled downstream of the deposit converges to.
+  shock that is resolved and sampled downstream of the deposit converges to;
+  ``mach="velocity"`` the Mach number the finder reads from the normal-velocity
+  jump ``v_1 (1 - 1/x)`` (gas-only RH, ``mach_estimator="velocity"``, the DSA
+  default since 2026-10-19), which the extra compression of a CR-loaded shock
+  raises.
 
 ``zeta`` may be a function of the Mach number used (the KR13 model, B8.1);
 the root-find then solves the fixed point ``zeta = eta(M(zeta))``.
@@ -169,7 +173,9 @@ class ShockInjection(NamedTuple):
         convention: ``"total"`` (Pfrommer et al. 2017) or ``"gas_rh"``
             (``inject_crs_at_shocks``).
         mach: ``"gas_rh"`` only: ``"true"`` (``v_1 / c_th,1``) or
-            ``"gas_pressure"`` (from ``P_th,2 / P_th,1``, what the finder reads).
+            ``"gas_pressure"`` (from ``P_th,2 / P_th,1``, what the finder read
+            until 2026-10-19) or ``"velocity"`` (from the velocity jump, what
+            DSA's finder reads since then).
         mach_min: No injection at or below this Mach number (the finder's
             ``mach_min``; KR13 is zero below 2 by itself).
     """
@@ -196,6 +202,13 @@ def _gas_rh_mach_from_pressure(pressure_ratio, gamma):
     """Gas-only RH Mach number from the pressure jump (the finder's
     ``mach_from_pressure_samples``)."""
     return np.sqrt(max((gamma + 1.0) * pressure_ratio + (gamma - 1.0), 0.0) / (2.0 * gamma))
+
+
+def _gas_rh_mach_from_velocity(jump_over_c, gamma):
+    """Gas-only RH Mach number from the velocity jump over the upstream sound
+    speed (the finder's ``mach_from_velocity_jump``)."""
+    y = 0.5 * (gamma + 1.0) * jump_over_c
+    return 0.5 * (y + np.sqrt(y * y + 4.0))
 
 
 def _zeta_at(injection, mach):
@@ -253,6 +266,10 @@ def _post_shock_partition(p_star, rho_star, rho_K, p_th_K, p_cr_K, gamma_th, gam
         p_th = brentq(residual, p_th_K, p_rest, xtol=1e-15, rtol=1e-14) if residual(p_th_K) < 0.0 else p_th_K
         mach = _gas_rh_mach_from_pressure(p_th / p_th_K, gamma_th)
         e_inj = (p_rest - p_th) / (gamma_cr - 1.0)
+    elif injection.mach == "velocity":
+        # the velocity jump is fixed by (p_star, rho_star) alone, so no inner root-find
+        mach = _gas_rh_mach_from_velocity(v1 * (1.0 - 1.0 / x) / c_th, gamma_th)
+        e_inj = e_inj_at(mach)
     else:
         raise ValueError(f"unknown injection mach {injection.mach!r}")
     return p_rest - (gamma_cr - 1.0) * e_inj, p_cr_ad + (gamma_cr - 1.0) * e_inj, e_inj, mach
@@ -518,7 +535,8 @@ def pfrommer_shock_structure(
         ``v_shock`` (lab frame), ``compression``, the Mach numbers
         ``mach_gas`` (``v_1 / c_th,1``), ``mach_composite`` (``v_1 / c_1``,
         Pfrommer et al.'s) and ``mach_gas_pressure`` (gas-only RH Mach of
-        ``P_th,2 / P_th,1``, what the finder reads), the injected CR energy
+        ``P_th,2 / P_th,1``), ``mach_gas_velocity`` (gas-only RH Mach of the
+        velocity jump), the injected CR energy
         flux ``f_inj = e_inj (v_shock - u_2)`` and the finder's gas-RH
         dissipated flux at the true Mach number ``f_diss_gas``; the left
         star density ``rho_star_L`` and the left wave type.
@@ -556,6 +574,7 @@ def pfrommer_shock_structure(
         mach_gas=mach_gas,
         mach_composite=v1 / c_comp,
         mach_gas_pressure=_gas_rh_mach_from_pressure(p_th_2 / p_th_R, gamma_th),
+        mach_gas_velocity=_gas_rh_mach_from_velocity(v1 * (1.0 - rho_R / rho_2) / c_th, gamma_th),
         f_inj=e_inj * v1 * rho_R / rho_2,
         f_diss_gas=float(thermalization_efficiency(mach_gas, gamma_th)) * 0.5 * rho_R * v1**3,
         rho_star_L=rho_star_L,

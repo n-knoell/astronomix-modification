@@ -222,6 +222,33 @@ class CosmicRayGreyConfig(NamedTuple):
     #: those cells, >= 1 for resolved shocks.
     dsa_velocity_consistency: float = 0.5
 
+    #: Mach number DSA uses (only with dsa_adaptive_shock_sampling): True
+    #: (default since 2026-10-19, Phase B decision DB4 = option a): from the
+    #: normal-velocity jump between the finder walk's post- and pre-shock
+    #: samples (find_shocks_pfrommer(mach_estimator="velocity")); False: from
+    #: the gas-pressure jump (the behaviour before). In the 3D Sedov shell the
+    #: pressure Mach number reads 0.76/0.84/0.87 of the true one at
+    #: 48^3/96^3/160^3, the velocity one 0.88/0.94/0.94; on planar shocks both
+    #: are within 1%. With CR injection the velocity jump reads high (+1.2%
+    #: at zeta = 0.1, +2.6% at KR13's strong-shock 0.21), the pressure jump
+    #: low (-2% / -4.5%; DB8). PROGRESS_PHASEB.md 2026-10-19.
+    dsa_mach_from_velocity: bool = True
+
+    #: weight each shock-surface cell's injection by 1 / |n|_inf, the shock
+    #: area it represents in units of dx^(ndim-1), with the normal of the
+    #: Gaussian-smoothed temperature (shock_finder3D._surface_area). Default
+    #: True since 2026-10-19 (Phase B decision DB7): without it every surface
+    #: cell counts as dx^(ndim-1), which under-counts an oblique shock's area
+    #: by |n|_inf (exactly, B8.2; 0.83 averaged over a sphere), so the
+    #: injection depended on the shock's angle to the grid by up to 43%.
+    dsa_area_weighting: bool = True
+
+    #: width (in cells) of the Gaussian that smooths the temperature for the
+    #: dsa_area_weighting normal. 2 cells: normal within 0.5 deg at planar
+    #: shocks; the finder's own unsmoothed -grad T is off by 3-6 deg at
+    #: non-symmetric orientations and over-weights by 5-10%.
+    dsa_area_normal_smoothing: float = 2.0
+
     #: conservative CR entropy (DESIGN.md "Open: conservative CR entropy at
     #: shocks"): advect s_cr = P_cr rho^(1 - gamma_cr) as an extra passive row,
     #: re-synced from e_cr every hydro step; where cr_entropy_transfer says so,

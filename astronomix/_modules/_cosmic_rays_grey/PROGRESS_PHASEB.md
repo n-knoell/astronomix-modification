@@ -73,6 +73,151 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 ## Log (newest first)
 
+### 2026-10-20: DB4 = (a) velocity-jump Mach, DB7 = smoothed-normal area weights: implemented (step 3, uncommitted)
+
+The user decided on 2026-10-19: DB7 smoothed-normal weights, DB4 option (a).
+
+**Code.**
+- `shock_finder3D/pfrommer_shock_finder.py`: new `mach_estimator="pressure"|"velocity"`. The default stays `"pressure"` (the finder tests, CWB finder diagnostics and non-DSA callers are unchanged). `"velocity"` takes the normal-velocity jump between the adaptive walk's own post/pre sample points (`_shock_zones.sample_along_direction`, a new helper that reads fields at the walk's points). It requires `mach_sampling_adaptive`.
+- **Guard (found in this step):** a velocity-Mach cell must also show the pressure jump at the same points, `M_p > mach_min` and `M_p − 1 ≥ f (M_u − 1)` with `f = mach_velocity_consistency` (0.5). This is the converse of the existing velocity check.
+  - Without it, B8.2 (2,1,0), M = 10, ζ = 0.1, N = 64 went NaN at the last step.
+  - Cause: 4026 zone cells next to the box faces, whose walk clamps instead of wrapping. Their normals were reversed and the pressure *fell* across them (p_pre 57 vs 1.4, M_p = 1), but they had a velocity difference: M_u 2.4, flux 780 from the far side's sound speed. That drained them to the pressure floor, and the next hydro step gave NaN everywhere (via dt).
+  - With velocity Mach or area weights alone the drain stayed just below 100%.
+  - The guard removes these cells. No Sedov cell is affected: B7.3 is identical to 4 digits with and without the guard.
+- **Gradient fix (found in this step):** the velocity projection onto the normal uses `stop_gradient(shock_direction)`.
+  - Without it the Phase-D inference rollout (`cr_phase_d_injection_efficiency_inference.py`) had a NaN AD gradient. The cause: the derivative of `-grad T/|grad T|` is singular in uniform gas, and a masked-out cell turns that into 0·inf = NaN, the same issue as the walk's FIXES_TODO round 24.
+  - With it: AD −0.4812 vs FD −0.4802 (relative error 2.1e-3; 5.1e-3 before this change). Forward results are unchanged.
+- `shock_finder3D/_surface_area.py` (new): `surface_area_weights` = 1/|n|∞ of `-grad T` of the Gaussian-smoothed temperature (σ in cells, separable, edge-padded; 1 in 1D).
+- `CosmicRayGreyConfig`: `dsa_mach_from_velocity=True`, `dsa_area_weighting=True`, `dsa_area_normal_smoothing=2.0`. `dsa_shock_finder_kwargs` passes the estimator; `inject_crs_at_shocks` multiplies the per-surface-cell amount by the weight before the post-shock spread.
+- `pfrommer_riemann_solver.py`: `ShockInjection(mach="velocity")`, the fixed point at the velocity-jump Mach number (explicit, since the jump is fixed by `(p*, rho*)`), plus a `mach_gas_velocity` output.
+
+**Tests adapted.**
+- B7.3: D, flux ratio and area use the injection's weight; new metric `dsa_area_ratio_inj`; figure panel (b) title.
+- B7.4: `FINDER_MACH = "velocity"`; the gates compare with that fixed point ("fp" metrics, previously "gp"); the self-test checks the velocity convention.
+- B8.1: the same reference switch. The KR13 M = 2 tube is now tracked only: KR13 is 1.6e-4 at M = 2 and some cells read M_u slightly > 2, giving E_cr/E_th = 1.7e-8.
+- Item 8: the formula cross-check applies the weight; the weak-blast coverage bound goes 2.6 → 3.0 (the velocity estimator reads 2.69 for the weakest blast at N = 48).
+- `_finder_estimators.py`: the closure follows the finder's estimator.
+
+**Regression** (scratch copy `/export/scratch/nknoell/phaseB/db47_update/`, `CR_UPDATE_BASELINES=1`, logs `logs/r2/`; raw data `/export/scratch/nknoell/phaseB/db47/`).
+
+B7.3 late means, ζ = 0.1, before → after:
+
+| N | Mach ratio | area (injection) | injection/ref | E_cr(t_end)/ref | E_cr run / kernel prediction |
+|---|---|---|---|---|---|
+| 48 | 0.763 → 0.876 | 0.851 → 1.054 | 0.431 → 0.766 | 0.294 → 0.515 | 1.19 → 1.20 |
+| 96 | 0.841 → 0.935 | 0.874 → 1.072 | 0.527 → 0.861 | 0.389 → 0.672 | 1.12 → 1.12 |
+| 160 | 0.869 → 0.943 | 0.841 → 1.028 | 0.600 → **0.918** | 0.448 → 0.740 | 1.11 → 1.10 |
+
+The plan's B7.3 target (≥ 0.9 at N = 160) is met.
+
+| Test | Result |
+|---|---|
+| Item 7 | E_cr/E 0.0720 / 0.0940 / 0.1035 = 0.515 / 0.672 / 0.740 of the self-similar 0.1398 (was 0.041 / 0.054 / 0.063); passes |
+| Item 8 | KR13 E_cr/E 0.149 / 0.193 / 0.211 = 0.57 / 0.73 / 0.80 of 0.2625 (N 48 / 96 / 160); CS14/KR13 ratio error 1.6 / 2.7 / 3.2% (was 4.6 / 6.4 / 7.6% vs the hard 8%, the Y6 watch item); passes at all three |
+| B8.2 (real injection, N = 128) | injected flux per area / exact 0.989–1.002 (ζ = 0) and 1.010–1.039 (ζ = 0.1) at all 5 orientations and M = 3, 10. Angle dependence < 2% (target < 5%; was 43%). No NaN at N = 64 or 128 |
+| B7.4, ζ = 0.1 | vs velocity fixed point: v_s −2e-4, P_th −0.15%, P_cr +2.6% (the deposit-inside-shock excess), ρ +0.09%, finder Mach −0.4 to −0.7%, L1 order 0.89; passes. vs the true Mach number: P_cr +6.6%, rate +6.3% |
+| B7.4, ζ = 0.5 | **fails** vs the velocity fixed point: v_s +0.57%, P_th +7.4%, P_cr −14%, ρ −2.8%, rate −11%, finder Mach −2.8 to −6%, L1 order 0.38. The sim stays between the true-Mach and the velocity fixed point (vs true: P_cr +8%, rate +6.2%) |
+| B7.4 CR tube | M_f 13.26 vs fixed point 13.62 |
+| B8.1 (N = 1600), vs velocity fixed point | KR13 +1.4 to +2.3% (M ≥ 7), −1.0 to −3.4% (M 3–5), −3.2 / −5.2% (M 2.5 / 2.25); constant ζ −1.5 to +2.6%; passes |
+| B8.1, vs the true Mach number | KR13 +11% at strong shocks (was −9%), +7.3% at M 5; constant ζ +0.3 to +6.6% |
+| Item 10, wind bubble | E_cr/E_tot 0.043 → 0.108 (2.5x; no exact DSA reference); hard gates pass |
+| Item 11, clumpy SNR (128³ scratch) | uniform E_cr 465, clumpy 455: −2.2% (was −6.7%); **fails** the "clumpy differs by ≥ 5%" gate |
+| Pion bump (128) | passes (SED slope 0.120, low-energy suppression 0.949) |
+| CWB, N = 128 (`cwb_db47.py`) | E_cr 5.68e-5 → 8.00e-5 (E_cr/E_tot 0.23% → 0.33%) although the velocity Mach median is lower (4.9 vs 6.2) |
+| Modified shock structure, two-fluid reference, energy budget, MHD energy budget, gradient checks (5) | pass |
+| Phase-D injection-efficiency inference | passes: AD-vs-FD 2.1e-3, recovered mach_scale 1.0626 (was 1.0634) |
+| shock_finder3D | synthetic smeared shock and Sedov correctness (256) / convergence pass; `analytic_wind_zone` not run (`pytest` missing in the venv; wind-module tests only) |
+
+- **Registry and figures.** `baselines.json` was merged into the repo from the scratch copy (196 stale `gp` keys of B7.4/B8.1 removed; no test partially refreshed), and the regenerated figures of the passing DSA tests were copied in (not item 11's). Docstrings of B7.3, B7.4, B8.1 and Phase D were updated.
+- **Decided (user, 2026-10-20):** (1) B7.4 ζ = 0.5 tracked only: hard gates for ζ = 0.1 only (`GATED_ZETAS`); rerun in compare mode passes. (2) Item 11's clumpy effect tracked only: `cr_snr_clumpy_medium.py` now takes `CR_NUM_CELLS` (default 256) and registers `N128_clumpy_effect` −0.0224 and E_cr/E_tot uniform 0.0924 / clumpy 0.0903 in `baselines.json`; passes at 128, figure copied. (3) CWB checked (below); wind bubble accepted without a closer look.
+- **CWB split** (`shock_finder3D/cwb_split.py` in the scratch copy, N = 128, ζ = 0.1, logs `logs/r3/`): E_cr old 5.67e-5, area weights only 6.15e-5 (**+8%**), velocity Mach only 7.04e-5 (**+24%**), both 8.01e-5 (+41% = 1.08 x 1.24 x 1.05 interaction). At a fixed final state the velocity estimator raises the summed dissipated flux by 14% (2.18e4 → 2.49e4): it reads lower in the many weak cells (hence the lower median) but higher in the strong ones that carry the flux (flux-weighted Mach 7.23 → 7.34; 7.19 → 7.60 at the new run's state), still below the expected pre-shock M ~ 10 (Chevalier & Clegg at r_s/R_inj). Flux-weighted area weight 1.07–1.11 (cell mean 1.21). Flux within 4 cells of the box faces 0.2–0.6%: no boundary artefact. The increase is the same correction as in Sedov, not a new effect.
+- **CWB figures regenerated** with the new defaults (`pytests/shock_finder3D/figures/cwb_cr/cwb_cr_{influence,orbital_slice}_{64,128}.png`, `cwb_default/cwb_shocked_cells_{2d,3d}_{64,128}.png`; the 128 ones replace stale 2026-08 versions). N = 256 not possible (CR-on run ~13.8 GiB > 11 GB); the `*_256` figures are still from 2026-09. The shocked-cell/Mach panels show `run_cwb`'s own finder call (pressure Mach), not the DSA velocity Mach.
+- **Found while checking the figures (pre-existing, not from DB4/DB7):** the white patches in the orbital-slice maps (also in the 2026-10-02 version) are cells with **negative e_cr**: N = 64, 40554 of 262144 cells (15%), min −4.6e-6 (max e_cr ~3e-3), in star 2's shocked tail, although `minimum_e_cr` = 1e-10 should floor them. Not fixed; open for the user.
+- **B7.4 ζ = 0.5, why:** in the smeared CR-loaded shock the sampled velocity jump is smaller than the exact post-shock one, so the fixed-point picture does not describe the sim at very high ζ.
+- **Item 11, a plausible reading:** part of the old clumpy effect was the area under-count, since a corrugated shock has more oblique surface cells.
+
+### 2026-10-19: B8.2 oblique planar shocks = DB4/DB7 fix plan step 2 (diagnostic, uncommitted)
+
+`pytests/cosmic_rays_grey/cr_oblique_planar_shocks.py` (new, no gates).
+- **Setup.** 3D periodic box with a RH slab along normals (1,0,0), (2,1,0), (1,1,0), (2,1,1), (1,1,1). M = 3 and 10, ζ = 0 and 0.1, N = 64 and 128.
+- **Measurement.** Interior cube with a 10-cell margin, because the finder walk clamps at the box faces. True area = the exact plane–cube intersection.
+- **True Mach.** Initial RH M for ζ = 0; for ζ = 0.1, M_init × (tracked speed ζ=0.1 / ζ=0). The front tracking alone reads 1–4% high.
+- **Shared code.** Estimators moved to `_finder_estimators.py`; `cr_sedov_mach_estimators.py` uses it and reproduces its N=48 numbers to 1e-7.
+- **Output.** Raw data in `/export/scratch/nknoell/phaseB/b8_2/`; figure `pics/08_dsa_mach_dependence/cr_oblique_planar_shocks.png`.
+
+Results at N = 128 (means over 4 snapshots):
+
+| k | \|n\|∞ | cells/area | area, finder normal | area, Gauss σ=2 | finder normal error | injection now (probe, ζ=0) | velocity + σ=2, ζ=0 | velocity + σ=2, ζ=0.1 |
+|---|---|---|---|---|---|---|---|---|
+| (1,0,0) | 1.000 | 1.000 | 1.000 | 1.000 | 0° | 0.99 | 0.99 | 1.03 |
+| (2,1,0) | 0.894 | 0.895 | 1.05 | 1.005 | 5.2–5.7° | 0.88–0.89 | 0.995 | 1.01–1.02 |
+| (1,1,0) | 0.707 | 0.707 | 1.000 | 1.000 | 0° | 0.70–0.71 | 0.996–0.999 | 1.02 |
+| (2,1,1) | 0.816 | 0.816 | 1.07–1.08 | 1.006 | 3–4° | 0.81–0.82 | 0.992–0.994 | 1.02 |
+| (1,1,1) | 0.577 | 0.577 | 1.000 | 1.000 | 0° | 0.57–0.58 | 0.995–0.996 | 1.00 |
+
+- **DB7 confirmed exactly.** Surface cells per area equal \|n\|∞ to 4 digits. The current injection therefore depends on angle by 43% (plan target < 5%).
+- **Weighting fix.** 1/\|n\|∞ with σ = 2 smoothed-temperature normals gives an angle dependence < 1% (ζ = 0) and < 3% (ζ = 0.1).
+- **Finder normals on planar shocks.** -∇T is exact for the symmetric orientations but off by 3–6° for (2,1,0) and (2,1,1), a stencil effect on the staircased front, so it over-weights by 5–8%. σ = 2 cuts the error to 0.5°.
+- **Mach, ζ = 0, N = 128.** Pressure 0.994–0.999 and velocity 0.992–0.998: both fine on planar shocks.
+- **Mach at N = 64 oblique (2,1,0)/(2,1,1), M = 10.** The medians drop to 0.85–0.91 for both estimators (wide per-cell scatter; mean flux with exact weights still 1.00–1.03). Not looked into further.
+- **ζ = 0.1.** Pressure reads 0.983–0.994 (the DB8 fixed point); velocity reads 1.000–1.010 (CR-modified compression).
+- **Exact 1D references** (`pfrommer_shock_structure`, injection at the true Mach number), flux from the velocity jump vs from the pressure jump:
+
+  | ζ | M | flux(M_u) / exact | flux(M_p) / exact |
+  |---|---|---|---|
+  | 0.1 | 10 | +3.7% | −5.5% |
+  | KR13 (0.21) | ≥ 10 | +7–8% | −11 to −13% |
+
+  The velocity error is smaller, of opposite sign, and grows with ζ. A ζ-aware correction (effective γ from P_cr/P_th, or v_s = Δu r/(r−1) from the density jump) would remove it but was not tried.
+- **Conclusion for DB4/DB7.** Planar shocks barely distinguish the two Mach estimators; the difference comes from the Sedov shell (step 1). The area weighting is needed at every non-aligned shock, and needs smoothed normals.
+
+### 2026-10-19: DB4/DB7 fix plan step 1, Mach estimators + smoothed normals (diagnostic, uncommitted)
+
+`pytests/cosmic_rays_grey/cr_sedov_mach_estimators.py` (new, no gates): it repeats the finder's adaptive walk on the B7.3 snapshots and compares estimators at the same post-/pre-shock sample points. Raw data and logs are in `/export/scratch/nknoell/phaseB/db4/`; the figure is `pics/07_sedov_taylor/cr_sedov_mach_estimators.png`. The finder flux is reproduced exactly (closure 1.00000).
+
+Late means for the DSA run (ζ = 0.1); the control run (ζ = 0) agrees to about 1–2%:
+
+| N | M_p | M_u | M_T | √(M_p M_T) | M_ptot | flux/area p | flux/area u | area exact | area finder | area box5 | area Gauss σ=2 | inj/ref now | inj/ref u + σ=2 | inj/ref u + exact |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 48 | 0.764 | 0.876 | 1.128 | 0.931 | 0.774 | 0.448 | 0.656 | 1.021 | 1.104 | 1.097 | 1.049 | 0.431 | 0.778 | 0.757 |
+| 96 | 0.841 | 0.936 | 1.091 | 0.957 | 0.854 | 0.592 | 0.809 | 1.049 | 1.118 | 1.116 | 1.068 | 0.527 | 0.880 | 0.865 |
+| 160 | 0.869 | 0.943 | 1.035 | 0.947 | 0.886 | 0.653 | 0.839 | 1.010 | 1.071 | 1.070 | 1.024 | 0.600 | 0.941 | 0.928 |
+
+(Mach columns are median M_est / M_true; area columns are Σ dx²/|n|∞ / 4πR².)
+
+- **Velocity jump (F4a).** It roughly halves the Mach deficit. The flux factor rises from 0.45/0.59/0.65 to 0.66/0.81/0.84, but stalls between N = 96 and 160 at a ~6% Mach deficit (still the smeared, falling post-shock profile). The largest velocity along the walk equals the velocity at the pressure-peak point.
+- **Temperature jump.** It overshoots (1.13 → 1.03) and converges from above. √(M_p M_T) is 0.93–0.96 but not monotone in N: an accidental cancellation, not recommended.
+- **Gas + CR pressure.** Only +1–2% over the gas-pressure Mach, so DB8 is a minor effect at ζ = 0.1.
+- **Normals.**
+  - The finder's -∇T normal is tilted *systematically* away from the grid axes: ⟨|n|∞ − |n_exact|∞⟩ = −0.06/−0.05/−0.046, median angle 7.4/6.0/5.4°.
+  - Averaging over 3³ or 5³ surface boxes does not help (the error is coherent, not noise).
+  - -∇T of a Gaussian-smoothed T (σ = 2 cells) cuts the tilt to −0.02/−0.015/−0.011, giving an area within 1.3–3% of the exact-normal weighting.
+  - The exact-normal area itself is 1.01–1.05, consistent with the ±2% R_true uncertainty.
+- **Combined (velocity Mach + σ = 2 weights).** Implied injection/ref is 0.78/0.88/0.94, against 0.43/0.53/0.60 now.
+- **Caveats.**
+  - This is a reanalysis of states evolved with the current injection. A run with the new estimator injects more CR and modifies the shock; the γ = 5/3 velocity formula then overestimates by a few percent.
+  - Planar accuracy (B7.4/B8.1) and B8.2 oblique shocks are not yet checked: that is step 2.
+  - No finder change has been made; DB4/DB7 are open for the user.
+
+### 2026-10-19: B7.3 figure redesign + adiabatic-memory check (uncommitted)
+
+`cr_sedov_injection_rate.py`: new `_plot` (every panel a ratio to the reference: radius, finder
+Mach, finder dissipation vs area x Mach^3, injection, `E_cr` with kernel prediction, late-time
+summary bars) and `_adiabatic_kernel` / `_kernel_prediction`. The kernel follows shells through
+the two-fluid reference: a shell keeps `K ~ (R_s/R)^(3/4)` of its injected CR energy
+(Bell 2015, `P^(1/4)` in the isobaric interior; local exponent 0.38-0.28), not `1/R`
+(homologous; would give `E_cr/E` 0.104). New hard gate: kernel closure on the reference
+(1.00001, tol 1e-3). Rerun N 48/96/160 on GPU (UUID-pinned): all 42 metrics reproduce.
+
+- Adiabatic losses do **not** explain the `E_cr` deficit: the run holds 1.19 / 1.12 / 1.11 x
+  the `E_cr` predicted from its own injection rate with the reference kernel (losses not too
+  large). The extra gap between `E_cr` (0.29/0.39/0.45) and late injection (0.43/0.53/0.60) is
+  memory: 53% of the reference `E_cr(t)` was injected before 0.1 t, and the run is worst early.
+- Not resolved: the 11-19% surplus (deposit inside the compressing shock suspected, unverified);
+  a direct `P_cr div u` budget on snapshots leaves 10-24% of the injection unaccounted for
+  (central differences across the shock too crude to tell).
+- 2-page explainer: `reports/sedov_injection_rate/main.pdf`.
+
 ### 2026-10-14: DB7 check, shock area with exact normals (done; diagnostic)
 
 `pytests/cosmic_rays_grey/cr_sedov_shock_area.py` (reanalyses B7.3's saved snapshots, DSA run,
