@@ -51,6 +51,7 @@ from astronomix._modules._cnn_mhd_corrector._cnn_mhd_corrector import _cnn_mhd_c
 from astronomix._modules._cooling._cooling import update_pressure_by_cooling
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import inject_crs_at_shocks
 from astronomix._modules._cosmic_rays_grey.cr_grey_transport import (
+    cr_flux_realizability_cap,
     streaming_flux_target,
 )
 from astronomix._modules._frame_tracking._frame_tracking import _frame_tracking
@@ -377,6 +378,19 @@ def _iteration_level_continuous_updates(
                 params.cosmic_ray_grey_params.minimum_e_cr,
             )
         )
+        # Realizability cap |F_cr| <= v_red e_cr on the floored state, in
+        # every scheme (since 2026-10-20; before only inside the unsplit
+        # relaxation step): without it the split CWB run kept |F_cr| up to
+        # ~1e6 v_red e_cr in floor-level cells, the next step drove them
+        # negative and the floor created ~74% of the final E_cr
+        # (PROGRESS_PHASEB.md 2026-10-20, "Negative e_cr").
+        if (
+            config.cosmic_ray_grey_config.flux_realizability_cap
+            and registered_variables.cosmic_ray_flux_active
+        ):
+            primitive_state = cr_flux_realizability_cap(
+                primitive_state, params, registered_variables
+            )
 
     # Per-step positivity on the primitive state.
     #   - HARD_FLOOR clamps density (and pressure, for an ideal gas) to its

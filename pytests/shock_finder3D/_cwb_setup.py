@@ -53,7 +53,14 @@ from astropy import units as u
 
 # astronomix constants
 from astronomix import CARTESIAN, FINITE_VOLUME, HLLC
-from astronomix.option_classes.simulation_config import MINMOD, MUSCL, SPLIT, VAN_ALBADA_PP
+from astronomix.option_classes.simulation_config import (
+    MINMOD,
+    MUSCL,
+    RK2_SSP,
+    SPLIT,
+    UNSPLIT,
+    VAN_ALBADA_PP,
+)
 from astronomix import OPEN_BOUNDARY, FORWARDS
 
 # astronomix containers
@@ -233,6 +240,21 @@ inclination_deg = float(jnp.rad2deg(jnp.arccos(cos_inclination)))
 # extreme here. Set comfortably above both terminal wind speeds instead.
 REDUCED_STREAMING_SPEED = 1000.0
 
+# CR diffusion coefficient (CosmicRayGreyParams.diffusion_coefficient, the
+# e_cr diffusivity of the F_cr relaxation), in code units: 1 code unit =
+# code_length * code_velocity ~ 5e20 cm^2/s, about Bohm diffusion of TeV
+# protons in B ~ 0.1 G (user decision 2026-10-20). Until 2026-10-20 the CWB had
+# no CR diffusion (pure two-moment wave mode, CRs free-streaming at
+# REDUCED_STREAMING_SPEED). A galactic 1e28 cm^2/s (2e7 code units) is the
+# free-streaming limit in this box and goes NaN at N = 128 (CR-dominated
+# low-density wind cells; the grey model's -grad(P_cr) coupling assumes
+# kappa << v_red L); a GeV-Bohm 1e-3 code units (5e17 cm^2/s) confines the CRs
+# to the shocked shell (PROGRESS_PHASEB.md 2026-10-20).
+CR_DIFFUSION_COEFFICIENT = 1.0
+CR_DIFFUSION_COEFFICIENT_CGS = (
+    CR_DIFFUSION_COEFFICIENT * CODE_UNITS.code_length * CODE_UNITS.code_velocity
+).to(u.cm**2 / u.s)
+
 CROSSING_TIME_SAFETY_MARGIN = 1.1
 furthest_edge_distance = ((BOX_SIZE / 2 + SEPARATION / 2)**2 + (BOX_SIZE / 2)**2 + (BOX_SIZE / 2)**2)**0.5
 wind_crossing_time = furthest_edge_distance / min(v_inf1, v_inf2)
@@ -261,6 +283,8 @@ def run_cwb(
     wind_floor_kelvin=None,
     cosmic_rays=True,
     num_injection_cells=None,
+    unsplit=True,
+    diffusion_coefficient=CR_DIFFUSION_COEFFICIENT,
 ):
     """Run one 3D stationary colliding-wind-binary simulation and find its shocks.
 
@@ -311,6 +335,14 @@ def run_cwb(
             every N (FIXES_TODO.md, 2026-10-14). A fixed value (e.g. ``2``) lets
             that ratio, and so the pre-shock Mach number, grow as ``N^(2/3)``.
             ``1`` injects nothing (the stars sit on cell corners in y/z).
+        unsplit: Unsplit FV scheme with SSP-RK2 (default since 2026-10-20,
+            needed for the CR diffusion); ``False`` is the dimensionally split
+            MUSCL-Hancock scheme used until then.
+        diffusion_coefficient: CR diffusivity in code units (default
+            ``CR_DIFFUSION_COEFFICIENT``, 1 code unit ~ 5e20 cm^2/s), via the F_cr relaxation
+            (``CosmicRayGreyConfig.diffusive_relaxation``, unsplit only).
+            ``None`` switches the relaxation off (pure two-moment wave mode,
+            CRs free-stream at ``REDUCED_STREAMING_SPEED``).
 
     Returns:
         A dict with the final primitive ``state``, the ``config``,
@@ -322,7 +354,12 @@ def run_cwb(
         first_order_fallback=False,
         geometry=CARTESIAN,
         solver_mode=FINITE_VOLUME,
-        split=SPLIT,
+        # 2026-10-20 (user decision): unsplit + SSP-RK2 by default, because
+        # the grey-CR F_cr relaxation (CR diffusion) exists only there. The
+        # unsplit crash recorded below (2026-09-19) no longer occurs: N = 64
+        # and 128 run clean with MINMOD + HLLC (PROGRESS_PHASEB.md
+        # 2026-10-20). The notes below are about the split scheme.
+        split=UNSPLIT if unsplit else SPLIT,
         # HLLC + full 2nd-order MUSCL reconstruction is not unconditionally
         # positivity-preserving the way HLL + first-order is; at this wind's
         # Mach ~100 injection contrast that showed up as a genuine blow-up
@@ -385,7 +422,7 @@ def run_cwb(
         # ~15.47%-of-T_END boundary-corner failure.
         limiter=MINMOD,
         riemann_solver=HLLC,
-        time_integrator=MUSCL,
+        time_integrator=RK2_SSP if unsplit else MUSCL,
         differentiation_mode=FORWARDS,
         dimensionality=3,
         box_size=BOX_SIZE,
@@ -410,7 +447,8 @@ def run_cwb(
             central_object_only=False,
         ),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
-            grey_cosmic_rays=cosmic_rays, diffusive_shock_acceleration=cosmic_rays
+            grey_cosmic_rays=cosmic_rays, diffusive_shock_acceleration=cosmic_rays,
+            diffusive_relaxation=cosmic_rays and diffusion_coefficient is not None,
         ),
         # FIXES_TODO.md item 1b, round 14: radiative cooling, disabled by
         # default (CoolingConfig()'s own default is cooling=False), enabled
@@ -512,6 +550,9 @@ def run_cwb(
         cosmic_ray_grey_params=CosmicRayGreyParams(
             dsa_efficiency=dsa_efficiency, dsa_mach_min=MACH_MIN,
             reduced_streaming_speed=REDUCED_STREAMING_SPEED,
+            diffusion_coefficient=(
+                1.0 if diffusion_coefficient is None else diffusion_coefficient
+            ),
         ),
     )
 

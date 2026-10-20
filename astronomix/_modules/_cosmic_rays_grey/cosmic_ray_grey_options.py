@@ -115,10 +115,13 @@ class CosmicRayGreyConfig(NamedTuple):
     #: F_cr vector is rescaled wherever it exceeds the cap, on the
     #: reconstructed interface states before every Riemann solve and on the
     #: cell states at the end of every RK stage and of the step
-    #: (cr_grey_transport.cr_flux_realizability_cap). Applied only together
-    #: with diffusive_relaxation or anisotropic_transport (which already
-    #: require the unsplit FV RK2 scheme); the pure-wave mode of ladder items
-    #: 1-3, 6-11 and 15 is unchanged. On by default since 2026-10-05 (user
+    #: (cr_grey_transport.cr_flux_realizability_cap). The interface and
+    #: stage caps act only together with diffusive_relaxation or
+    #: anisotropic_transport (which already require the unsplit FV RK2
+    #: scheme); since 2026-10-20 the cell states are also capped once per
+    #: step, right after the e_cr floor, in every scheme
+    #: (_iteration_level_updates; fixes the negative e_cr / floor energy of
+    #: the split CWB run, PROGRESS_PHASEB.md). On by default since 2026-10-05 (user
     #: decision, with the monotonicity guard; DESIGN.md "Open: CR diffusion
     #: follow-up", step 4): on its own it does not keep the ring tests
     #: monotone, but it reduces negatives near e_cr -> 0 at no cost.
