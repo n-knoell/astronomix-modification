@@ -17,16 +17,16 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 |---|---|---|---|---|---|
 | **Item 7: CR Sedov-Taylor blast** | | | | | |
 | B7.1 self-similar two-fluid Sedov reference | 1 | done | `reference_solutions/sedov_two_fluid.py`, `cr_sedov_two_fluid_reference.py` | Sedov `xi_0` 1.15167 / 1.03278 (5/3, 7/5), energy integral <= 4e-5, plan table to 1e-3; code convention (`"gas_rh"`, `zeta` 0.1): `E_cr/E` 0.1398, injection 0.0416 E/t, finder dissipation 0.416 E/t | 2026-10-14 |
-| B7.2 Sedov from the self-similar state, `v_red = 0` | 2 | todo | | | |
+| B7.2 Sedov from the self-similar state, `v_red = 0` | 2 | done (tracked); new finding DB9 | `cr_sedov_self_similar.py`, `sedov_two_fluid.py` (`cell_averages`) | E_cr/E end 0.951 / 0.982 / 0.996 of the reference (N 48 / 96 / 160; point explosion 0.52 / 0.67 / 0.74) = injection 0.77 / 0.87 / 0.92 x deposit surplus (injected part +18 / +14 / +11%, under-compressed shell); passive adiabatic losses right to 4 / 2 / 1% | 2026-10-21 |
 | B7.3 instantaneous injection rate vs analytic | 1 | done; findings for DB4 + new area under-count (Y10) | `cr_sedov_injection_rate.py` | late-time injection rate 0.43 / 0.53 / 0.60 of the reference at N 48 / 96 / 160 (order ~0.3), `E_cr/E` 0.29 / 0.39 / 0.45. Finder dissipation / simulated shock = area 0.85 / 0.87 / 0.84 (= `<|n|_inf>` 0.831, resolution-independent) x flux per cell 0.45 / 0.59 / 0.65 (= `(M_fin/M_true)^3`, Mach ratio 0.76 / 0.84 / 0.87). Cap: 0 | 2026-10-14 |
 | B7.4 planar shock tube with injection vs exact (Pfrommer et al. 2017 App. B/C) | 1 | done; new finding Y11 (DB8) | `cr_shock_tube_injection.py`, `pfrommer_riemann_solver.py` (`injection=`) | default scheme at the gas-pressure fixed point (N >= 400): `v_s` 8e-4, `P_th` -0.1 / -0.7%, `P_cr` +2.7% (deposit inside the smeared shock), finder M -0.5 / -1.8%. Vs the true Mach number: `P_cr` -2.7% / **-23%** (`zeta` 0.1 / 0.5), finder M -2.2 / -9%. Energy scheme `P_cr` +6 to +16% | 2026-10-14 |
-| B7.5 shock slowdown | 2 | todo | | | |
+| B7.5 shock slowdown | 2 | done (B7.2 runs; point explosion at ζ 0.5 not run) | `cr_sedov_self_similar.py` | ξ_dsa / ξ_ctrl over the reference 0.9998 / 1.0015 / 0.9984 (ζ 0.1), 0.9959 / 1.0001 / 1.0017 (ζ 0.211); α 0.407 / 0.404 / 0.403 (estimator offset) | 2026-10-21 |
 | B7.6 isotropy of the deposit | 3 | todo | | | |
 | B7.7 robustness: `dt`, sampling knobs, limiter counters | 3 | todo | | | |
 | B7.8 (optional) SN source term, composite blast | 3 | todo | | | |
 | **Item 8: DSA efficiency vs Mach number** | | | | | |
 | B8.1 realized `eta_eff(M)` at planar shocks | 1 | done | `cr_dsa_efficiency_planar.py` | vs the gas-pressure fixed point: KR13 within 3% for M >= 3, -5.6% at M 2.25; constant +0.3 ... +2.8%. Vs the true Mach number: KR13 **-9%** at strong shocks (-10% at M 5), constant -1 ... -3%. N 400 = N 1600 to 1e-3 | 2026-10-14 |
-| B8.2 finder Mach and injection at oblique shocks | 2 | todo; partly answered by the DB7 check | `cr_sedov_shock_area.py` | Sedov: finder M / M_true varies only 0.75-0.78 (N 48) / 0.85-0.88 (N 160) from axis to diagonal; the area factor is `|n|_inf` per cell | 2026-10-14 |
+| B8.2 finder Mach and injection at oblique shocks | 2 | done (diagnostic, no gates) | `cr_oblique_planar_shocks.py`, `cr_sedov_shock_area.py` | N 128, 5 orientations, M 3/10: with DB4 (a) + DB7 weights the injected flux per area is 0.989-1.002 (ζ 0) / 1.010-1.039 (ζ 0.1) of exact, angle dependence < 2% (was 43%) | 2026-10-20 |
 | B8.3 KR13 fit vs published data | 2 | todo | | | |
 | B8.4 weak blasts vs 1D spherical reference | 3 | todo | | | |
 | B8.5 shocks into CR-loaded gas | 2 | todo | | | |
@@ -42,11 +42,12 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | DB1 | Efficiency convention: KR13 `eta` on the kinetic or the dissipated flux? | open | |
 | DB2 | CR transport in the item-7/8 gates (`v_red = 0` hard, production tracked)? | open | |
 | DB3 | Obliquity-dependent efficiency for MHD runs? | open | |
-| DB4 | Finder Mach bias: correct it (F4 a/b) or accept and gate trends? | open; B7.3 data (2026-10-14) | Mach ratio 0.76 / 0.84 / 0.87 (N 48 / 96 / 160), order 0.57 -> 0.38; enters the injection cubed (0.45 / 0.59 / 0.65); 0.95 would need N ~ 1400 |
+| DB4 | Finder Mach bias: correct it (F4 a/b) or accept and gate trends? | **decided 2026-10-19** (user): (a) Mach from the velocity jump (`mach_estimator="velocity"`, `dsa_mach_from_velocity=True`) | Sedov Mach ratio 0.876 / 0.935 / 0.943 (N 48 / 96 / 160; pressure jump 0.76 / 0.84 / 0.87); log 2026-10-20 |
 | DB5 | Sub-critical threshold of the constant model (1.3 / 2.25 / 3)? | open | |
 | DB6 | Item-7 gated IC: self-similar state instead of the point explosion? | open | |
-| DB7 (new) | Area under-count of oblique shock surfaces (Y10): correct the per-cell area by `1/|n|_inf`? | open; B7.3 + DB7 check (2026-10-14): Y10 confirmed with exact normals (1.01-1.05), local normals over-correct (1.06-1.13) | spherical shock: 0.84-0.87 of the dissipation at every N; with the finder's normals the correction gives 1.07-1.10 (over-corrects, noisy normals). B8.2 (planar oblique) gives the exact factor |
+| DB7 (new) | Area under-count of oblique shock surfaces (Y10): correct the per-cell area by `1/|n|_inf`? | **decided 2026-10-19** (user): yes, with the normal of the Gaussian-smoothed temperature (`dsa_area_weighting=True`, `dsa_area_normal_smoothing=2`) | Sedov injection area 1.05 / 1.07 / 1.03; B8.2 angle dependence < 2%; log 2026-10-20 |
 | DB8 (new) | CR back-reaction on the finder Mach number (Y11): the finder reads M from the **gas**-pressure jump, which the injected CRs lower. (a) Mach from the total-pressure jump (composite RH), (b) from the density/velocity jump, or (c) accept? | **decided 2026-10-14: (c) accept for now** (user); document that the realized efficiency is lower, no finder change. Revisit with DB4/B8.5 | Resolved planar shocks settle at the self-consistent fixed point. Injected / intended flux (exact): 0.95 at `zeta` 0.1 (finder M -1.7%), 0.77 at 0.5 (-7.4%), 0.89 for KR13 at strong shocks (-3.8%). Measured vs the true-M reference: -2.7% / -23% / -9% (partly offset by the +2.7% deposit excess). Resolution-independent. In the item-7 Sedov run (`zeta` 0.1) ~2% of the Mach ratio, ~5% of the injection |
+| DB9 (new) | Deposit surplus (B7.2): CRs deposited into the smeared, under-compressed shock shell later lose less to expansion than CRs injected at the RH post-shock density. (a) accept and document (it offsets part of the injection deficit), (b) density-consistent deposit: scale each cell's share by `min(1, (rho/rho_RH)^(gamma_cr - 1))`, the withheld energy stays in the gas, or (c) other? | **decided 2026-10-21** (user): (b), opt-in (`dsa_density_consistent_deposit=True`, default off); implemented + regression run 2026-10-21 | with the flag: Sedov E_cr / prediction 0.985 / 0.990 / 0.990, E_cr/E end 0.84 / 0.90 / 0.93 (injection deficit no longer offset), planar P_cr -0.8%. Before: injected-part surplus +18 / +14 / +11% (Sedov N 48 / 96 / 160), +2.6% planar (B7.4). Scratch prototype of (b): planar -0.8%, Sedov -13 / -7 / -5% (over-corrects where the shell is unresolved); log 2026-10-21 |
 
 ## Infrastructure
 
@@ -64,7 +65,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
       (KR13 fixed point); `pfrommer_shock_structure` returns star states, shock speed, Mach numbers and fluxes. Fixed on the
       way: the Hugoniot bracket now starts at `rho_K` and the mass flux has an acoustic limit (infinitesimal left shocks of
       RH-state tubes failed before). Existing users (`cr_shock_tube.py`, `cr_shock_tube_partition.py`) unaffected.
-- [ ] Self-similar initial-condition builder on the Cartesian grid (B7.2, B7.5, B7.6)
+- [x] Self-similar initial-condition builder on the Cartesian grid (B7.2, B7.5, B7.6): `SedovTwoFluidSolution.cell_averages` (2026-10-21), `n_sub^3` sub-samples per cell averaging the conserved densities, optional core density floor
 - [ ] Digitized KR13 / Dubois App. B data (B8.3), 1D spherical reference (B8.4)
 - [ ] Shared shock-position fit: first version in `cr_sedov_injection_rate.py`
       (`_shock_radius`: front midpoint + pressure peak of shell averages; `_derived`: fit
@@ -72,6 +73,105 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
       0.4% at N 48 / 96 / 160
 
 ## Log (newest first)
+
+### 2026-10-21: DB9 = (b) density-consistent deposit, opt-in (implemented; regression run; uncommitted)
+
+**Implementation.**
+- `CosmicRayGreyConfig.dsa_density_consistent_deposit` (default `False`; needs `dsa_adaptive_shock_sampling`, else `ValueError`). Each post-shock cell's share of the spread injection is multiplied by `min(1, (rho_cell / rho_RH)^(gamma_cr - 1))`, `rho_RH = rho_pre (gamma+1) M^2 / ((gamma-1) M^2 + 2)` with the finder's Mach number and the surface cell's sampled pre-shock density. The withheld energy stays in the gas (it is simply not diverted).
+- `ShockFinderResult.pre_shock_density` (new field, adaptive sampling only): the `rho_pre` of the walk's pre-shock sample point, which the finder already used for the flux.
+- `cr_grey_injection._spread_over_post_shock_cells`: optional `density`, `post_shock_density`, `gamma_cr` keywords (no factor without them; existing positional callers unchanged).
+- Tests (tracked only, no new hard gates): B7.2 run `z0.1_dcd` (+ metric `inj_realized_over_nominal`), B7.4 scheme `"default, density-consistent deposit"` (N 400 / 1600, both zeta); 42 + 32 new metrics in `baselines.json`. B7.2 figure: dash-dot curves in (a), two "(d.c.)" bars in (f).
+
+**Check against the scratch prototype** (repo code, no patching): B7.4 to <= 3e-4 (the prototype assumed `rho_pre` = 0.125), Sedov N = 48 to 4 digits; energy conservation 1e-14.
+
+**Results** (regression run, `/export/scratch/nknoell/phaseB/db9/`):
+
+| N | E_cr/E end / ref (default) | E_cr / kernel prediction (default) | deposited / nominal | X_cr shell / ref (default) | P_cr peak / ref (default) | L1 P_cr (default) | slowdown / ref |
+|---|---|---|---|---|---|---|---|
+| 48 | **0.843** (0.951) | **0.985** (1.113) | 0.778 | 0.818 (1.063) | 0.600 (0.779) | 0.169 (0.118) | 1.003 |
+| 96 | **0.900** (0.982) | **0.990** (1.081) | 0.848 | 0.889 (1.064) | 0.712 (0.859) | 0.113 (0.080) | 1.004 |
+| 160 | **0.931** (0.996) | **0.990** (1.060) | 0.885 | 0.923 (1.094) | 0.805 (0.916) | 0.083 (0.060) | 1.000 |
+
+- B7.4 thermal tube vs the velocity fixed point (N 400 / 1600): `zeta` 0.1 `P_cr` **-0.86 / -0.83%** (default +2.6%), rate -0.75 / -0.79%, `P_th` +0.06%, `v_s` < 2e-4; vs the true Mach number `P_cr` +3.0% (default +6.6%). `zeta` 0.5 `P_cr` -17.3 / -16.9% (default -14%), vs true M +3.7 / +4.3% (default +8%).
+
+**Reading.**
+1. **The surplus is gone.** With the flag the run holds what its own injection predicts with the reference's adiabatic losses to 1-1.5% at every N (default +6 to +11%); the planar plateau is within 1% of its fixed point.
+2. **What remains is the injection deficit, now visible.** E_cr/E, the shell X_cr / P_cr and the L1 of P_cr are further from the reference than with the default deposit, and converge with the injection rate (0.76 / 0.86 / 0.91): the default deposit's agreement was the two errors cancelling (log entry below). The remaining deficit is the finder Mach number and area (DB4/DB7, B7.3).
+3. **No side effects on the blast.** Shock radius, slowdown (B7.5) and exponent unchanged to < 0.5%; total energy conserved as before.
+
+**Regression (flag off, everything else as committed + the B7.2 entry below).** Full grey-CR suite, update mode against a scratch copy of the registry, then diffed: all 853 pre-existing metrics identical to the registry's 4 digits except roundoff-level ones (conservation errors ~1e-5, item-7 partition identity 3e-7 -> 2e-6, B7.3 cap loss ~1e-8, item-8 cross check ~2e-7; all far below their gate floors 1e-4 / 1e-3 / 1e-6). Every test passes except `test_cr_ring_flux_cap_alone`, the strict xfail (identical numbers to the 2026-10-20 run). Only the new keys were merged into `baselines.json`; existing entries untouched.
+
+### 2026-10-21: B7.2 Sedov from the self-similar state + B7.5 shock slowdown (done; tracked, uncommitted)
+
+`pytests/cosmic_rays_grey/cr_sedov_self_similar.py` (new); initial-state builder `SedovTwoFluidSolution.cell_averages` in `sedov_two_fluid.py` (new method).
+
+**Setup.**
+- The item-7 box, ambient gas and `T_END` = 0.07. The blast starts from the self-similar solution at `R_0` = 0.15 (`t_start = t_0` ≈ 0.0061-0.0067, i.e. the reference's own clock), so the final state is directly comparable with item 7 / B7.3.
+- Cell averages of the conserved densities from 4³ sub-samples per cell. The initial energy is the reference's to 1e-3, and E_cr/E to 7e-4.
+- Core density floored at 0.02 ρ0. The self-similar G is 1e-9 at λ = 0.05, and the sound speed there would collapse dt; the point-explosion runs have ρ_min 0.015-0.14. Pressure and velocity are kept.
+- `v_red = 0`, constant efficiency, code convention `"gas_rh"`.
+- Runs per N: control (ζ = 0), and ζ = 0.1 and 0.211 (0.211 = item 8's KR13 strong-blast E_cr/E 0.2625), each with the default scheme (HLLC + hybrid) and the energy scheme (`cr_entropy=False`).
+- N = 48 / 96 / 160 took 2 / 12 / 82 min (5 runs each).
+- Raw data `/export/scratch/nknoell/phaseB/b7_2/`; runs and diagnostics `/export/scratch/nknoell/phaseB/b7_2_run/` (logs in `logs/`).
+
+**Results, ζ = 0.1, default scheme** (energy scheme in brackets; late = t ≥ 0.03, end = t 0.07):
+
+| N | E_cr/E end / ref | point explosion (B7.3) | injection / ref (end) | finder Mach / true (end) | E_cr / kernel prediction (end) | xi / ref | slowdown / ref (B7.5) |
+|---|---|---|---|---|---|---|---|
+| 48 | **0.951** [0.931] | 0.515 | 0.768 | 0.896 | 1.113 | 1.0104 | 0.9998 |
+| 96 | **0.982** [0.979] | 0.672 | 0.872 | 0.941 | 1.081 | 1.0050 | 1.0015 |
+| 160 | **0.996** [1.003] | 0.740 | 0.920 | 0.962 | 1.060 | 1.0009 | 0.9984 |
+
+- ζ = 0.211: E_cr/E end 0.965 / 0.992 / 1.008 [0.949 / 0.996 / 1.022], slowdown / ref 0.9959 / 1.0001 / 1.0017.
+- Control ξ / Sedov: 1.0106 / 1.0035 / 1.0025. Exponent α 0.4069 / 0.4037 / 0.4028 (the front/peak estimator offset; 0.400 expected).
+- Shell window λ ∈ [0.7, 0.9] at t_end, ζ = 0.1 default: X_cr / ref 1.063 / 1.064 / 1.094, P_cr / (ρ0 V² Π_cr,ref) 1.014 / 1.017 / 1.038.
+- Post-shock P_cr peak / reference 0.78 / 0.86 / 0.92: the smeared shell, no deposit spike (plan 7.3 step 5 not seen).
+- L1 (ζ = 0.1 default): ρ 0.316 / 0.237 / 0.181, P_tot 0.137 / 0.099 / 0.076, P_cr 0.118 / 0.080 / 0.060.
+- Energy conservation ≤ 1e-4 in every run.
+
+**Reading.**
+1. **Item 7's E_cr deficit is the point-explosion start.** From the self-similar state, the same scheme keeps E_cr/E within 5 / 2 / 0.5% of the reference. Plan Y4 is confirmed: the time-integrated E_cr of item 7 measures the unresolved early blast.
+2. **But it is right for two compensating reasons.** The injection rate is only 0.77 / 0.87 / 0.92 of the reference, from the finder Mach number cubed and the area (as B7.3). The run nevertheless holds 6-11% more E_cr than its own injection rate predicts with the reference's adiabatic losses (the B7.3 "surplus", now also seen without the early phase).
+3. **The two schemes agree.** Default and energy scheme differ by ≤ 2% (more at N = 48 for the default, more at N = 160 for the energy scheme). Weber et al.'s (2023) shock-speed problem of entropy schemes with injection does not appear: ξ agrees to 2e-4.
+4. **B7.5 is passed.** The shock slowdown matches the reference to < 0.4% at every N and both ζ.
+
+**Surplus split** (`b72_split.py`, scratch; same setup, kernel prediction from each run's own injection; run / prediction at t_end):
+
+| N | (A) passive: ζ 0.1 state, no injection | (B) injection only: ζ 0 Sedov state, ζ 0.1 injection |
+|---|---|---|
+| 48 | 1.039 [1.036] | 1.180 [1.164] |
+| 96 | 1.016 [1.020] | 1.138 [1.153] |
+| 160 | 1.009 [1.014] | 1.109 [1.133] |
+
+The adiabatic losses of CRs already present are right (to 1-4%, converging). The surplus comes with fresh deposits.
+
+**Mechanism: deposit into the under-compressed numerical shell** (`b72_deposit.py`, scratch). Late snapshots of the ζ = 0.1 runs, the injection probed with a tiny dt:
+
+| N | deposit-weighted λ | shell density peak / ρ_2 (RH, 4.15 ρ0) | compression to the simulated peak `<(ρ_pk/ρ)^(1/3)>` | to the RH density `<(ρ_2/ρ)^(1/3)>` | observed (B) |
+|---|---|---|---|---|---|
+| 48 | 0.91-0.93 | 0.49-0.53 | 1.04-1.05 | 1.28-1.34 | 1.18 |
+| 96 | 0.95-0.96 | 0.61-0.65 | 1.03 | 1.18-1.22 | 1.14 |
+| 160 | 0.97-0.98 | 0.69-0.73 | 1.03 | 1.14-1.16 | 1.11 |
+
+- **The mechanism.** The numerical shell never reaches the RH density. A CR packet deposited at ρ < ρ_2 keeps `(ρ_f/ρ)^(1/3)` of its energy per unit mass later, against `(ρ_f/ρ_2)^(1/3)` in the reference, so it loses less to expansion.
+- **Bounds.** The observed gain lies between the two bounds, closer to the RH one, and converges with them.
+- **Planar shocks.** The same effect is B7.4's +2.6% P_cr excess (deposit inside the smeared shock).
+
+**Prototype of a density-consistent deposit** (scratch only, monkeypatched; repo unchanged; `b72_proto.py`, `b74_proto.py`):
+- **What it changes.** Each post-shock cell's share is multiplied by `min(1, (ρ_cell/ρ_RH)^(1/3))`, with `ρ_RH = ρ_pre x(M_finder)` (gas-only RH compression; prototype shortcut: ρ_pre = ambient). The withheld energy stays in the gas.
+- **Planar B7.4 thermal tube, ζ = 0.1, vs the velocity fixed point.** P_cr +2.75 / +2.57% → **−0.84 / −0.80%** (N 400 / 1600). The rate goes +2.5% → −0.75%, and P_th, ρ and v_s get closer too. Vs the true Mach number, P_cr goes +6.6% → +3.0%.
+- **Planar, ζ = 0.5 (tracked only).** −14% → −17% vs the velocity fixed point, +8% → +4% vs the true Mach number.
+- **Sedov.**
+  - Full run / prediction: 0.985 / 0.990 / 0.990 (was 1.11 / 1.08 / 1.06).
+  - Injection-only part: 0.87 / 0.93 / 0.95. It over-corrects where the shell is unresolved, since the deposited CRs still get part of the compression later, but converges faster than the current deposit (+18 / +14 / +11%).
+  - E_cr/E end 0.84 / 0.90 / 0.93: the injection deficit is then no longer offset.
+- **Not done in the prototype.** A real version needs the pre-shock density from the finder walk (`sample_along_direction` with the pre-shock steps, not in `ShockFinderResult` yet).
+- **Open for the user:** DB9 (decided 2026-10-21: (b), opt-in; see the entry above).
+
+**Notes.**
+- **jit cache.** Monkeypatching `_iteration_level_updates.inject_crs_at_shocks` after a first run in the same process has no effect: the time loop is already compiled for the same static config. The first planar prototype comparison was void for that reason and was rerun in a fresh process.
+- **Stale B7.3 states.** `/export/scratch/nknoell/phaseB/b7_3/` held pre-DB4/DB7 summaries. The current `b7_3_N*.npz` (from `cap_floor/raw`, 2026-10-20) were copied in, and the old ones kept as `pre_db47_*.bak`. The `states_eff*.npz` there are still pre-DB4/DB7 (do not use `CR_B73_REUSE=1` on them).
+- **Gates.** Hard gates only for the initial state, conservation and the radius analysis; everything else is registered in `baselines.json` (165 metrics, N 48 / 96 / 160). The plan's proposed hard gates (|E_cr/E_ref − 1| < 0.1 at N ≥ 96) pass now, but wait for DB9: with (b), N = 96 would sit at 0.90.
 
 ### 2026-10-20: DB4 = (a) velocity-jump Mach, DB7 = smoothed-normal area weights: implemented (step 3, uncommitted)
 

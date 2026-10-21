@@ -252,6 +252,21 @@ class CosmicRayGreyConfig(NamedTuple):
     #: non-symmetric orientations and over-weights by 5-10%.
     dsa_area_normal_smoothing: float = 2.0
 
+    #: density-consistent DSA deposit (only with dsa_adaptive_shock_sampling;
+    #: opt-in, Phase B decision DB9 = option b, 2026-10-21): scale each
+    #: post-shock cell's share of the injection by
+    #: min(1, (rho_cell / rho_RH)^(gamma_cr - 1)), rho_RH the gas-only
+    #: Rankine-Hugoniot post-shock density for the finder's Mach number and
+    #: sampled pre-shock density; the withheld energy stays in the gas. The
+    #: smeared shock deposits into cells still below the post-shock density
+    #: (the 3D Sedov shell peak is 0.5/0.65/0.7 of rho_RH at 48^3/96^3/160^3),
+    #: whose CRs are then compressed adiabatically and gain energy the
+    #: injection never accounted for: +18/+14/+11% of the injected energy in
+    #: the self-similar Sedov blast (B7.2), +2.6% plateau P_cr in the planar
+    #: B7.4 tube. With the factor the deposited CRs carry the CR entropy of
+    #: the RH post-shock state. PROGRESS_PHASEB.md 2026-10-21.
+    dsa_density_consistent_deposit: bool = False
+
     #: conservative CR entropy (DESIGN.md "Open: conservative CR entropy at
     #: shocks"): advect s_cr = P_cr rho^(1 - gamma_cr) as an extra passive row,
     #: re-synced from e_cr every hydro step; where cr_entropy_transfer says so,

@@ -231,6 +231,7 @@ def find_shocks_pfrommer(
             )
         )
         pre_shock_pressure = p_pre
+        pre_shock_density = rho_pre
         valid = shock_surface & exited_post & exited_pre
         mach_pressure = mach_from_pressure_samples(p_post, p_pre, gamma_gas)
         if mach_velocity_consistency > 0:
@@ -280,6 +281,7 @@ def find_shocks_pfrommer(
     else:
         post_shock_steps = None
         pre_shock_pressure = None
+        pre_shock_density = None
         # Phase 4: Mach numbers (*spatial_shape), fixed-step sampling
         mach_numbers = _calculate_mach_at_surface(
             primitive_state, shock_surface, shock_direction,
@@ -313,4 +315,5 @@ def find_shocks_pfrommer(
         shock_zone_ids=shock_zone_ids,
         post_shock_steps=post_shock_steps,
         pre_shock_pressure=pre_shock_pressure,
+        pre_shock_density=pre_shock_density,
     )

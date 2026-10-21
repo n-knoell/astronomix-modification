@@ -66,7 +66,8 @@ def dsa_shock_finder_kwargs(cr_config) -> dict:
 
 @partial(jax.jit, static_argnames=["max_steps"])
 def _spread_over_post_shock_cells(
-    amount, shock_direction, post_steps, pressure, pre_shock_pressure, max_steps
+    amount, shock_direction, post_steps, pressure, pre_shock_pressure, max_steps,
+    density=None, post_shock_density=None, gamma_cr=4.0 / 3.0,
 ):
     """Redistribute per-surface-cell injection over the post-shock cells.
 
@@ -78,7 +79,12 @@ def _spread_over_post_shock_cells(
     energy, the weighting of Pfrommer et al. (2017, Sec. 3.1.2) restricted to
     thermal energy since that is what the injection draws from. A ray with no
     positive weight keeps its amount in the surface cell. The total is
-    conserved.
+    conserved, unless ``density`` and ``post_shock_density`` are given
+    (``dsa_density_consistent_deposit``): then each share is further scaled
+    by ``min(1, (rho_k / rho_post)^(gamma_cr - 1))``, with ``rho_post`` the
+    surface cell's Rankine-Hugoniot post-shock density, so that the CRs a
+    still under-compressed cell receives reach the intended energy only
+    once it is compressed to ``rho_post``; the remainder is not deposited.
 
     Args:
         amount: Per-cell injection (energy density), nonzero at surface cells.
@@ -89,9 +95,14 @@ def _spread_over_post_shock_cells(
         pressure: Gas pressure field.
         pre_shock_pressure: Sampled pre-shock pressure per cell.
         max_steps: Maximum ray length (static).
+        density: Gas density field (only with ``post_shock_density``).
+        post_shock_density: Rankine-Hugoniot post-shock density per
+            surface cell, or None (no density factor).
+        gamma_cr: CR adiabatic index of the density factor.
 
     Returns:
-        The redistributed injection field (same total as ``amount``).
+        The redistributed injection field (same total as ``amount`` without
+        the density factor, at most that with it).
     """
     shape = amount.shape
     ndim = amount.ndim
@@ -107,6 +118,12 @@ def _spread_over_post_shock_cells(
         on_ray = k <= post_steps
         return jnp.where(on_ray, jnp.maximum(p_k - pre_shock_pressure, 0.0), 0.0)
 
+    def density_factor(cell):
+        if post_shock_density is None:
+            return 1.0
+        rho_k = density[tuple(cell[d] for d in range(ndim))]
+        return jnp.minimum(1.0, (rho_k / post_shock_density) ** (gamma_cr - 1.0))
+
     def accumulate(k, total):
         return total + weight(k, ray_cell(k))
 
@@ -120,7 +137,7 @@ def _spread_over_post_shock_cells(
             has_weight,
             amount * weight(k, cell) / safe_total,
             jnp.where(k == 0, amount, 0.0),
-        )
+        ) * density_factor(cell)
         flat = jnp.ravel_multi_index(tuple(cell[d] for d in range(ndim)), shape, mode="clip")
         return out.at[flat.ravel()].add(share.ravel())
 
@@ -293,6 +310,23 @@ def inject_crs_at_shocks(
         # adaptive sampling the flux is the full dissipated flux of the
         # shock; the surface cell alone (often the foot of the smeared shock)
         # can hold far less thermal energy than that (FIXES_TODO.md round 24).
+        if cr_config.dsa_density_consistent_deposit:
+            # gas-only RH post-shock density of each surface cell (Phase B
+            # DB9): deposit only the share the cell's CRs will have once it
+            # is compressed to it (see _spread_over_post_shock_cells)
+            mach_sq = sf_result.mach_numbers**2
+            post_shock_density = (
+                sf_result.pre_shock_density * (gamma_gas + 1.0) * mach_sq
+                / ((gamma_gas - 1.0) * mach_sq + 2.0)
+            )
+            density_kwargs = dict(
+                density=primitive_state[registered_variables.density_index],
+                # zero away from shock cells (amount = 0 there): keep finite
+                post_shock_density=jnp.maximum(post_shock_density, params.minimum_density),
+                gamma_cr=cr_params.gamma_cr,
+            )
+        else:
+            density_kwargs = dict()
         delta_e_cr_density = _spread_over_post_shock_cells(
             delta_e_cr_density,
             sf_result.shock_direction,
@@ -300,6 +334,11 @@ def inject_crs_at_shocks(
             primitive_state[registered_variables.pressure_index],
             sf_result.pre_shock_pressure,
             cr_config.dsa_shock_sampling_max_steps,
+            **density_kwargs,
+        )
+    elif cr_config.dsa_density_consistent_deposit:
+        raise ValueError(
+            "dsa_density_consistent_deposit needs dsa_adaptive_shock_sampling"
         )
 
     # Injecting only after a certain amount of time is an ad-hoc guard

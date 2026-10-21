@@ -48,6 +48,9 @@ energy scheme with HLLC +6.6%, with HLL +10.8%: the energy scheme adds the spuri
 heating of Phase A (A6.1-A6.3) on top. Surface-cell deposit (``dsa_adaptive_shock_sampling =
 False``, gas-pressure Mach number from the 1-cell sampler): ``P_cr`` -52% (tracked; not the
 default since 2026-09-26).
+Density-consistent deposit (``dsa_density_consistent_deposit``, opt-in since 2026-10-21, DB9 = b):
+``P_cr`` -0.86 / -0.83% at ``zeta`` = 0.1 (the +2.6% deposit excess removed; +3.0% against the true
+Mach number), -17% at ``zeta`` = 0.5 (tracked).
 
 Gates: hard on the default scheme at N >= 400 against the fixed point of the finder's Mach number
 (bounds in the ``test_cr_shock_tube_injection`` signature): they check the injection mechanics
@@ -159,6 +162,7 @@ SCHEMES = {
     "energy HLLC": dict(riemann_solver=HLLC, cr_entropy=False),
     "energy HLL": dict(riemann_solver=HLL, cr_entropy=False),
     "default, surface deposit": dict(dsa_adaptive_shock_sampling=False),
+    "default, density-consistent deposit": dict(dsa_density_consistent_deposit=True),
 }
 
 
@@ -181,7 +185,7 @@ def reference(tube, zeta, mach="true", x0=X0, t_end=T_END):
 
 def run_tube(tube, num_cells, zeta, riemann_solver=None, cr_entropy=None,
              dsa_adaptive_shock_sampling=True, C_cfl=0.4, box=BOX, x0=X0, t_end=T_END,
-             kr13_scale=None):
+             kr13_scale=None, dsa_density_consistent_deposit=False):
     """Run one tube to ``t_end`` in float64 with DSA on (if ``zeta > 0`` or ``kr13_scale``),
     ``v_red = 0``. ``kr13_scale``: use the KR13 model with this ``dsa_efficiency_mach_scale``
     instead of the constant ``zeta``. Snapshots at ``SNAPSHOT_TIMES * t_end / T_END``.
@@ -211,6 +215,7 @@ def run_tube(tube, num_cells, zeta, riemann_solver=None, cr_entropy=None,
             cr_entropy=cr_entropy,
             diffusive_shock_acceleration=zeta > 0 or kr13_scale is not None,
             dsa_adaptive_shock_sampling=dsa_adaptive_shock_sampling,
+            dsa_density_consistent_deposit=dsa_density_consistent_deposit,
             dsa_efficiency_model=(DSA_EFFICIENCY_CONSTANT if kr13_scale is None
                                   else DSA_EFFICIENCY_KANG_RYU_2013),
         ),
@@ -456,8 +461,8 @@ def test_cr_shock_tube_injection(
         min_l1_order: Least-squares order of the L1 density error over N >= 200.
 
     Everything else (the same metrics against the true-Mach reference, the energy scheme with
-    HLL and HLLC, the surface-cell deposit and the CR-loaded tube) is tracked in
-    ``baselines.json``.
+    HLL and HLLC, the surface-cell deposit, the density-consistent deposit and the CR-loaded
+    tube) is tracked in ``baselines.json``.
     """
     baselines = Baselines("cr_shock_tube_injection.py::test_cr_shock_tube_injection")
     RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -565,7 +570,8 @@ def _plot(results):
             vals = [results[(zeta, s, n)]["fp"]["dP_cr"] for s in names]
             ax.bar(np.arange(len(names)) + 0.4 * j, vals, 0.4, label=f"N={n}")
         ax.set_xticks(np.arange(len(names)) + 0.2)
-        ax.set_xticklabels([s.replace(", ", ",\n") for s in names], fontsize=8)
+        ax.set_xticklabels([s.replace(", ", ",\n").replace("density-consistent ", "density-\nconsistent ")
+                            for s in names], fontsize=7)
         ax.axhline(0, color="grey", lw=0.8)
         ax.set(ylabel=r"$P_{cr}$ vs finder-M ref", title="schemes and deposit")
         ax.legend(fontsize=8)

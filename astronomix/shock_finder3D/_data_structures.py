@@ -35,6 +35,8 @@ class ShockFinderResult:
         to its post-shock sample point (FIXES_TODO.md round 24)
     * pre_shock_pressure (adaptive sampling only, else None):
         float array, the sampled pre-shock pressure of each cell
+    * pre_shock_density (adaptive sampling only, else None):
+        float array, the pre-shock density at the same sample point
     """
     shock_surface_cells: BOOL_FIELD_TYPE
     shock_direction:     FIELD_TYPE
@@ -46,6 +48,7 @@ class ShockFinderResult:
     shock_zone_ids:      INT_FIELD_TYPE
     post_shock_steps:    FIELD_TYPE = None
     pre_shock_pressure:  FIELD_TYPE = None
+    pre_shock_density:   FIELD_TYPE = None
 
 
 def _shockresult_flatten(result):
@@ -60,6 +63,7 @@ def _shockresult_flatten(result):
         result.num_shocks,
         result.post_shock_steps,
         result.pre_shock_pressure,
+        result.pre_shock_density,
     )
 
     return children, None
@@ -76,6 +80,7 @@ def _shockresult_unflatten(aux, children):
         num_shocks=children[7],
         post_shock_steps=children[8],
         pre_shock_pressure=children[9],
+        pre_shock_density=children[10],
     )
 
 tree_util.register_pytree_node(

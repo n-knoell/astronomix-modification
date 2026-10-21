@@ -142,6 +142,54 @@ class SedovTwoFluidSolution(NamedTuple):
         p_cr = np.where(inside, rho_0 * V**2 * Pc, 0.0)
         return rho, u, p_th, p_cr
 
+    def cell_averages(self, offsets, dx, t, e_explosion=1.0, rho_0=1.0, p_ambient=0.0,
+                      n_sub=4, density_floor=0.0):
+        """Cell averages of the blast on a Cartesian grid (B7.2 initial state).
+
+        ``offsets``: ``(3, ...)`` cell-centre positions relative to the blast
+        centre; ``dx``: the (uniform) cell size. Each cell is sampled at
+        ``n_sub^3`` points and the *conserved* densities are averaged (mass,
+        momentum, total gas energy, CR energy), so the thin post-shock shell
+        keeps its mass and energy at any resolution. ``density_floor`` (in
+        units of ``rho_0``) raises ``G`` in the hot core, where it falls like
+        ``lambda^(3/(gamma - 1))`` (1e-9 at ``lambda`` = 0.05) and the sound
+        speed would set a vanishing time step; pressure and velocity are kept,
+        so the energy changes only by the core's kinetic energy (negligible,
+        ``U ~ lambda`` there).
+
+        Returns ``rho``, the velocity ``(3, ...)``, ``p_th`` and ``e_cr``.
+        """
+        offsets = np.asarray(offsets, dtype=float)
+        R = self.shock_radius(t, e_explosion, rho_0)
+        V = self.shock_velocity(t, e_explosion, rho_0)
+        sums = np.zeros((6,) + offsets.shape[1:])
+        sub = (np.arange(n_sub) + 0.5) / n_sub - 0.5
+        for sx in sub:
+            for sy in sub:
+                for sz in sub:
+                    pos = offsets + dx * np.array([sx, sy, sz]).reshape((3,) + (1,) * (offsets.ndim - 1))
+                    r = np.sqrt(np.sum(pos**2, axis=0))
+                    lam_c = np.clip(r / R, self.lam[0], 1.0)
+                    inside = r <= R
+                    G = np.maximum(np.interp(lam_c, self.lam, self.G), density_floor)
+                    U = np.interp(lam_c, self.lam, self.U)
+                    U = np.where(r / R < self.lam[0], self.U[0] * r / R / self.lam[0], U)
+                    rho = np.where(inside, rho_0 * G, rho_0)
+                    u_r = np.where(inside, V * U, 0.0)
+                    p_th = p_ambient + np.where(
+                        inside, rho_0 * V**2 * np.interp(lam_c, self.lam, self.Pi_th), 0.0)
+                    p_cr = np.where(inside, rho_0 * V**2 * np.interp(lam_c, self.lam, self.Pi_cr), 0.0)
+                    unit = pos / np.maximum(r, 1e-300)
+                    sums[0] += rho
+                    sums[1:4] += rho * u_r * unit
+                    sums[4] += p_th / (self.gamma_th - 1.0) + 0.5 * rho * u_r**2
+                    sums[5] += p_cr / (self.gamma_cr - 1.0)
+        sums /= n_sub**3
+        rho = sums[0]
+        velocity = sums[1:4] / rho
+        p_th = (self.gamma_th - 1.0) * (sums[4] - 0.5 * np.sum(sums[1:4] ** 2, axis=0) / rho)
+        return rho, velocity, p_th, sums[5]
+
     def cr_energy_fraction_shocked_before(self, q):
         """Fraction of the CR energy that sits in gas shocked while the shock
         radius was below ``q R(t)`` (i.e. shells with ``r_0 / R < q``)."""
