@@ -15,11 +15,14 @@ the sampled profile. Two versions of the code's convention (``inject_crs_at_shoc
 is ``zeta`` times the finder's gas-only RH dissipated flux at the finder's Mach number):
 
 - *true Mach number* ``v_1 / c_1``: what the injection is meant to do;
-- *the finder's Mach number* (``FINDER_MACH``): the injected CRs change the shock the finder
-  samples, so the code converges to the fixed point ``zeta x f(M_finder(zeta))``. Since
-  2026-10-19 (DB4) DSA's finder reads the **velocity** jump, which the extra compression of a
-  CR-loaded shock raises (``mach="velocity"``); until then the **gas-pressure** jump, which the
-  CR pressure lowers (``mach="gas_pressure"``).
+- *the finder's Mach number*: the injected CRs change the shock the finder samples, so the code
+  converges to the fixed point ``zeta x f(M_finder(zeta))``. Since 2026-10-27 (DB8,
+  ``dsa_mach_cr_aware``, default on) DSA inverts the finder's velocity jump with the CR-loaded
+  Hugoniot, which recovers the true Mach number of a resolved planar shock: DSA's fixed point is
+  the true-Mach reference (``DSA_MACH = "true"``). Before, the gas-only reading
+  (``FINDER_MACH``): since 2026-10-19 (DB4) of the **velocity** jump, which the extra compression
+  of a CR-loaded shock raises (``mach="velocity"``); until then of the **gas-pressure** jump, which
+  the CR pressure lowers (``mach="gas_pressure"``).
 
   ======  =======  ================  ==================  =========================  ============
   zeta    M true   M_u at vel. FP    M_p at gas-p. FP    P_cr,2 true / vel. / gas-p  inj./nominal
@@ -28,35 +31,35 @@ is ``zeta`` times the finder's gas-only RH dissipated flux at the finder's Mach 
   0.5     9.600    10.164            8.893               3.152 / 3.957 / 2.358      1.226 / 0.766
   ======  =======  ================  ==================  =========================  ============
 
-**Results (2026-10-20, GPU, default scheme = HLLC + hybrid CR entropy, adaptive sampling with the
-spread deposit, velocity-jump Mach number).** ``zeta = 0.1``, against the velocity fixed point,
-constant for N = 400-3200: shock speed within 5e-4, ``P_th`` -0.15%, density +0.1%, finder Mach
-number -0.4% to -0.7%, L1 density order 0.89, and ``P_cr`` **+2.6%** (box CR energy +2.5%):
-injection inside the smeared shock, where the gas is still being compressed, so the injected CRs
-gain adiabatic energy the exact solution does not have (the deposit-location bias of Dubois et
-al. 2019; not resolution-dependent). Against the true Mach number ``P_cr`` +6.6%, rate +6.3%.
+**Results (2026-10-28, GPU, default scheme = HLLC + hybrid CR entropy, adaptive sampling with the
+spread deposit, CR-aware velocity-jump Mach number).** ``zeta = 0.1``, against the true-Mach
+reference, constant for N = 400-3200: shock speed within 5e-4, ``P_th`` -0.14%, density +0.09%,
+finder (gas-only) Mach number -0.4% to -0.6% of the reference's gas-only reading, L1 density order
+0.88, and ``P_cr`` **+2.5 to +2.7%** (box CR energy +2.5%): injection inside the smeared shock,
+where the gas is still being compressed, so the injected CRs gain adiabatic energy the exact
+solution does not have (the deposit-location bias of Dubois et al. 2019; not
+resolution-dependent).
 
-``zeta = 0.5`` does not reach the velocity fixed point: ``P_cr`` -14%, ``P_th`` +7.4%, shock
-+0.6%, finder Mach number -3% to -6%, L1 order 0.38; the run lies between the two references
-(against the true Mach number ``P_cr`` +8%, rate +6.2%). In the smeared CR-loaded shock the
-sampled velocity jump is smaller than the exact post-shock one. With the gas-pressure Mach number
-(until 2026-10-19) the runs sat at that fixed point for both ``zeta`` (``P_cr`` +2.7%; against the
-true Mach number -2.7% / **-23%**; DB8, accepted 2026-10-14).
+``zeta = 0.5``: ``P_cr`` -1.7 to -2.0%, ``P_th`` +0.7%, shock +0.05%, rate -1.3 to -1.5%, L1 order
+0.77 (tracked). Before DB8 (gas-only velocity Mach): ``P_cr`` +6.6% / +8% against the true Mach
+number at ``zeta`` = 0.1 / 0.5, and ``zeta = 0.5`` missed its own velocity fixed point (``P_cr``
+-14%, L1 order 0.38). With the gas-pressure Mach number (until 2026-10-19): -2.7% / **-23%**
+against the true Mach number (DB8, accepted 2026-10-14, reopened and decided 2026-10-27).
 
-Schemes (N = 400 / 1600, ``zeta`` = 0.1, ``P_cr`` vs the velocity fixed point): default +2.6%,
-energy scheme with HLLC +6.6%, with HLL +10.8%: the energy scheme adds the spurious CR shock
+Schemes (N = 400 / 1600, ``zeta`` = 0.1, ``P_cr`` vs true): default +2.7 / +2.6%, energy scheme
+with HLLC +6.7 / +6.6%, with HLL +10.6 / +10.7%: the energy scheme adds the spurious CR shock
 heating of Phase A (A6.1-A6.3) on top. Surface-cell deposit (``dsa_adaptive_shock_sampling =
-False``, gas-pressure Mach number from the 1-cell sampler): ``P_cr`` -52% (tracked; not the
-default since 2026-09-26).
-Density-consistent deposit (``dsa_density_consistent_deposit``, opt-in since 2026-10-21, DB9 = b):
-``P_cr`` -0.86 / -0.83% at ``zeta`` = 0.1 (the +2.6% deposit excess removed; +3.0% against the true
-Mach number), -17% at ``zeta`` = 0.5 (tracked).
+False``, gas-pressure Mach number from the 1-cell sampler, no CR-aware inversion): ``P_cr`` -50%
+(tracked; not the default since 2026-09-26).
+Density-consistent deposit (``dsa_density_consistent_deposit``, opt-in since 2026-10-21, DB9 = b;
+``rho_RH`` from the finder's gas-only Mach number): ``P_cr`` -0.9 / -0.8% at ``zeta`` = 0.1 (the
++2.6% deposit excess removed), -6.0% at ``zeta`` = 0.5 (tracked).
 
-Gates: hard on the default scheme at N >= 400 against the fixed point of the finder's Mach number
-(bounds in the ``test_cr_shock_tube_injection`` signature): they check the injection mechanics
-given that Mach number. They apply to ``zeta = 0.1`` only (``GATED_ZETAS``); ``zeta = 0.5`` misses
-the velocity fixed point (above) and is tracked only (user decision 2026-10-20: realistic
-efficiencies stay <= 0.21, and KR13 at 0.21 passes in B8.1). Everything at ``zeta = 0.5``, against
+Gates: hard on the default scheme at N >= 400 against the fixed point of DSA's Mach number
+(``DSA_MACH``, the true one since DB8; bounds in the ``test_cr_shock_tube_injection`` signature).
+They apply to ``zeta = 0.1`` only (``GATED_ZETAS``); ``zeta = 0.5`` is tracked only (user decision
+2026-10-20, when it missed the velocity fixed point: realistic efficiencies stay <= 0.21, and KR13
+at 0.21 passes in B8.1). Everything at ``zeta = 0.5``, against
 the true-Mach reference, the other schemes, the surface deposit and the CR tube (``X_cr = 2 | 1``, App. C; B8.5) is tracked in
 ``baselines.json``. Runtime ~20 min on one 2080 Ti. Raw profiles:
 ``/export/scratch/nknoell/phaseB/b7_4/``.

@@ -581,7 +581,7 @@ def _plot(ref_ctrl, ref_dsa):
 
     titles = {
         "a": "(a) blast radius / reference\n(hydro: correct to 1-2%)",
-        "b": "(b) finder Mach / true Mach\n(velocity jump, DB4)",
+        "b": "(b) DSA Mach / true Mach\n(CR-aware velocity jump, DB8)",
         "c": "(c) finder dissipation / exact\n"
              "dotted: area $\\times$ Mach$^3$",
         "d": "(d) CR injection rate / reference\n"

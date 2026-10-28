@@ -16,45 +16,49 @@ the snapshot fit.
 **Reference.** ``pfrommer_riemann_solver.py`` with ``injection=ShockInjection(zeta(M),
 "gas_rh", mach, 1.3)`` (B7.4) solves the fixed point ``zeta = eta(M(zeta))`` together with the
 shock jump: ``mach="true"`` evaluates KR13 at the true Mach number (the intended
-``delta(M) eta_KR13(M)``), ``mach=FINDER_MACH`` at the Mach number the finder reads: since
-2026-10-19 (DB4) the velocity jump, which the extra compression of a CR-loaded shock raises;
-until then the gas-pressure jump, which the injected CRs lower (B7.4, finding Y11).
+``delta(M) eta_KR13(M)``), ``mach="velocity"`` / ``"gas_pressure"`` at the gas-only reading of the
+velocity / gas-pressure jump. Since 2026-10-27 (DB8, ``dsa_mach_cr_aware``) DSA inverts the
+velocity jump with the CR-loaded Hugoniot, which recovers the true Mach number of a resolved
+planar shock, so the hard gates compare with ``mach=DSA_MACH = "true"`` (the "fp" metrics now
+equal the "true" ones). Before: the gas-only velocity jump (since DB4, 2026-10-19), which the
+extra compression of a CR-loaded shock raises; until then the gas-pressure jump, which the
+injected CRs lower (B7.4, finding Y11). ``test_cr_aware_mach_exact`` checks the inversion on
+exact steady shocks with upstream CRs (``P_cr / P_th`` 0-2), no simulation: 5e-15.
 
-**Results (2026-10-20, GPU, velocity-jump Mach number and area weights).** N = 400 and 1600 agree
-to 1e-3, so the deviations are not truncation errors.
+**Results (2026-10-28, GPU, CR-aware velocity-jump Mach number and area weights).** N = 400 and
+1600 agree to 1e-3, so the deviations are not truncation errors.
 
-  ======  ==============  ==============  ===============================
-  M       KR13 vs vel.    KR13 vs true    constant vs vel. / true
-  ======  ==============  ==============  ===============================
-  1.8     no injection    (E_cr ~ 1e-10   -1.5% / +0.3%
-          (floor)         of E_th)
-  2       threshold: E_cr/E_th 1.7e-8     -0.6% / +1.5%
-  2.25    -5.2%           -5.1%           +0.1% / +2.5%
-  2.5     -3.2%           -3.0%           +0.6% / +3.3%
-  3       -1.6%           -1.2%           +1.2% / +4.3%
-  4       -1.0%           +1.5%           +1.8% / +5.3%
-  5       -3.4%           +7.3%           +2.1% / +5.8%
-  7       +1.4%           +9.3%           +2.4% / +6.2%
-  10      +1.9%           +10.6%          +2.5% / +6.4%
-  >= 15   +1.7 ... +2.3%  +11.0%          +2.6% / +6.5 ... +6.6%
-  ======  ==============  ==============  ===============================
+  ======  ==============  ===============================  ===============================
+  M       KR13 vs true    constant vs true                 before DB8, vs true: KR13 / const.
+  ======  ==============  ===============================  ===============================
+  1.8     none (floor)    -1.5%                            none / +0.3%
+  2       threshold       -0.6%                            threshold / +1.5%
+  2.25    -5.2%           +0.2%                            -5.1% / +2.5%
+  2.5     -3.2%           +0.6%                            -3.0% / +3.3%
+  3       -1.6%           +1.3%                            -1.2% / +4.3%
+  4       -0.9%           +1.9%                            +1.5% / +5.3%
+  5       -1.3%           +2.2%                            +7.3% / +5.8%
+  7       +1.5%           +2.4%                            +9.3% / +6.2%
+  10      +2.0%           +2.5%                            +10.6% / +6.4%
+  >= 15   +2.2 ... +2.3%  +2.6%                            +11.0% / +6.5 ... +6.6%
+  ======  ==============  ===============================  ===============================
 
-- Against the velocity fixed point: within 3.4% for M >= 3 (gate 5%) and -5.2% at M = 2.25
-  (gate 20%), the net of the deposit inside the smeared shock (+2.6%, B7.4) and the 1D finder's
-  Mach number slightly below the fixed point (on KR13's steep weak part, ``eta ~ M^5.3``, that
-  dominates).
-- Against the true Mach number: the velocity jump of a CR-loaded shock reads high (exact 1D: +2.6%
-  in M at KR13's strong-shock ``zeta = 0.211``), so KR13 is +11% at strong shocks and the constant
-  model +0.3% to +6.6% (with the gas-pressure Mach number until 2026-10-19: -9% and -1.2% to -2.9%).
+- Against the true Mach number (= DSA's fixed point): within 2.3% for M >= 3 (gate 5%) and -5.2%
+  at M = 2.25 (gate 20%). What remains is the deposit inside the smeared shock (+2.6%, B7.4) and,
+  on KR13's steep weak part (``eta ~ M^5.3``), the 1D finder's velocity jump reading slightly
+  low (gas-only M_finder 0.3-0.7% below the reference's gas-only reading).
+- Before DB8 the gas-only velocity jump of a CR-loaded shock read high (exact 1D: +2.6% in M at
+  KR13's strong-shock ``zeta = 0.211``): KR13 +11% at strong shocks, the constant model +0.3% to
+  +6.6% (with the gas-pressure Mach number until 2026-10-19: -9% and -1.2% to -2.9%).
 - Sub-critical (B8.7): KR13 injects nothing at M = 1.8 (``E_cr / E_th`` ~ 1e-10, the ``e_cr``
   floor). M = 2 is KR13's threshold (1.6e-4 at M = 2, 0 below): the finder reads a hair above 2 in
   some cells, ``E_cr / E_th`` = 1.7e-8, tracked only. The constant model injects at every M above
   ``dsa_mach_min = 1.3`` (DB5).
-- The shock speed matches the fixed point to 5e-4 everywhere.
+- The shock speed matches the reference to 5e-4 everywhere.
 
-Gates: hard at N = 1600 against the fixed point of the finder's Mach number (bounds in the
-``test_cr_dsa_efficiency_planar`` signature); the true-Mach ratios and the finder's Mach numbers
-are tracked in ``baselines.json``. Runtime ~25 min on one 2080 Ti (N = 1600 ~65 s per run).
+Gates: hard at N = 1600 against the exact solution at DSA's Mach number (``DSA_MACH``; bounds in
+the ``test_cr_dsa_efficiency_planar`` signature); the true-Mach ratios and the finder's gas-only
+Mach numbers are tracked in ``baselines.json``. Runtime ~25 min on one 2080 Ti (N = 1600 ~65 s per run).
 Raw values: ``/export/scratch/nknoell/phaseB/b8_1/b8_1.npz``.
 
 See ``PROGRESS_PHASEB.md`` in the module directory.

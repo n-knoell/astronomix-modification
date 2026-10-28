@@ -74,7 +74,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 
 ## Log (newest first)
 
-### 2026-10-27: DB8 reopened + decided: CR-aware velocity-jump Mach number, default on (implemented; regression running; uncommitted)
+### 2026-10-27: DB8 reopened + decided: CR-aware velocity-jump Mach number, default on (implemented; regression passed; uncommitted)
 
 **Why reopened.** Since DB4 the finder inverts the normal-velocity jump with the gas-only Rankine-Hugoniot relation, `du / c_1 = 2 (M - 1/M) / (gamma + 1)`. The CRs injected at the shock compress the gas further, so `du` and with it the Mach number read high; CR-loaded upstream gas is stiffer and compresses less, so the Mach number reads low. Exact steady planar shocks (scratch `steady.py`, reference solver's `_hugoniot_rho_star` / `_post_shock_partition` with a root-find for the mass flux), injected / intended flux at the velocity fixed point, `X = P_cr,1 / P_th,1`:
 - X = 0: `zeta` 0.1 +2.4 to +3.9%, KR13 +2.6 to +8.6% (strong shocks), `zeta` 0.5 +14 to +23%.
@@ -112,7 +112,30 @@ Shock speed within 5e-4 everywhere (Pfrommer CR tube `zeta` 0.5: 1.7e-3). The re
 
 **Sedov (B7.2, `zeta` 0.1, gas-only -> CR-aware -> CR-aware + DB9 with the CR-aware `rho_RH`):** E_cr/E end / ref 0.951 -> 0.936 -> 0.828 (N 48), 0.982 -> 0.966 -> 0.882 (N 96); realized late injection / ref 0.755 -> 0.727 -> 0.562, 0.858 -> 0.828 -> 0.697; E_cr / kernel 1.11 -> 1.09, 1.08 -> 1.06. `zeta` 0.211: 0.965 -> 0.934, 0.992 -> 0.960. The old high reading hid ~3.5% of the under-resolution deficit (DB4/DB7, B7.3). 160^3 not run: the B7.2 setup (10 returned 3D snapshots) needs 11.2 GB in either version and no longer fits; the 2026-10-21 runs used a GPU (`GPU-97e5a2a9`) no longer in the machine.
 
-**Regression** (DSA tests only, update mode against a scratch copy of the registry, `/export/scratch/nknoell/phaseB/db8_impl/reg/`): running.
+**Regression** (DSA tests only: items 7, 8, 9, 10, 11, 15, 18, Phase D injection inference, gradient checks, B7.2-B7.4, B8.1, B8.2 at 64 without update; update mode against a scratch copy of the registry, `/export/scratch/nknoell/phaseB/db8_impl/reg/`, diff `diff_final.txt`). First pass: two failures, both tests that encoded the gas-only Mach number, fixed:
+- `cr_dsa_mach_dependence.py` formula cross-check recomputed the KR13 injection from the finder's gas-only Mach number (rel. err 7.3%). Now uses `cr_grey_injection.dsa_mach_and_flux` (new public helper: the Mach number and flux DSA uses; `inject_crs_at_shocks` calls it too). Cross-check error 1e-7 -> 0.6-2e-6 (float32 runs, tol 1e-5).
+- `cr_dsa_efficiency_planar.py` gated against the gas-only velocity fixed point (KR13 M 5 -11%). The hard-gate reference is now `DSA_MACH = "true"` (`cr_shock_tube_injection.py`; `FINDER_MACH` stays for the finder's gas-only reading), in B7.4 and B8.1. New `test_cr_aware_mach_exact`: inversion vs exact steady shocks, X 0-2, worst 5.3e-15.
+- `cr_sedov_injection_rate.py::_analyse` (B7.3, also B7.2's `inj_realized_over_nominal`) took the nominal rate and `M_finder` from the finder's gas-only output, so `dsa_cap_loss` read 0.036 (the Mach change); now from `dsa_mach_and_flux`: -3e-7.
+
+Second pass: every test passes. 473 of 943 registry values moved by > 0.5%, all in DSA tests; no keys added or removed. Main changes (N 48 / 96 / 160):
+
+| quantity | before | after |
+|---|---|---|
+| item 7 `E_cr/E` / self-similar | 0.515 / 0.672 / 0.740 | 0.496 / 0.648 / 0.714 |
+| B7.3 late injection / ref | 0.766 / 0.861 / 0.918 | 0.738 / 0.832 / 0.887 |
+| B7.3 Mach ratio (DSA's M / true) | 0.876 / 0.935 / 0.943 | 0.864 / 0.924 / 0.932 |
+| item 8 KR13 `E_cr/E` / self-similar | 0.569 / 0.734 / 0.804 | 0.529 / 0.683 / 0.749 |
+| item 8 CS14 / KR13 error w.r.t. 0.5 (hard 8%) | 1.6 / 2.7 / 3.2% | **5.2 / 6.3 / 6.8%** |
+| B7.2 z0.1 `E_cr/E` end / ref (48 / 96) | 0.951 / 0.982 | 0.936 / 0.966 |
+| B7.2 X_cr shell / ref, P_cr peak / ref (48 / 96) | 1.063 / 1.064, 0.779 / 0.859 | 1.033 / 1.032, 0.751 / 0.825 |
+| item 11 (128^3) `E_cr/E` uniform / clumpy, clumpy effect | 0.0924 / 0.0903, -2.24% | 0.0892 / 0.0872, -2.26% |
+| B7.4 `zeta` 0.1 `P_cr` vs DSA's fixed point (now true M) | +2.6% (vel. FP) | +2.5 ... +2.7% |
+| B7.4 `zeta` 0.5 `P_cr`, L1 order | -14% (vel. FP), 0.38 | -1.7 ... -2.0%, 0.77 |
+| B8.1 KR13 / constant vs DSA's fixed point, M >= 3 | within 3.4% / +1.2 ... +2.6% | -1.6 ... +2.3% / +1.3 ... +2.6% |
+
+- The CS14 / KR13 ratio moves towards its 8% bound: with the CR-aware inversion the injected Mach number depends on the efficiency itself, and KR13's larger correction (it injects twice as much) lowers it more than CS14's, so the ratio is no longer exactly the efficiency ratio. Physics, not a bug; watch item (Y6).
+- 160^3 B7.2 not run (no longer fits 11 GB, see above). Item 9 (`cr_modified_shock_structure.py`) and the gradient / energy-budget / Phase D tests: within 0.5%.
+- Registry not merged yet (awaiting the user).
 
 **Not covered:** the CWB (`pytests/shock_finder3D`, tracked +41% split) and M7 runs use DSA too; their tracked numbers move with this default and were not rerun.
 
