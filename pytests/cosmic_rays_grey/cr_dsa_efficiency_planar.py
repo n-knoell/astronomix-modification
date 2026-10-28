@@ -68,10 +68,12 @@ autocvd(num_gpus=1)
 
 # general
 import os
+import warnings
 from pathlib import Path
 
 # numerics
 import numpy as np
+from scipy.optimize import brentq
 
 # jax
 import jax.numpy as jnp
@@ -84,12 +86,17 @@ from cr_baselines import Baselines
 
 # B7.4 machinery: 1D runs with DSA, exact injection Riemann reference, plateau metrics
 from cr_shock_tube_injection import (
-    FINDER_MACH, FINDER_MACH_KEY, GAMMA, GAMMA_CR, Tube, metrics, reference, run_tube,
+    DSA_MACH, FINDER_MACH_KEY, GAMMA, GAMMA_CR, Tube, metrics, reference, run_tube,
 )
 
 # astronomix
-from astronomix._modules._cosmic_rays_grey.cr_grey_injection import dsa_efficiency_kang_ryu_2013
+from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
+    cr_aware_velocity_mach,
+    dsa_efficiency_kang_ryu_2013,
+)
+from astronomix.test_setups.reference_solutions import pfrommer_riemann_solver
 from astronomix.test_setups.reference_solutions.pfrommer_riemann_solver import (
+    ShockInjection,
     thermalization_efficiency,
 )
 
@@ -136,7 +143,7 @@ def measure(mach, num_cells, model):
     t_end = TRAVEL / mach
     zeta = kr13 if model == "KR13" else CONSTANT_ZETA
     ref_true = reference(tube, zeta, "true", x0=X0, t_end=t_end)
-    ref_fp = reference(tube, zeta, FINDER_MACH, x0=X0, t_end=t_end)
+    ref_fp = reference(tube, zeta, DSA_MACH, x0=X0, t_end=t_end)
     run = run_tube(tube, num_cells, 0.0 if model == "KR13" else CONSTANT_ZETA, box=BOX, x0=X0,
                    t_end=t_end, kr13_scale=1.0 if model == "KR13" else None)
     m = metrics(tube, run, ref_fp, box=BOX, x0=X0)
@@ -170,6 +177,60 @@ def test_kr13_numpy_copy():
     assert np.max(np.abs(jax_values - numpy_values)) < 1e-6
 
 
+def _steady_shock(mach, x_cr, zeta):
+    """Exact steady planar shock of gas Mach number ``mach`` into ``rho = 1``, ``c_th = 1``,
+    ``P_cr = x_cr P_th`` with injection ``zeta`` (code convention, at the true Mach number).
+    Returns the compression ``rho_2 / rho_1``."""
+    p_th1 = 1.0 / GAMMA
+    p_1 = p_th1 * (1.0 + x_cr)
+    inj = ShockInjection(zeta, "gas_rh", "true", 1.3)
+
+    def mass_speed(p_star):
+        rho_star = pfrommer_riemann_solver._hugoniot_rho_star(
+            p_star, 1.0, p_th1, x_cr * p_th1, GAMMA, GAMMA_CR, inj)
+        return np.sqrt((p_star - p_1) / (1.0 - 1.0 / rho_star))
+
+    hi = p_1 * (1.0 + 2.0 * mach**2)
+    while mass_speed(hi) < mach:
+        hi *= 2.0
+    p_star = brentq(lambda p: mass_speed(p) - mach, p_1 * (1.0 + 1e-9), hi, xtol=1e-14, rtol=1e-13)
+    return pfrommer_riemann_solver._hugoniot_rho_star(
+        p_star, 1.0, p_th1, x_cr * p_th1, GAMMA, GAMMA_CR, inj)
+
+
+def test_cr_aware_mach_exact(max_err=1e-9):
+    """DB8: ``cr_aware_velocity_mach`` recovers the true gas Mach number of exact steady shocks
+    with upstream CRs and injection from their velocity jump (no simulation). The gas-only
+    reading of the same jump is printed for scale."""
+    zetas = {"0.1": CONSTANT_ZETA, "0.5": 0.5, "KR13": kr13}
+    worst = 0.0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for x_cr in (0.0, 0.5, 1.0, 2.0):
+            for name, zeta in zetas.items():
+                for mach in (1.5, 2.25, 3.0, 5.0, 10.0, 100.0):
+                    if mach / np.sqrt(1.0 + GAMMA_CR / GAMMA * x_cr) < 1.05:
+                        continue  # composite Mach number ~1: no shock
+                    x = _steady_shock(mach, x_cr, zeta)
+                    w = mach * (1.0 - 1.0 / x)
+                    # the finder's gas-only reading of this jump: 2 (M - 1/M) / (gamma + 1) = w
+                    a = 0.25 * (GAMMA + 1.0) * w
+                    mach_u = a + np.sqrt(a**2 + 1.0)
+                    if name == "KR13":
+                        eff = lambda m: dsa_efficiency_kang_ryu_2013(m)  # noqa: E731
+                    else:
+                        eff = lambda m, z=zeta: z * jnp.ones_like(m)  # noqa: E731
+                    m_aware, x_aware = cr_aware_velocity_mach(
+                        jnp.array([mach_u]), jnp.array([x_cr]), eff, 1.3, GAMMA, GAMMA_CR)
+                    err = abs(float(m_aware[0]) / mach - 1.0)
+                    worst = max(worst, err, abs(float(x_aware[0]) / x - 1.0))
+                    if mach in (3.0, 10.0):
+                        print(f"X {x_cr} zeta {name:4s} M {mach:5.1f}: gas-only {mach_u / mach - 1:+.4f},"
+                              f" CR-aware {float(m_aware[0]) / mach - 1:+.1e}")
+    print(f"worst relative error {worst:.1e}")
+    assert worst < max_err
+
+
 def test_cr_dsa_efficiency_planar(
     max_strong=0.05,
     max_steep=0.20,
@@ -178,7 +239,7 @@ def test_cr_dsa_efficiency_planar(
     """B8.1 / B8.7: realized ``eta_eff(M)`` at planar shocks, KR13 and the constant model.
 
     Hard gates at the finest N against the exact solution at the fixed point of the Mach
-    number the finder reads (``reference(..., FINDER_MACH)``, ``zeta = eta(M_finder)``):
+    number DSA injects at (``reference(..., DSA_MACH)``: the true one since DB8, 2026-10-27):
 
     Args:
         max_strong: ``|eta_eff / eta_ref - 1|`` for M >= 3 (plan B8.1).
@@ -268,7 +329,7 @@ def _plot(results):
     axes[0].set(xlabel="true Mach number", ylabel=r"$\eta_{eff}=f_{cr}/(\rho_1 v_s^3/2)$",
                 ylim=(1e-5, 0.5), title="realized efficiency at planar shocks (1D)")
     axes[0].legend(fontsize=7)
-    for ax, title in ((axes[1], f"vs exact solution at the finder's Mach number ({FINDER_MACH} jump)"),
+    for ax, title in ((axes[1], f"vs exact solution at DSA's Mach number ({DSA_MACH})"),
                       (axes[2], "vs exact solution at the true Mach number")):
         ax.axhline(1.0, color="grey", lw=0.8)
         ax.axhspan(0.95, 1.05, color="grey", alpha=0.15)

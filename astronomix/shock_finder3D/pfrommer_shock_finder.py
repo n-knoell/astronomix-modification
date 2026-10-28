@@ -280,6 +280,7 @@ def find_shocks_pfrommer(
         )
     else:
         post_shock_steps = None
+        pre_shock_steps = None
         pre_shock_pressure = None
         pre_shock_density = None
         # Phase 4: Mach numbers (*spatial_shape), fixed-step sampling
@@ -316,4 +317,5 @@ def find_shocks_pfrommer(
         post_shock_steps=post_shock_steps,
         pre_shock_pressure=pre_shock_pressure,
         pre_shock_density=pre_shock_density,
+        pre_shock_steps=pre_shock_steps,
     )

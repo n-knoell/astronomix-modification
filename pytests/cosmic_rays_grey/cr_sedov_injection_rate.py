@@ -22,8 +22,11 @@ snapshot calls the pure functions the run itself uses,
   of ``dsa_area_weighting`` (default since 2026-10-19, DB7; ``w = 1``
   without), split as ``D = A_inj * <f>`` (the weighted surface area and the
   mean flux per unit area).
-- ``M_finder``: median Mach number of the surface cells (from the velocity
-  jump, ``dsa_mach_from_velocity``, default since 2026-10-19, DB4).
+- ``M_finder``: median Mach number of the surface cells that DSA uses (from
+  the velocity jump, ``dsa_mach_from_velocity``, default since 2026-10-19,
+  DB4; inverted with the CR-loaded Hugoniot, ``dsa_mach_cr_aware``, default
+  since 2026-10-27, DB8). ``D`` is likewise the flux DSA uses
+  (``cr_grey_injection.dsa_mach_and_flux``).
 - the nominal injection rate ``zeta D`` (what ``inject_crs_at_shocks`` spreads
   before its positivity cap; the spread conserves the total, item 8's
   cross-check), and the realized rate after the cap, probed with a CFL-sized
@@ -121,6 +124,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
     CosmicRayGreyParams,
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
+    dsa_mach_and_flux,
     dsa_shock_finder_kwargs,
     inject_crs_at_shocks,
 )
@@ -284,8 +288,10 @@ def _analyse(run, reference, zeta):
             mach_min=cr_params.dsa_mach_min, **dsa_shock_finder_kwargs(cr_config),
         )
         surface = np.asarray(sf.shock_surface_cells)
-        mach = np.asarray(sf.mach_numbers)[surface]
-        flux = np.asarray(sf.thermal_energy_flux)
+        # the Mach number and flux the injection uses (CR-aware since DB8)
+        mach_dsa, flux_dsa = dsa_mach_and_flux(state, sf, config, params, rv)
+        mach = np.asarray(mach_dsa)[surface]
+        flux = np.asarray(flux_dsa)
         # A shock with normal n crosses |n|_inf cells per dx^2 of its area (one
         # surface cell per grid line along the dominant axis), so the true area
         # a surface cell represents is dx^2 / |n|_inf (DB7). A_oblique: that

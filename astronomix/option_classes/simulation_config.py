@@ -775,6 +775,9 @@ def resolve_auto_defaults(config: SimulationConfig) -> SimulationConfig:
     - ``cosmic_ray_grey_config.cr_entropy is None``: on (the hybrid CR entropy scheme)
       wherever it is supported -- grey CRs, finite volume, Cartesian, unsplit RK2,
       HLL / HLLC(_LM), no streaming -- and off elsewhere.
+    - ``cosmic_ray_grey_config.dsa_mach_cr_aware is None``: on with adaptive shock
+      sampling and the velocity-jump Mach number, off elsewhere (Phase B DB8,
+      user decision 2026-10-27).
 
     Explicit settings are kept. Called by ``finalize_config`` and by
     ``get_registered_variables`` (which allocates the CR entropy row before the
@@ -784,7 +787,7 @@ def resolve_auto_defaults(config: SimulationConfig) -> SimulationConfig:
         config: The user-supplied simulation configuration.
 
     Returns:
-        The configuration with both defaults resolved.
+        The configuration with these defaults resolved.
     """
     cr_config = config.cosmic_ray_grey_config
     fv_cr_run = (
@@ -805,8 +808,12 @@ def resolve_auto_defaults(config: SimulationConfig) -> SimulationConfig:
             and config.riemann_solver in (HLL, HLLC, HLLC_LM)
             and not cr_config.streaming
         )
+        cr_config = cr_config._replace(cr_entropy=bool(supported))
+        config = config._replace(cosmic_ray_grey_config=cr_config)
+    if cr_config.dsa_mach_cr_aware is None:
+        applies = cr_config.dsa_adaptive_shock_sampling and cr_config.dsa_mach_from_velocity
         config = config._replace(
-            cosmic_ray_grey_config=cr_config._replace(cr_entropy=bool(supported))
+            cosmic_ray_grey_config=cr_config._replace(dsa_mach_cr_aware=bool(applies))
         )
     return config
 

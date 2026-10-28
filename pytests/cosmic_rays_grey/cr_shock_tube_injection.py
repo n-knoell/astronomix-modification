@@ -139,6 +139,11 @@ DSA_MACH_MIN = 1.3  # CosmicRayGreyParams default
 #: The hard gates compare with the exact solution at this fixed point ("fp" metrics).
 FINDER_MACH = "velocity"
 FINDER_MACH_KEY = {"velocity": "mach_gas_velocity", "gas_pressure": "mach_gas_pressure"}[FINDER_MACH]
+#: The Mach number DSA injects at: since 2026-10-27 (DB8, ``dsa_mach_cr_aware``, default on) the
+#: finder's velocity jump inverted with the CR-loaded Hugoniot, which recovers the true Mach number
+#: of a resolved planar shock; before, the gas-only reading (``FINDER_MACH``). The hard gates
+#: compare with the exact solution at this fixed point ("fp" metrics; now equal to "true").
+DSA_MACH = "true"
 PICS_DIR = Path(__file__).resolve().parent / "pics" / "07_sedov_taylor"
 RAW_DIR = Path(os.environ.get("CR_PHASEB_RAW", "/export/scratch/nknoell/phaseB")) / "b7_4"
 
@@ -419,7 +424,7 @@ def test_injection_riemann_reference():
             assert abs(np.trapezoid(rho, xs) / mass_0 - 1.0) < 1e-4
 
 
-def l1_density(tube, run, zeta, mach=FINDER_MACH):
+def l1_density(tube, run, zeta, mach=DSA_MACH):
     """L1 density error over the box against the exact injection solution."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -446,8 +451,8 @@ def test_cr_shock_tube_injection(
     """B7.4: thermal tube of Pfrommer et al. (2017) Table 1 with DSA, ``zeta`` 0.1 and 0.5.
 
     Hard gates (default scheme, N >= 400, ``zeta`` in ``GATED_ZETAS``) against the exact solution of the code's convention
-    at the Mach number the finder reads (``injection(zeta, FINDER_MACH)``, module
-    docstring):
+    at the Mach number DSA injects at (``injection(zeta, DSA_MACH)``, the true one since DB8;
+    module docstring):
 
     Args:
         max_dv: Shock speed (snapshot fit), relative.
@@ -456,8 +461,8 @@ def test_cr_shock_tube_injection(
             ~3%, constant in N; the plan's 2% is not met).
         max_drho: Plateau density, relative.
         max_rate: Box CR energy growth rate against the exact injected flux, relative.
-        max_mach_finder: Finder Mach number at the final state against the reference's Mach
-            number of the same kind (``FINDER_MACH``), relative.
+        max_mach_finder: Finder (gas-only) Mach number at the final state against the
+            reference's reading of the same kind (``FINDER_MACH``), relative.
         min_l1_order: Least-squares order of the L1 density error over N >= 200.
 
     Everything else (the same metrics against the true-Mach reference, the energy scheme with
@@ -469,7 +474,7 @@ def test_cr_shock_tube_injection(
     results = {}
     failures = []
     for zeta in ZETAS:
-        ref_true, ref_fp = reference(TH, zeta, "true"), reference(TH, zeta, FINDER_MACH)
+        ref_true, ref_fp = reference(TH, zeta, "true"), reference(TH, zeta, DSA_MACH)
         for scheme, kwargs in SCHEMES.items():
             resolutions = DEFAULT_RESOLUTIONS if scheme == "default" else VARIANT_RESOLUTIONS
             for n in resolutions:
@@ -509,14 +514,14 @@ def test_cr_shock_tube_injection(
             failures.append(f"zeta {zeta}: L1 order {order:.2f} (bound {min_l1_order})")
 
     # CR-loaded tube (Pfrommer et al. 2017 Table 1 "CR"; B8.5 territory), tracked only
-    ref_cr = reference(CR, 0.5, FINDER_MACH)
+    ref_cr = reference(CR, 0.5, DSA_MACH)
     for n in VARIANT_RESOLUTIONS:
         run = run_tube(CR, n, 0.5)
         m = metrics(CR, run, ref_cr)
         results[(0.5, "CR tube", n)] = dict(run=run, fp=m)
         print(f"CR tube zeta 0.5 N {n}: dv {m['dv_shock']:+.4f} dP_th {m['dP_th']:+.4f} dP_cr "
               f"{m['dP_cr']:+.4f} dP_cr_inj {m['dP_cr_inj']:+.4f} M_f {m['mach_finder']:.3f} "
-              f"(finder-Mach reference {ref_cr[FINDER_MACH_KEY]:.3f}, composite "
+              f"(reference gas-only reading {ref_cr[FINDER_MACH_KEY]:.3f}, composite "
               f"{ref_cr['mach_composite']:.3f})")
         for key in ("dv_shock", "dP_th", "dP_cr", "dP_cr_inj"):
             baselines.close(f"cr_tube_N{n}_fp_{key}", m[key], abs_tol=0.01)
@@ -547,7 +552,7 @@ def _plot(results):
         fp = results[(zeta, "default", 1600)]["fp"]
         true = results[(zeta, "default", 1600)]["true"]
         ax.set(xlabel="x", ylabel="pressure",
-               title=rf"$\zeta$={zeta}, N=1600: $P_{{cr}}$ {fp['dP_cr']:+.1%} (finder-M ref, dashed),"
+               title=rf"$\zeta$={zeta}, N=1600: $P_{{cr}}$ {fp['dP_cr']:+.1%} (DSA-M ref),"
                      f"\n{true['dP_cr']:+.1%} (true-M ref, dotted)")
         ax.legend(fontsize=8)
 
@@ -556,7 +561,7 @@ def _plot(results):
         for key, label, c in (("dP_cr", r"$P_{cr}$", "C3"), ("dP_th", r"$P_{th}$", "k"),
                               ("dv_shock", r"$v_s$", "C0"), ("mach_finder_rel", r"$M_{finder}$", "C2")):
             vals = [results[(zeta, "default", n)]["fp"][key] for n in ns]
-            ax.semilogx(ns, vals, "o-", color=c, label=label + " vs finder-M ref")
+            ax.semilogx(ns, vals, "o-", color=c, label=label + " vs DSA-M ref")
             if key in ("dP_cr", "mach_finder_rel"):
                 vals = [results[(zeta, "default", n)]["true"][key] for n in ns]
                 ax.semilogx(ns, vals, "s:", color=c, mfc="none", label=label + " vs true-M ref")
@@ -573,10 +578,10 @@ def _plot(results):
         ax.set_xticklabels([s.replace(", ", ",\n").replace("density-consistent ", "density-\nconsistent ")
                             for s in names], fontsize=7)
         ax.axhline(0, color="grey", lw=0.8)
-        ax.set(ylabel=r"$P_{cr}$ vs finder-M ref", title="schemes and deposit")
+        ax.set(ylabel=r"$P_{cr}$ vs DSA-M ref", title="schemes and deposit")
         ax.legend(fontsize=8)
     fig.suptitle("B7.4: thermal tube of Pfrommer et al. (2017) with DSA vs the exact solution "
-                 f"(code convention; dashed: at the finder's Mach number ({FINDER_MACH} jump), dotted: true Mach)")
+                 f"(code convention; dashed: at the gas-only {FINDER_MACH}-jump Mach number (before DB8), dotted: true Mach = DSA's)")
     fig.tight_layout()
     PICS_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(PICS_DIR / "cr_shock_tube_injection.png", dpi=130)

@@ -18,18 +18,18 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | **Item 7: CR Sedov-Taylor blast** | | | | | |
 | B7.1 self-similar two-fluid Sedov reference | 1 | done | `reference_solutions/sedov_two_fluid.py`, `cr_sedov_two_fluid_reference.py` | Sedov `xi_0` 1.15167 / 1.03278 (5/3, 7/5), energy integral <= 4e-5, plan table to 1e-3; code convention (`"gas_rh"`, `zeta` 0.1): `E_cr/E` 0.1398, injection 0.0416 E/t, finder dissipation 0.416 E/t | 2026-10-14 |
 | B7.2 Sedov from the self-similar state, `v_red = 0` | 2 | done (tracked); new finding DB9 | `cr_sedov_self_similar.py`, `sedov_two_fluid.py` (`cell_averages`) | E_cr/E end 0.951 / 0.982 / 0.996 of the reference (N 48 / 96 / 160; point explosion 0.52 / 0.67 / 0.74) = injection 0.77 / 0.87 / 0.92 x deposit surplus (injected part +18 / +14 / +11%, under-compressed shell); passive adiabatic losses right to 4 / 2 / 1% | 2026-10-21 |
-| B7.3 instantaneous injection rate vs analytic | 1 | done; findings for DB4 + new area under-count (Y10) | `cr_sedov_injection_rate.py` | late-time injection rate 0.43 / 0.53 / 0.60 of the reference at N 48 / 96 / 160 (order ~0.3), `E_cr/E` 0.29 / 0.39 / 0.45. Finder dissipation / simulated shock = area 0.85 / 0.87 / 0.84 (= `<|n|_inf>` 0.831, resolution-independent) x flux per cell 0.45 / 0.59 / 0.65 (= `(M_fin/M_true)^3`, Mach ratio 0.76 / 0.84 / 0.87). Cap: 0 | 2026-10-14 |
-| B7.4 planar shock tube with injection vs exact (Pfrommer et al. 2017 App. B/C) | 1 | done; new finding Y11 (DB8) | `cr_shock_tube_injection.py`, `pfrommer_riemann_solver.py` (`injection=`) | default scheme at the gas-pressure fixed point (N >= 400): `v_s` 8e-4, `P_th` -0.1 / -0.7%, `P_cr` +2.7% (deposit inside the smeared shock), finder M -0.5 / -1.8%. Vs the true Mach number: `P_cr` -2.7% / **-23%** (`zeta` 0.1 / 0.5), finder M -2.2 / -9%. Energy scheme `P_cr` +6 to +16% | 2026-10-14 |
+| B7.3 instantaneous injection rate vs analytic | 1 | done; findings for DB4 + new area under-count (Y10) | `cr_sedov_injection_rate.py` | **Since DB4 + DB7 (2026-10-20):** late-time injection 0.766 / 0.861 / 0.918 of the reference at N 48 / 96 / 160, Mach ratio 0.876 / 0.935 / 0.943, injection area 1.054 / 1.072 / 1.028, `E_cr/E` end 0.515 / 0.672 / 0.740 of the reference (point explosion). Before (2026-10-14): injection 0.43 / 0.53 / 0.60 = area 0.85 / 0.87 / 0.84 (`<|n|_inf>` 0.831) x `(M_fin/M_true)^3` (pressure Mach ratio 0.76 / 0.84 / 0.87). Cap: 0 | 2026-10-20 |
+| B7.4 planar shock tube with injection vs exact (Pfrommer et al. 2017 App. B/C) | 1 | done; new finding Y11 (DB8, reopened 2026-10-27) | `cr_shock_tube_injection.py`, `pfrommer_riemann_solver.py` (`injection=`) | **Since DB4 (2026-10-20), velocity-jump Mach:** `zeta` 0.1 vs the velocity fixed point (N >= 400): `v_s` -2e-4, `P_th` -0.15%, `P_cr` +2.6% (deposit inside the smeared shock), finder M -0.4 to -0.7%; **vs the true Mach number `P_cr` +6.6%, rate +6.3%**. `zeta` 0.5 (tracked only): `P_cr` -14% vs the velocity fixed point, +8% vs true. DB9 flag: `P_cr` -0.8% (fixed point), +3.0% (true). Before (gas-pressure Mach, 2026-10-14): `P_cr` +2.7% vs its fixed point, -2.7% / **-23%** vs true (`zeta` 0.1 / 0.5). Energy scheme `P_cr` +6 to +16% | 2026-10-21 |
 | B7.5 shock slowdown | 2 | done (B7.2 runs; point explosion at ζ 0.5 not run) | `cr_sedov_self_similar.py` | ξ_dsa / ξ_ctrl over the reference 0.9998 / 1.0015 / 0.9984 (ζ 0.1), 0.9959 / 1.0001 / 1.0017 (ζ 0.211); α 0.407 / 0.404 / 0.403 (estimator offset) | 2026-10-21 |
 | B7.6 isotropy of the deposit | 3 | todo | | | |
 | B7.7 robustness: `dt`, sampling knobs, limiter counters | 3 | todo | | | |
 | B7.8 (optional) SN source term, composite blast | 3 | todo | | | |
 | **Item 8: DSA efficiency vs Mach number** | | | | | |
-| B8.1 realized `eta_eff(M)` at planar shocks | 1 | done | `cr_dsa_efficiency_planar.py` | vs the gas-pressure fixed point: KR13 within 3% for M >= 3, -5.6% at M 2.25; constant +0.3 ... +2.8%. Vs the true Mach number: KR13 **-9%** at strong shocks (-10% at M 5), constant -1 ... -3%. N 400 = N 1600 to 1e-3 | 2026-10-14 |
+| B8.1 realized `eta_eff(M)` at planar shocks | 1 | done | `cr_dsa_efficiency_planar.py` | **Since DB4 (2026-10-20):** vs the velocity fixed point KR13 within 3.4% for M >= 3, -5.2% at M 2.25; constant -1.5 ... +2.6%. **Vs the true Mach number: KR13 +11% at strong shocks (+7.3% at M 5), constant +0.3 ... +6.6%** (DB8). Before (gas-pressure Mach): KR13 -9% at strong shocks, constant -1 ... -3% vs true. N 400 = N 1600 to 1e-3 | 2026-10-20 |
 | B8.2 finder Mach and injection at oblique shocks | 2 | done (diagnostic, no gates) | `cr_oblique_planar_shocks.py`, `cr_sedov_shock_area.py` | N 128, 5 orientations, M 3/10: with DB4 (a) + DB7 weights the injected flux per area is 0.989-1.002 (ζ 0) / 1.010-1.039 (ζ 0.1) of exact, angle dependence < 2% (was 43%) | 2026-10-20 |
 | B8.3 KR13 fit vs published data | 2 | todo | | | |
 | B8.4 weak blasts vs 1D spherical reference | 3 | todo | | | |
-| B8.5 shocks into CR-loaded gas | 2 | todo | | | |
+| B8.5 shocks into CR-loaded gas | 2 | done (planar, diagnostic; DB8 runs) | DB8 scratch scripts (`cr_shock_tube_injection.py` `run_tube` / `reference`) | composite-RH tubes `P_cr,1 / P_th,1` = 0.05 / 0.5 / 1, M 2.5-10, KR13 + `zeta` 0.1, N 1600, vs the true gas Mach number: gas-only velocity Mach `P_cr` **-17 to -57%** at M 2.5-3 (X 0.5-1; the stiffer CR-loaded gas compresses less), CR-aware Mach (DB8, now default) -0.4 to +4.1% (X 0.5), +0.1 to +10.3% (X 1). Shock speed <= 5e-4 | 2026-10-27 |
 | B8.6 obliquity-dependent efficiency (needs DB3) | 3 | blocked (DB3) | | | |
 | B8.7 sub-critical shocks | 3 | partly done (in B8.1) | `cr_dsa_efficiency_planar.py` | KR13: no injection at M 1.8 / 2 (`E_cr/E_th` ~ 1e-10, floor). Constant model injects above `dsa_mach_min` 1.3 (DB5); M = 1.5 not run | 2026-10-14 |
 | **Cross-cutting** | | | | | |
@@ -46,7 +46,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | DB5 | Sub-critical threshold of the constant model (1.3 / 2.25 / 3)? | open | |
 | DB6 | Item-7 gated IC: self-similar state instead of the point explosion? | open | |
 | DB7 (new) | Area under-count of oblique shock surfaces (Y10): correct the per-cell area by `1/|n|_inf`? | **decided 2026-10-19** (user): yes, with the normal of the Gaussian-smoothed temperature (`dsa_area_weighting=True`, `dsa_area_normal_smoothing=2`) | Sedov injection area 1.05 / 1.07 / 1.03; B8.2 angle dependence < 2%; log 2026-10-20 |
-| DB8 (new) | CR back-reaction on the finder Mach number (Y11): the finder reads M from the **gas**-pressure jump, which the injected CRs lower. (a) Mach from the total-pressure jump (composite RH), (b) from the density/velocity jump, or (c) accept? | **decided 2026-10-14: (c) accept for now** (user); document that the realized efficiency is lower, no finder change. Revisit with DB4/B8.5 | Resolved planar shocks settle at the self-consistent fixed point. Injected / intended flux (exact): 0.95 at `zeta` 0.1 (finder M -1.7%), 0.77 at 0.5 (-7.4%), 0.89 for KR13 at strong shocks (-3.8%). Measured vs the true-M reference: -2.7% / -23% / -9% (partly offset by the +2.7% deposit excess). Resolution-independent. In the item-7 Sedov run (`zeta` 0.1) ~2% of the Mach ratio, ~5% of the injection |
+| DB8 (new) | CR back-reaction on the finder Mach number (Y11): the finder reads M from the **gas**-pressure jump, which the injected CRs lower. (a) Mach from the total-pressure jump (composite RH), (b) from the density/velocity jump, or (c) accept? | decided 2026-10-14: (c) accept for now (user). Reopened 2026-10-27 (velocity Mach since DB4 reads high: +6.6% at `zeta` 0.1, +11% KR13, and low with CR-loaded upstream). **Decided 2026-10-27** (user): CR-aware inversion of the velocity jump, a switch that is on by default (`dsa_mach_cr_aware=None` = on with adaptive sampling + velocity Mach); gas Mach convention (KR13) kept; DB9 keeps the gas-only `rho_RH`; log 2026-10-27 | planar vs true M: `zeta` 0.1 +2.6% (was +6.6%), 0.5 -1.7% (+8.0%), KR13 strong +2.1 / +2.4% (+11%), CR-loaded upstream (B8.5) -0.4 to +10% (-17 to -57%); Sedov injection 3.5% lower (N 48 / 96) |
 | DB9 (new) | Deposit surplus (B7.2): CRs deposited into the smeared, under-compressed shock shell later lose less to expansion than CRs injected at the RH post-shock density. (a) accept and document (it offsets part of the injection deficit), (b) density-consistent deposit: scale each cell's share by `min(1, (rho/rho_RH)^(gamma_cr - 1))`, the withheld energy stays in the gas, or (c) other? | **decided 2026-10-21** (user): (b), opt-in (`dsa_density_consistent_deposit=True`, default off); implemented + regression run 2026-10-21 | with the flag: Sedov E_cr / prediction 0.985 / 0.990 / 0.990, E_cr/E end 0.84 / 0.90 / 0.93 (injection deficit no longer offset), planar P_cr -0.8%. Before: injected-part surplus +18 / +14 / +11% (Sedov N 48 / 96 / 160), +2.6% planar (B7.4). Scratch prototype of (b): planar -0.8%, Sedov -13 / -7 / -5% (over-corrects where the shell is unresolved); log 2026-10-21 |
 
 ## Infrastructure
@@ -73,6 +73,49 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
       0.4% at N 48 / 96 / 160
 
 ## Log (newest first)
+
+### 2026-10-27: DB8 reopened + decided: CR-aware velocity-jump Mach number, default on (implemented; regression running; uncommitted)
+
+**Why reopened.** Since DB4 the finder inverts the normal-velocity jump with the gas-only Rankine-Hugoniot relation, `du / c_1 = 2 (M - 1/M) / (gamma + 1)`. The CRs injected at the shock compress the gas further, so `du` and with it the Mach number read high; CR-loaded upstream gas is stiffer and compresses less, so the Mach number reads low. Exact steady planar shocks (scratch `steady.py`, reference solver's `_hugoniot_rho_star` / `_post_shock_partition` with a root-find for the mass flux), injected / intended flux at the velocity fixed point, `X = P_cr,1 / P_th,1`:
+- X = 0: `zeta` 0.1 +2.4 to +3.9%, KR13 +2.6 to +8.6% (strong shocks), `zeta` 0.5 +14 to +23%.
+- X > 0, weak shocks: KR13 M 3 0.73 (X 0.5), 0.52 (X 1); `zeta` 0.1 M 2.25 0.54 (X 1). The old gas-pressure estimator is worse still.
+
+**Method.** In units `rho_1 = c_th,1 = 1` with the unknown `s = rho_1 / rho_2` and `M = w / (1 - s)` (`w` the measured jump), mass and momentum leave one energy equation: gas enthalpy, upstream CRs compressed adiabatically (`P_cr,2 = P_cr,1 s^-gamma_cr`) and the injected specific energy `zeta(M) delta(M) M^2 / 2` (the code's `gas_rh` convention). It has exactly one root on `[max(0.1, 1 - w), 1)` (checked on a 4000-point scan for X 0-2, `zeta` 0 / 0.1 / 0.5 / KR13, M 1.5-100); bisection recovers the true M to 3e-15. The Mach number stays the gas one (`v_1 / c_th,1`, KR13's definition); only the inversion changes.
+
+**Implementation.**
+- `CosmicRayGreyConfig.dsa_mach_cr_aware: Optional[bool] = None`: on wherever it applies (`dsa_adaptive_shock_sampling` and `dsa_mach_from_velocity`), off elsewhere (`simulation_config.resolve_auto_defaults`, as `cr_entropy`); `True` raises where it does not apply.
+- `cr_grey_injection.cr_aware_velocity_mach`: 60 bisection steps in a `lax.while_loop` (a fixed-length `fori_loop` is unrolled by XLA and kept ~250 full-grid temporaries: 7.5 GiB at 160^3). The final step is a stop-gradient Newton step that changes only the derivative (implicit-function theorem), so AD through `dsa_efficiency_mach_scale` / `dsa_efficiency` stays exact; the value is the bisection root. Inputs away from shocks are replaced by harmless stand-ins so masked gradients stay finite.
+- `inject_crs_at_shocks`: samples `e_cr` at the walk's pre-shock point (`sample_along_direction` with the new `ShockFinderResult.pre_shock_steps`), `X = (gamma_cr - 1) e_cr / P_pre`, recomputes M, `valid = M > dsa_mach_min` and the flux `delta(M) rho_pre (M c_pre)^3 / 2` (`thermal_energy_flux_from_pre_state`); the efficiency is evaluated at that M. Cells the finder already rejected (gas-only M <= `dsa_mach_min`) stay rejected.
+- DB9 (`dsa_density_consistent_deposit`) keeps `rho_RH` from the finder's gas-only Mach number. With the CR-aware compression it over-corrected (B7.4 `zeta` 0.1 -1.7%, 0.5 -10.8%); with the gas-only one -0.8% and -6.0% (N 1600 and 400 alike).
+- Cost: one 160^3 injection call 1.17 GiB temporaries vs 0.98 GiB; full 160^3 B7.2 step identical (11.16 GB, the peak is elsewhere).
+
+**Checks** (repo code, `/export/scratch/nknoell/phaseB/db8_impl/`): all 32 planar cases identical (to the printed 5 digits, difference 0) to the scratch prototype, both on and forced off; forced off = the previous default exactly. AD: `d dE_cr / d dsa_efficiency_mach_scale` and `/ d dsa_efficiency` on a smeared M 3 shock (X 0 and 1) agree with central differences to 1e-13 ... 5e-10.
+
+**Planar results** (N 1600, `P_cr` from injection vs the reference at the TRUE Mach number; gas-only velocity Mach -> CR-aware):
+
+| case | gas-only | CR-aware | CR-aware + DB9 |
+|---|---|---|---|
+| B7.4 thermal tube `zeta` 0.1 | +6.6% | **+2.6%** | -0.8% |
+| B7.4 thermal tube `zeta` 0.5 | +8.0% | **-1.7%** (N 400: -2.0%) | -6.0% |
+| B8.1 RH tube `zeta` 0.1, M 2.25-30 | +2.5 ... +6.7% | **+0.2 ... +2.6%** | |
+| B8.1 KR13 M 10 / 30 | +11.0 / +11.6% | **+2.1 / +2.4%** | -1.7% (M 10) |
+| B8.1 KR13 M 5 | +7.4% | -1.3% | |
+| B8.1 KR13 M 2.25 / 3 | -5% / -1.2% | -5% / -1.6% (resolution, not the estimator) | -4.4% (M 3) |
+| B8.5 X 0.5 KR13 M 2.5 / 3 | -36.9 / -27.0% | +4.1 / -0.4% | |
+| B8.5 X 0.5 `zeta` 0.1 M 2.5 | -17.3% | +0.4% | |
+| B8.5 X 1 KR13 M 2.5 / 3 | -57.2 / -47.2% | +10.3 / +0.5% | |
+| B8.5 X 1 `zeta` 0.1 M 2.5 / 3 | -35.8 / -21.6% | +0.1 / +0.9% | |
+| B8.5 X 0.05, all | -7.1 ... +10.9% | -2.4 ... +2.6% | |
+| Pfrommer CR tube `zeta` 0.1 / 0.5 | +5.6 / +3.6% | +2.6 / -5.0% | |
+
+Shock speed within 5e-4 everywhere (Pfrommer CR tube `zeta` 0.5: 1.7e-3). The remaining +2.6% at `zeta` 0.1 is the deposit inside the smeared shock (B7.4).
+
+**Sedov (B7.2, `zeta` 0.1, gas-only -> CR-aware -> CR-aware + DB9 with the CR-aware `rho_RH`):** E_cr/E end / ref 0.951 -> 0.936 -> 0.828 (N 48), 0.982 -> 0.966 -> 0.882 (N 96); realized late injection / ref 0.755 -> 0.727 -> 0.562, 0.858 -> 0.828 -> 0.697; E_cr / kernel 1.11 -> 1.09, 1.08 -> 1.06. `zeta` 0.211: 0.965 -> 0.934, 0.992 -> 0.960. The old high reading hid ~3.5% of the under-resolution deficit (DB4/DB7, B7.3). 160^3 not run: the B7.2 setup (10 returned 3D snapshots) needs 11.2 GB in either version and no longer fits; the 2026-10-21 runs used a GPU (`GPU-97e5a2a9`) no longer in the machine.
+
+**Regression** (DSA tests only, update mode against a scratch copy of the registry, `/export/scratch/nknoell/phaseB/db8_impl/reg/`): running.
+
+**Not covered:** the CWB (`pytests/shock_finder3D`, tracked +41% split) and M7 runs use DSA too; their tracked numbers move with this default and were not rerun.
+
 
 ### 2026-10-21: DB9 = (b) density-consistent deposit, opt-in (implemented; regression run; uncommitted)
 

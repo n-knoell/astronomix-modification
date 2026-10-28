@@ -237,6 +237,25 @@ class CosmicRayGreyConfig(NamedTuple):
     #: low (-2% / -4.5%; DB8). PROGRESS_PHASEB.md 2026-10-19.
     dsa_mach_from_velocity: bool = True
 
+    #: CR-aware velocity-jump Mach number (Phase B decision DB8, 2026-10-27,
+    #: user: adopted, on by default): invert the finder's normal-velocity jump
+    #: with the Hugoniot of the CR-loaded shock -- upstream CRs (sampled at the
+    #: walk's pre-shock point) compressed adiabatically plus this step's own
+    #: injection model -- instead of the gas-only Rankine-Hugoniot relation,
+    #: and recompute the dissipated flux from that Mach number. The gas-only
+    #: reading is biased high by the extra compression of the injected CRs
+    #: (+3% of the injection at zeta = 0.1, +9% for KR13 strong shocks, +14 to
+    #: +23% at zeta = 0.5) and low with CR-loaded upstream gas, which
+    #: compresses less (injection 0.43-0.83 of nominal at M 2.5-3, P_cr,1 /
+    #: P_th,1 = 0.5-1); with it planar shocks inject within -2 to +3% of the
+    #: nominal rate at the true Mach number (KR13 at P_cr,1 = P_th,1, M 2.5:
+    #: +10%). The Mach number stays the gas one (v_1 / c_th,1, KR13's
+    #: convention). None (default): on wherever it applies (adaptive sampling
+    #: with dsa_mach_from_velocity), off elsewhere
+    #: (simulation_config.resolve_auto_defaults); True / False force it (True
+    #: raises where it does not apply). PROGRESS_PHASEB.md 2026-10-27.
+    dsa_mach_cr_aware: Optional[bool] = None
+
     #: weight each shock-surface cell's injection by 1 / |n|_inf, the shock
     #: area it represents in units of dx^(ndim-1), with the normal of the
     #: Gaussian-smoothed temperature (shock_finder3D._surface_area). Default

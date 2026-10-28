@@ -47,6 +47,11 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 # astronomix functions
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 from astronomix.shock_finder3D._surface_area import surface_area_weights
+from astronomix.shock_finder3D._shock_zones import sample_along_direction
+from astronomix.shock_finder3D._energy_dissipation import (
+    _thermalization_efficiency,
+    thermal_energy_flux_from_pre_state,
+)
 
 
 def dsa_shock_finder_kwargs(cr_config) -> dict:
@@ -202,6 +207,152 @@ def dsa_efficiency_kang_ryu_2013(mach_numbers: FIELD_TYPE) -> FIELD_TYPE:
     )
 
 
+def cr_aware_velocity_mach(
+    mach_u, cr_ratio, efficiency_of_mach, mach_min, gamma, gamma_cr, iterations=60
+):
+    """Upstream gas Mach number ``v_1 / c_th,1`` of a CR-loaded shock with DSA
+    injection from its normal-velocity jump (``dsa_mach_cr_aware``, Phase B DB8).
+
+    ``mach_u`` is the finder's gas-only Rankine-Hugoniot reading of the jump
+    (0 away from shocks), which fixes ``w = du / c_th,1 = 2 (M_u - 1 / M_u) /
+    (gamma + 1)``; ``cr_ratio`` is ``X = P_cr,1 / P_th,1`` at the pre-shock
+    sample. In units ``rho_1 = c_th,1 = 1`` and with the unknown ``s = rho_1 /
+    rho_2`` (``M = w / (1 - s)``), mass and momentum conservation leave the
+    energy jump with the upstream CRs compressed adiabatically and the injected
+    specific energy ``zeta(M) delta(M) M^2 / 2`` (the code's convention, a
+    fraction of the gas-only dissipated flux). It has exactly one root on
+    ``[max(0.1, 1 - w), 1)`` (checked for X 0-2, zeta 0-0.5 / KR13, M
+    1.5-100; exact to 3e-15 against the steady planar shocks), found by
+    bisection. A final Newton step from the stop-gradient root gives the
+    implicit-function derivatives (with respect to the jump, X and the
+    efficiency parameters), which the bisection alone would not; it changes
+    only the derivative, not the value.
+
+    Args:
+        mach_u: Gas-only velocity-jump Mach number (0 = no shock).
+        cr_ratio: Upstream ``P_cr / P_th``.
+        efficiency_of_mach: The DSA efficiency ``zeta(M)``.
+        mach_min: Injection threshold (``zeta = 0`` at or below it).
+        gamma: Gas adiabatic index.
+        gamma_cr: CR adiabatic index.
+        iterations: Bisection steps.
+
+    Returns:
+        ``(M, rho_2 / rho_1)``, M = 0 where ``mach_u`` is 0.
+    """
+    shock = mach_u > 0.0
+    a = gamma / (gamma - 1.0)
+    b = gamma_cr / (gamma_cr - 1.0)
+    # harmless stand-ins away from shocks (masked below; keep gradients finite)
+    m_u = jnp.where(shock, jnp.maximum(mach_u, 1.0), 2.0)
+    w = jnp.maximum(2.0 * (m_u - 1.0 / m_u) / (gamma + 1.0), 1e-6)
+    x_cr = jnp.where(shock, jnp.maximum(cr_ratio, 0.0), 0.0)
+    p_1 = (1.0 + x_cr) / gamma
+    h_1 = (a + b * x_cr) / gamma
+
+    def residual(s):
+        m = w / (1.0 - s)
+        zeta = jnp.where(m > mach_min, efficiency_of_mach(m), 0.0)
+        zeta_delta = zeta * _thermalization_efficiency(m, gamma)
+        return (
+            0.5 * m**2 * (1.0 - s**2) + h_1 - a * s * (p_1 + m**2 * (1.0 - s))
+            - (b - a) * (
+                x_cr / gamma * s ** (1.0 - gamma_cr)
+                + (gamma_cr - 1.0) * zeta_delta * 0.5 * m**2
+            )
+        )
+
+    lower = jnp.maximum(0.1, 1.0 - jax.lax.stop_gradient(w))
+    upper = jnp.ones_like(w) - 1e-6
+
+    # while_loop rather than fori_loop: XLA unrolls a short fixed-length
+    # fori_loop and keeps every iteration's full-grid temporaries
+    def bisect(carry):
+        i, lo, hi = carry
+        mid = 0.5 * (lo + hi)
+        positive = jax.lax.stop_gradient(residual(mid)) > 0.0
+        return i + 1, jnp.where(positive, mid, lo), jnp.where(positive, hi, mid)
+
+    _, lower, upper = jax.lax.while_loop(
+        lambda carry: carry[0] < iterations, bisect, (0, lower, upper)
+    )
+    s_root = jax.lax.stop_gradient(0.5 * (lower + upper))
+    r, dr_ds = jax.jvp(residual, (s_root,), (jnp.ones_like(s_root),))
+    dr_ds = jax.lax.stop_gradient(dr_ds)
+    newton = -r / jnp.where(dr_ds != 0.0, dr_ds, 1.0)
+    # value: the bisection root (a Newton step could leave it where zeta(M)
+    # jumps); derivative: the implicit-function one, -dr/dtheta / dr/ds
+    s_root = s_root + (newton - jax.lax.stop_gradient(newton))
+    mach = jnp.where(shock, w / (1.0 - s_root), 0.0)
+    return mach, 1.0 / s_root
+
+
+def dsa_efficiency_of_mach(cr_config, cr_params):
+    """The DSA efficiency ``zeta(M)`` of ``cr_config.dsa_efficiency_model`` as a
+    function of the Mach-number field."""
+    if cr_config.dsa_efficiency_model == DSA_EFFICIENCY_KANG_RYU_2013:
+        def efficiency_of_mach(mach):
+            return cr_params.dsa_efficiency_mach_scale * dsa_efficiency_kang_ryu_2013(mach)
+    elif cr_config.dsa_efficiency_model == DSA_EFFICIENCY_CONSTANT:
+        def efficiency_of_mach(mach):
+            return cr_params.dsa_efficiency * jnp.ones_like(mach)
+    else:
+        raise ValueError("Invalid dsa_efficiency_model")
+    return efficiency_of_mach
+
+
+def dsa_mach_and_flux(primitive_state, sf_result, config, params, registered_variables):
+    """Mach number and dissipated thermal-energy flux per shock-surface cell
+    that DSA injection uses, from the finder result of
+    ``find_shocks_pfrommer(..., **dsa_shock_finder_kwargs(cr_config))``: the
+    finder's own, or with ``dsa_mach_cr_aware`` (Phase B DB8) recomputed from
+    its velocity jump with the CR-loaded Hugoniot. For callers (tests,
+    diagnostics) that need the same values as ``inject_crs_at_shocks``.
+
+    Returns:
+        ``(mach_numbers, thermal_energy_flux)``, zero away from injecting cells.
+    """
+    cr_params = params.cosmic_ray_grey_params
+    cr_config = config.cosmic_ray_grey_config
+    gamma_gas = params.gamma
+    mach_numbers = sf_result.mach_numbers
+    thermal_energy_flux = sf_result.thermal_energy_flux
+    cr_aware = cr_config.dsa_mach_cr_aware
+    if cr_aware is None:  # config not finalized: resolve as resolve_auto_defaults does
+        cr_aware = cr_config.dsa_adaptive_shock_sampling and cr_config.dsa_mach_from_velocity
+    if not cr_aware:
+        return mach_numbers, thermal_energy_flux
+    if not (cr_config.dsa_adaptive_shock_sampling and cr_config.dsa_mach_from_velocity):
+        raise ValueError(
+            "dsa_mach_cr_aware needs dsa_adaptive_shock_sampling and dsa_mach_from_velocity"
+        )
+    # the gas-only reading of the velocity jump is biased by the injected
+    # CRs' extra compression and by upstream CR pressure
+    e_cr_pre = sample_along_direction(
+        primitive_state[registered_variables.cosmic_ray_e_index],
+        jax.lax.stop_gradient(sf_result.shock_direction),
+        sf_result.pre_shock_steps,
+    )
+    cr_ratio = (cr_params.gamma_cr - 1.0) * e_cr_pre / jnp.maximum(
+        sf_result.pre_shock_pressure, 1e-30
+    )
+    mach_numbers, _ = cr_aware_velocity_mach(
+        sf_result.mach_numbers, cr_ratio, dsa_efficiency_of_mach(cr_config, cr_params),
+        cr_params.dsa_mach_min, gamma_gas, cr_params.gamma_cr,
+    )
+    valid = mach_numbers > cr_params.dsa_mach_min
+    mach_numbers = jnp.where(valid, mach_numbers, 0.0)
+    thermal_energy_flux = jnp.where(
+        valid,
+        thermal_energy_flux_from_pre_state(
+            mach_numbers, sf_result.pre_shock_pressure, sf_result.pre_shock_density,
+            gamma_gas,
+        ),
+        0.0,
+    )
+    return mach_numbers, thermal_energy_flux
+
+
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
 def inject_crs_at_shocks(
     primitive_state: STATE_TYPE,
@@ -267,6 +418,12 @@ def inject_crs_at_shocks(
     (see ``dsa_efficiency_kang_ryu_2013`` above) without changing the
     injection mechanics or the default behavior any existing config/test
     relies on.
+
+    With ``dsa_mach_cr_aware`` (the default with adaptive sampling and the
+    velocity-jump Mach number, Phase B DB8) the Mach number and the
+    dissipated flux are recomputed from the finder's velocity jump with the
+    CR-loaded Hugoniot (``cr_aware_velocity_mach``) before the efficiency is
+    applied.
     """
     cr_params = params.cosmic_ray_grey_params
     cr_config = config.cosmic_ray_grey_config
@@ -281,17 +438,13 @@ def inject_crs_at_shocks(
         **dsa_shock_finder_kwargs(cr_config),
     )
 
-    if cr_config.dsa_efficiency_model == DSA_EFFICIENCY_KANG_RYU_2013:
-        efficiency = cr_params.dsa_efficiency_mach_scale * dsa_efficiency_kang_ryu_2013(
-            sf_result.mach_numbers
-        )
-    elif cr_config.dsa_efficiency_model == DSA_EFFICIENCY_CONSTANT:
-        efficiency = cr_params.dsa_efficiency
-    else:
-        raise ValueError("Invalid dsa_efficiency_model")
+    efficiency_of_mach = dsa_efficiency_of_mach(cr_config, cr_params)
+    mach_numbers, thermal_energy_flux = dsa_mach_and_flux(
+        primitive_state, sf_result, config, params, registered_variables
+    )
 
     delta_e_cr_density = (
-        efficiency * sf_result.thermal_energy_flux / config.grid_spacing * dt
+        efficiency_of_mach(mach_numbers) * thermal_energy_flux / config.grid_spacing * dt
     )
 
     if cr_config.dsa_area_weighting:
@@ -313,7 +466,10 @@ def inject_crs_at_shocks(
         if cr_config.dsa_density_consistent_deposit:
             # gas-only RH post-shock density of each surface cell (Phase B
             # DB9): deposit only the share the cell's CRs will have once it
-            # is compressed to it (see _spread_over_post_shock_cells)
+            # is compressed to it (see _spread_over_post_shock_cells). From
+            # the finder's gas-only Mach number even with dsa_mach_cr_aware:
+            # the CR-aware Mach number / compression over-corrects (B7.4
+            # zeta 0.1: -1.7% instead of -0.8%, 2026-10-27)
             mach_sq = sf_result.mach_numbers**2
             post_shock_density = (
                 sf_result.pre_shock_density * (gamma_gas + 1.0) * mach_sq

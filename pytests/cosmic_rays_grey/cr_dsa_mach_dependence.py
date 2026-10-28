@@ -133,6 +133,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
     _spread_over_post_shock_cells,
     dsa_efficiency_kang_ryu_2013,
+    dsa_mach_and_flux,
     dsa_shock_finder_kwargs,
     inject_crs_at_shocks,
 )
@@ -325,9 +326,14 @@ def _formula_cross_check(control, cross_check_tol):
         control_state, kr13_config, registered_variables, helper_data,
         mach_min=DSA_MACH_MIN, **dsa_shock_finder_kwargs(cr_config),
     )
-    expected_efficiency = dsa_efficiency_kang_ryu_2013(sf_result.mach_numbers)
+    # the finder's Mach number and flux, CR-aware since DB8 (the inversion itself is checked
+    # against exact steady shocks in cr_dsa_efficiency_planar.py::test_cr_aware_mach_exact)
+    mach_numbers, thermal_energy_flux = dsa_mach_and_flux(
+        control_state, sf_result, kr13_config, kr13_params, registered_variables
+    )
+    expected_efficiency = dsa_efficiency_kang_ryu_2013(mach_numbers)
     expected_delta_e_cr = (
-        expected_efficiency * sf_result.thermal_energy_flux
+        expected_efficiency * thermal_energy_flux
         / kr13_config.grid_spacing * CROSS_CHECK_DT
     )
     if cr_config.dsa_area_weighting:
