@@ -135,7 +135,7 @@ Second pass: every test passes. 473 of 943 registry values moved by > 0.5%, all 
 
 - The CS14 / KR13 ratio moves towards its 8% bound: with the CR-aware inversion the injected Mach number depends on the efficiency itself, and KR13's larger correction (it injects twice as much) lowers it more than CS14's, so the ratio is no longer exactly the efficiency ratio. Physics, not a bug; watch item (Y6).
 - 160^3 B7.2 not run (no longer fits 11 GB, see above). Item 9 (`cr_modified_shock_structure.py`) and the gradient / energy-budget / Phase D tests: within 0.5%.
-- Registry not merged yet (awaiting the user).
+- Registry merged 2026-10-28 (user go-ahead): 473 of 943 metrics changed, DSA tests only; the 69 B7.2 N160 entries keep their 2026-10-21 (pre-DB8) values (160^3 no longer fits in GPU memory, not rerun).
 
 **Not covered:** the CWB (`pytests/shock_finder3D`, tracked +41% split) and M7 runs use DSA too; their tracked numbers move with this default and were not rerun.
 
