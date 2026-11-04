@@ -17,6 +17,7 @@ from astronomix.option_classes.simulation_config import (
 )
 
 from astronomix.shock_finder3D._gradients import _calculate_velocity_divergence
+from astronomix.shock_finder3D._shock_zones import sample_along_direction
 
 
 """
@@ -364,15 +365,55 @@ def _find_shock_surface_3d(
 
 
 
-@partial(jax.jit, static_argnames=["config", "registered_variables"])
+def _find_shock_surface_along_normal(
+    div_v: FIELD_TYPE,
+    shock_zones: BOOL_FIELD_TYPE,
+    shock_direction: FIELD_TYPE,
+) -> BOOL_FIELD_TYPE:
+    """Local minima of div v along the continuous shock normal (2D/3D; the
+    surface of shock_finder_v2): a zone cell is a surface cell unless div v
+    interpolated one cell ahead or behind along the normal is smaller while
+    that point (nearest cell, inside the box) is in the zone. O(N^ndim),
+    against the full-segment scan above, and without the switch of ray axis
+    where the dominant normal component changes. Unlike the full-segment
+    argmin it can keep more than one cell per grid line through a zone (34%
+    of the lines through the Sedov shell), see
+    ``_surface_area.column_area_weights``. Strict comparison ahead and
+    non-strict behind break the tie of a flat two-cell minimum."""
+    shape = shock_zones.shape
+    has_direction = jnp.sqrt(jnp.sum(shock_direction**2, axis=0)) > 0.0
+    index = jnp.stack(jnp.meshgrid(*[jnp.arange(n, dtype=shock_direction.dtype) for n in shape],
+                                   indexing="ij"))
+    upper = jnp.asarray(shape, shock_direction.dtype).reshape((len(shape),) + (1,) * len(shape)) - 1.0
+    zones = shock_zones.astype(div_v.dtype)
+
+    def smaller_at(distance):
+        steps = jnp.full(shape, distance, shock_direction.dtype)
+        point = jax.lax.stop_gradient(index + distance * shock_direction)
+        in_box = jnp.all((point >= 0.0) & (point <= upper), axis=0)
+        in_zone = (sample_along_direction(zones, shock_direction, steps, order=0) > 0.5) & in_box
+        div_there = sample_along_direction(div_v, shock_direction, steps)
+        return in_zone, div_there
+
+    zone_ahead, div_ahead = smaller_at(1.0)
+    zone_behind, div_behind = smaller_at(-1.0)
+    better = (zone_ahead & (div_ahead < div_v)) | (zone_behind & (div_behind <= div_v))
+    return shock_zones & has_direction & ~better & jnp.any(shock_zones)
+
+
+@partial(jax.jit, static_argnames=["config", "registered_variables", "continuous_normal"])
 def identify_shock_surface(
     primitive_state: STATE_TYPE,
     shock_zones: BOOL_FIELD_TYPE,
     shock_direction: FIELD_TYPE,
     config: SimulationConfig,
     registered_variables: RegisteredVariables,
+    continuous_normal: bool = False,
 ) -> BOOL_FIELD_TYPE:
     div_v = _calculate_velocity_divergence(primitive_state, config, registered_variables)
+
+    if continuous_normal and config.dimensionality > 1:
+        return _find_shock_surface_along_normal(div_v, shock_zones, shock_direction)
 
     if config.dimensionality == 1:
         # div_v shape: (nx,), shock_direction shape: (1, nx)

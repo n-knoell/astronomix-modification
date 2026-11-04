@@ -81,7 +81,10 @@ def _analyse_run(run, raw, prefix):
     config, params = run["config"], run["params"]
     rv, helper_data = run["registered_variables"], run["helper_data"]
     cr_config, cr_params = config.cosmic_ray_grey_config, params.cosmic_ray_grey_params
-    kwargs = dsa_shock_finder_kwargs(cr_config)
+    # the full-segment surface (one cell per grid line along the dominant axis) that DB7's
+    # 1 / |n|_inf weight is derived for, requested explicitly (DSA defaults to the
+    # continuous-normal surface with column_area_weights since 2026-11-04)
+    kwargs = dsa_shock_finder_kwargs(cr_config._replace(dsa_continuous_normal_surface=False))
     dx = config.grid_spacing
 
     centres = np.moveaxis(np.asarray(helper_data.geometric_centers), -1, 0)

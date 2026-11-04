@@ -1,0 +1,142 @@
+RESULTS
+job41  cr_shock_tube.py :: PASS test_cr_shock_tube 6s
+job41  cr_adiabatic_coupling.py :: PASS test_cr_linear_sound_wave 20s
+job41  cr_adiabatic_coupling.py :: PASS test_cr_hydro_equivalence 39s
+job41  cr_contact_pressure_balance.py :: PASS test_cr_contact_pressure_balance_1d 96s
+job41  cr_contact_pressure_balance.py :: PASS test_cr_contact_pressure_balance_3d 336s
+job41  cr_modified_shock_structure.py :: PASS test_modified_rh_reference_formula 0s
+job41  cr_modified_shock_structure.py :: PASS test_cr_dsa_shock_jump 31s
+job41  cr_modified_shock_structure.py :: PASS test_cr_precursor_ode 162s
+job41  cr_streaming_1d.py :: PASS test_cr_streaming_1d 5s
+job41  cr_advection.py :: PASS test_cr_advection 7s
+job41  cr_advection_by_gas.py :: PASS test_cr_advection_by_gas_1d 39s
+job41  cr_advection_by_gas.py :: PASS test_cr_advection_by_gas_3d 134s
+job41  cr_adiabatic_compression.py :: PASS test_cr_adiabatic_compression 7s
+job43  cr_phase_d_kappa_inference.py :: PASS test_cr_phase_d_kappa_inference 194s
+job43  cr_phase_d_injection_efficiency_inference.py :: PASS test_cr_phase_d_injection_efficiency_inference 4344s
+job43  cr_anisotropic_diffusion_oblique.py :: PASS test_cr_anisotropic_diffusion_oblique 72s
+job43  cr_divergence_b_preservation.py :: PASS test_cr_divergence_b_preservation 167s
+job45  CR_NUM_CELLS=48 cr_sedov_taylor.py :: FAIL test_cr_sedov_taylor 48s: AssertionError: cr_sedov_taylor.py::test_cr_sedov_taylor vs baselines.json: cr_fraction_N48 0.0731483 differs from baseline 0.06939 by more than 0.00347; cr_fraction_over_selfsimilar_N48 0.523223 differs from baseline 0.4964 by more than 0.0248
+job45  CR_NUM_CELLS=96 cr_sedov_taylor.py :: PASS test_cr_sedov_taylor 116s
+job45  CR_NUM_CELLS=160 cr_sedov_taylor.py :: PASS test_cr_sedov_taylor 615s
+job46  CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: PASS test_dsa_efficiency_kang_ryu_2013_shape 2s
+job46  CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: FAIL test_cr_dsa_mach_dependence 124s: AssertionError: cr_dsa_mach_dependence.py::test_cr_dsa_mach_dependence vs baselines.json: cr_fraction_kr13_N48 0.146333 differs from baseline 0.1388 by more than 0.00694; cr_fraction_cs14_N48 0.076968 differs from baseline 0.07301 by more than 0.00365; cr_fraction_kr13_over_selfsimilar_N48 0.557361 differs from baseline 0.5286 by more than 0.0264
+job46  CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: PASS test_dsa_efficiency_kang_ryu_2013_shape 2s
+job46  CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: PASS test_cr_dsa_mach_dependence 408s
+job46  CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: PASS test_dsa_efficiency_kang_ryu_2013_shape 2s
+job46  CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: PASS test_cr_dsa_mach_dependence 2425s
+job47  CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: FAIL test_cr_sedov_injection_rate 70s: AssertionError: cr_sedov_injection_rate.py::test_cr_sedov_injection_rate vs baselines.json: dsa_area_ratio_N48 1.18751 differs from baseline 0.8537 by more than 0.0427; dsa_E_cr_over_ref_end_N48 0.523352 differs from baseline 0.4966 by more than 0.0248
+job47  CR_NUM_CELLS=96 cr_sedov_injection_rate.py :: FAIL test_cr_sedov_injection_rate 146s: AssertionError: cr_sedov_injection_rate.py::test_cr_sedov_injection_rate vs baselines.json: dsa_area_ratio_N96 1.19504 differs from baseline 0.8766 by more than 0.0438
+job47  CR_NUM_CELLS=160 cr_sedov_injection_rate.py :: FAIL test_cr_sedov_injection_rate 692s: AssertionError: cr_sedov_injection_rate.py::test_cr_sedov_injection_rate vs baselines.json: dsa_area_ratio_N160 1.13966 differs from baseline 0.8427 by more than 0.0421
+job47  cr_sedov_shock_area.py :: PASS test_cr_sedov_shock_area 10s
+job47  CR_NUM_CELLS=64 cr_oblique_planar_shocks.py :: PASS test_cr_oblique_planar_shocks 145s
+job48  cr_shock_tube_injection.py :: PASS test_injection_riemann_reference 21s
+job48  cr_shock_tube_injection.py :: PASS test_cr_shock_tube_injection 850s
+job48  cr_dsa_efficiency_planar.py :: PASS test_kr13_numpy_copy 0s
+job48  cr_dsa_efficiency_planar.py :: PASS test_cr_aware_mach_exact 21s
+job48  cr_dsa_efficiency_planar.py :: PASS test_cr_dsa_efficiency_planar 1384s
+job48  cr_sedov_two_fluid_reference.py :: PASS test_sedov_two_fluid_classic_limit 0s
+job48  cr_sedov_two_fluid_reference.py :: PASS test_sedov_two_fluid_with_crs 1s
+job49  CR_NUM_CELLS=128 cr_snr_clumpy_medium.py :: FAIL test_cr_snr_clumpy_medium 441s: AssertionError: cr_snr_clumpy_medium.py::test_cr_snr_clumpy_medium vs baselines.json: N128_uniform_ecr_over_etot 0.0920882 differs from baseline 0.08917 by more than 0.00268; N128_clumpy_ecr_over_etot 0.0899648 differs from baseline 0.08716 by more than 0.00261
+job49  CR_NUM_CELLS=128 cr_snr_molecular_cloud_pion_bump.py :: PASS test_snr_molecular_cloud_pion_bump 903s
+job49  cr_pion_decay_emission.py :: PASS test_pion_decay_matches_naima_default 7s
+job49  cr_pion_decay_emission.py :: PASS test_pion_decay_matches_naima_all_hi_e_models_and_nuclear_enhancement 1s
+job49  cr_pion_decay_emission.py :: PASS test_pion_decay_gradients_are_finite 4s
+job49  cr_synchrotron_ic_emission.py :: PASS test_synchrotron_matches_naima 6s
+job49  cr_synchrotron_ic_emission.py :: PASS test_inverse_compton_matches_naima 2s
+job49  cr_synchrotron_ic_emission.py :: PASS test_inverse_compton_matches_naima_diluted_greybody 0s
+job49  cr_synchrotron_ic_emission.py :: PASS test_synchrotron_and_ic_gradients_are_finite 9s
+job50  cr_wind_bubble.py :: PASS test_cr_wind_bubble 1401s
+job51  CR_NUM_CELLS=48 cr_sedov_self_similar.py :: FAIL test_cr_sedov_self_similar 204s: AssertionError: cr_sedov_self_similar.py::test_cr_sedov_self_similar vs baselines.json: z0.211_xcr_shell_ratio_N48 1.09803 differs from baseline 1.064 by more than 0.0319; z0.211_pcr_peak_ratio_N48 0.754708 differs from baseline 0.7307 by more than 0.0219
+job51  CR_NUM_CELLS=96 cr_sedov_self_similar.py :: PASS test_cr_sedov_self_similar 664s
+
+REGISTRY METRICS MOVED > 1%
+CR_NUM_CELLS=48 cr_sedov_taylor.py :: cr_fraction_N48: 0.06939 -> 0.07315 (+5.4% rel, gate +- 0.00347)
+CR_NUM_CELLS=48 cr_sedov_taylor.py :: cr_fraction_over_selfsimilar_N48: 0.4964 -> 0.5232 (+5.4% rel, gate +- 0.0248)
+CR_NUM_CELLS=48 cr_sedov_taylor.py :: partition_identity_N48: 4.294e-07 -> 6.11e-07 (+42.3% rel, gate <= 0.0001)
+CR_NUM_CELLS=96 cr_sedov_taylor.py :: cr_fraction_N96: 0.09063 -> 0.09271 (+2.3% rel, gate +- 0.00453)
+CR_NUM_CELLS=96 cr_sedov_taylor.py :: cr_fraction_over_selfsimilar_N96: 0.6483 -> 0.6631 (+2.3% rel, gate +- 0.0324)
+CR_NUM_CELLS=96 cr_sedov_taylor.py :: partition_identity_N96: 1.923e-05 -> 1.969e-05 (+2.4% rel, gate <= 0.0001)
+CR_NUM_CELLS=160 cr_sedov_taylor.py :: cr_fraction_over_selfsimilar_N160: 0.714 -> 0.7211 (+1.0% rel, gate +- 0.0357)
+CR_NUM_CELLS=160 cr_sedov_taylor.py :: partition_identity_N160: 4.127e-05 -> 4.19e-05 (+1.5% rel, gate <= 0.0001)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cr_fraction_kr13_N48: 0.1388 -> 0.1463 (+5.4% rel, gate +- 0.00694)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cr_fraction_cs14_N48: 0.07301 -> 0.07697 (+5.4% rel, gate +- 0.00365)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cr_fraction_kr13_over_selfsimilar_N48: 0.5286 -> 0.5574 (+5.4% rel, gate +- 0.0264)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cross_check_strong_N48: 5.695e-07 -> 7.892e-07 (+38.6% rel, gate <= 1e-06)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cross_check_weak_p0.02_N48: 8.555e-07 -> 9.313e-07 (+8.9% rel, gate <= 1.283e-06)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cross_check_weak_p0.03_N48: 7.725e-07 -> 8.563e-07 (+10.8% rel, gate <= 1.159e-06)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cross_check_weak_p0.08_N48: 9.896e-07 -> 1.138e-06 (+15.0% rel, gate <= 1.484e-06)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cross_check_weak_p0.16_N48: 1.673e-06 -> 1.569e-06 (-6.2% rel, gate <= 2.509e-06)
+CR_NUM_CELLS=48 cr_dsa_mach_dependence.py :: cross_check_weak_p0.4_N48: 2.253e-06 -> 2.596e-06 (+15.2% rel, gate <= 3.379e-06)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cr_fraction_kr13_N96: 0.1794 -> 0.1834 (+2.2% rel, gate +- 0.00897)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cr_fraction_cs14_N96: 0.09531 -> 0.0975 (+2.3% rel, gate +- 0.00477)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cr_fraction_kr13_over_selfsimilar_N96: 0.6833 -> 0.6985 (+2.2% rel, gate +- 0.0342)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: scale_ratio_error_N96: 0.06256 -> 0.06327 (+1.1% rel, gate <= 0.09384)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cross_check_strong_N96: 7.306e-07 -> 8.589e-07 (+17.6% rel, gate <= 1.096e-06)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cross_check_weak_p0.02_N96: 9.14e-07 -> 8.792e-07 (-3.8% rel, gate <= 1.371e-06)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cross_check_weak_p0.03_N96: 9.764e-07 -> 8.859e-07 (-9.3% rel, gate <= 1.465e-06)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cross_check_weak_p0.08_N96: 1.223e-06 -> 1.037e-06 (-15.2% rel, gate <= 1.834e-06)
+CR_NUM_CELLS=96 cr_dsa_mach_dependence.py :: cross_check_weak_p0.4_N96: 1.648e-06 -> 1.575e-06 (-4.4% rel, gate <= 2.472e-06)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cr_fraction_kr13_N160: 0.1966 -> 0.1986 (+1.0% rel, gate +- 0.00983)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cr_fraction_kr13_over_selfsimilar_N160: 0.749 -> 0.7565 (+1.0% rel, gate +- 0.0375)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cross_check_strong_N160: 7.452e-07 -> 9.164e-07 (+23.0% rel, gate <= 1.118e-06)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cross_check_weak_p0.02_N160: 9.585e-07 -> 1.009e-06 (+5.3% rel, gate <= 1.438e-06)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cross_check_weak_p0.03_N160: 9.307e-07 -> 1.09e-06 (+17.1% rel, gate <= 1.396e-06)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cross_check_weak_p0.08_N160: 1.121e-06 -> 1.074e-06 (-4.2% rel, gate <= 1.681e-06)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cross_check_weak_p0.16_N160: 1.93e-06 -> 1.711e-06 (-11.3% rel, gate <= 2.895e-06)
+CR_NUM_CELLS=160 cr_dsa_mach_dependence.py :: cross_check_weak_p0.4_N160: 1.943e-06 -> 1.916e-06 (-1.4% rel, gate <= 2.914e-06)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: ctrl_D_over_ref_R_N48: 0.739 -> 0.7476 (+1.2% rel, gate +- 0.037)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: dsa_D_over_ref_R_N48: 0.7783 -> 0.7871 (+1.1% rel, gate +- 0.0389)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: dsa_D_over_ref_t_N48: 0.7378 -> 0.7466 (+1.2% rel, gate +- 0.0369)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: ctrl_D_over_meas_N48: 0.6933 -> 0.7013 (+1.2% rel, gate +- 0.0347)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: dsa_D_over_meas_N48: 0.6631 -> 0.6719 (+1.3% rel, gate +- 0.0332)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: dsa_area_ratio_N48: 0.8537 -> 1.188 (+39.1% rel, gate +- 0.0427)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: dsa_inj_over_ref_N48: 0.7378 -> 0.7466 (+1.2% rel, gate +- 0.0369)
+CR_NUM_CELLS=48 cr_sedov_injection_rate.py :: dsa_E_cr_over_ref_end_N48: 0.4966 -> 0.5234 (+5.4% rel, gate +- 0.0248)
+CR_NUM_CELLS=96 cr_sedov_injection_rate.py :: dsa_area_ratio_N96: 0.8766 -> 1.195 (+36.3% rel, gate +- 0.0438)
+CR_NUM_CELLS=96 cr_sedov_injection_rate.py :: dsa_cap_loss_N96: -2.739e-07 -> -3.27e-07 (-19.4% rel, gate <= 0.001)
+CR_NUM_CELLS=96 cr_sedov_injection_rate.py :: dsa_E_cr_over_ref_end_N96: 0.6484 -> 0.6633 (+2.3% rel, gate +- 0.0324)
+CR_NUM_CELLS=160 cr_sedov_injection_rate.py :: dsa_area_ratio_N160: 0.8427 -> 1.14 (+35.2% rel, gate +- 0.0421)
+CR_NUM_CELLS=160 cr_sedov_injection_rate.py :: dsa_cap_loss_N160: -3.235e-07 -> -3.324e-07 (-2.8% rel, gate <= 0.001)
+CR_NUM_CELLS=160 cr_sedov_injection_rate.py :: dsa_E_cr_over_ref_end_N160: 0.7141 -> 0.7213 (+1.0% rel, gate +- 0.0357)
+CR_NUM_CELLS=128 cr_snr_clumpy_medium.py :: N128_uniform_ecr_over_etot: 0.08917 -> 0.09209 (+3.3% rel, gate +- 0.00268)
+CR_NUM_CELLS=128 cr_snr_clumpy_medium.py :: N128_clumpy_ecr_over_etot: 0.08716 -> 0.08996 (+3.2% rel, gate +- 0.00261)
+CR_NUM_CELLS=128 cr_snr_clumpy_medium.py :: N128_clumpy_effect: -0.02258 -> -0.02306 (-2.1% rel, gate +- 0.01)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_E_cr_over_ref_end_N48: 0.936 -> 0.9478 (+1.3% rel, gate +- 0.0281)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_xcr_shell_ratio_N48: 1.033 -> 1.063 (+2.9% rel, gate +- 0.031)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_pcr_shell_ratio_N48: 0.9881 -> 1.015 (+2.7% rel, gate +- 0.0296)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_pcr_peak_ratio_N48: 0.7511 -> 0.7731 (+2.9% rel, gate +- 0.0225)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_L1_p_cr_N48: 0.1196 -> 0.1142 (-4.5% rel, gate +- 0.012)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_energy_E_cr_over_ref_end_N48: 0.9169 -> 0.9285 (+1.3% rel, gate +- 0.0275)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_energy_xcr_shell_ratio_N48: 0.9788 -> 1.004 (+2.6% rel, gate +- 0.0294)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_energy_pcr_shell_ratio_N48: 0.9409 -> 0.9635 (+2.4% rel, gate +- 0.0282)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_energy_pcr_peak_ratio_N48: 0.7269 -> 0.7458 (+2.6% rel, gate +- 0.0218)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_energy_L1_p_cr_N48: 0.1187 -> 0.1091 (-8.1% rel, gate +- 0.0119)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_E_cr_over_ref_end_N48: 0.9343 -> 0.9458 (+1.2% rel, gate +- 0.028)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_mach_ratio_N48: 0.8675 -> 0.8804 (+1.5% rel, gate +- 0.026)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_xcr_shell_ratio_N48: 1.064 -> 1.098 (+3.2% rel, gate +- 0.0319)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_pcr_shell_ratio_N48: 0.9846 -> 1.011 (+2.7% rel, gate +- 0.0295)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_pcr_peak_ratio_N48: 0.7307 -> 0.7547 (+3.3% rel, gate +- 0.0219)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_L1_p_cr_N48: 0.1223 -> 0.1161 (-5.1% rel, gate +- 0.0122)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_energy_E_cr_over_ref_end_N48: 0.9204 -> 0.932 (+1.3% rel, gate +- 0.0276)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_energy_inj_over_ref_N48: 0.7202 -> 0.7277 (+1.0% rel, gate +- 0.0216)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_energy_mach_ratio_N48: 0.8733 -> 0.8854 (+1.4% rel, gate +- 0.0262)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_energy_xcr_shell_ratio_N48: 1.003 -> 1.032 (+2.9% rel, gate +- 0.0301)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_energy_pcr_shell_ratio_N48: 0.9396 -> 0.9632 (+2.5% rel, gate +- 0.0282)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_energy_pcr_peak_ratio_N48: 0.7206 -> 0.7403 (+2.7% rel, gate +- 0.0216)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.211_energy_L1_p_cr_N48: 0.121 -> 0.111 (-8.3% rel, gate +- 0.0121)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_dcd_E_cr_over_ref_end_N48: 0.8318 -> 0.8414 (+1.2% rel, gate +- 0.025)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_dcd_inj_over_ref_N48: 0.7314 -> 0.7402 (+1.2% rel, gate +- 0.0219)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_dcd_xcr_shell_ratio_N48: 0.7968 -> 0.82 (+2.9% rel, gate +- 0.0239)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_dcd_pcr_shell_ratio_N48: 0.7886 -> 0.8102 (+2.7% rel, gate +- 0.0237)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_dcd_pcr_peak_ratio_N48: 0.5789 -> 0.5958 (+2.9% rel, gate +- 0.0174)
+CR_NUM_CELLS=48 cr_sedov_self_similar.py :: z0.1_dcd_L1_p_cr_N48: 0.1797 -> 0.1699 (-5.5% rel, gate +- 0.018)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.1_L1_p_cr_N96: 0.0811 -> 0.07826 (-3.5% rel, gate +- 0.00811)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.1_energy_L1_p_cr_N96: 0.07728 -> 0.07374 (-4.6% rel, gate +- 0.00773)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.211_inj_over_ref_N96: 0.8046 -> 0.8134 (+1.1% rel, gate +- 0.0241)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.211_xcr_shell_ratio_N96: 1.049 -> 1.061 (+1.1% rel, gate +- 0.0315)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.211_L1_p_cr_N96: 0.08066 -> 0.07717 (-4.3% rel, gate +- 0.00807)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.211_energy_inj_over_ref_N96: 0.8127 -> 0.8215 (+1.1% rel, gate +- 0.0244)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.211_energy_xcr_shell_ratio_N96: 1.033 -> 1.045 (+1.2% rel, gate +- 0.031)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.211_energy_L1_p_cr_N96: 0.0774 -> 0.07323 (-5.4% rel, gate +- 0.00774)
+CR_NUM_CELLS=96 cr_sedov_self_similar.py :: z0.1_dcd_L1_p_cr_N96: 0.125 -> 0.1218 (-2.6% rel, gate +- 0.0125)

@@ -46,7 +46,7 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 
 # astronomix functions
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
-from astronomix.shock_finder3D._surface_area import surface_area_weights
+from astronomix.shock_finder3D._surface_area import column_area_weights, surface_area_weights
 from astronomix.shock_finder3D._shock_zones import sample_along_direction
 from astronomix.shock_finder3D._energy_dissipation import (
     _thermalization_efficiency,
@@ -59,14 +59,34 @@ def dsa_shock_finder_kwargs(cr_config) -> dict:
     ``CosmicRayGreyConfig`` -- for callers (tests, diagnostics) that need the
     same Mach numbers / fluxes the injection sees."""
     if cr_config.dsa_adaptive_shock_sampling:
-        return dict(
+        kwargs = dict(
             mach_sampling_adaptive=True,
             mach_sampling_extend=True,
             mach_sampling_steps=cr_config.dsa_shock_sampling_max_steps,
             mach_velocity_consistency=cr_config.dsa_velocity_consistency,
             mach_estimator="velocity" if cr_config.dsa_mach_from_velocity else "pressure",
         )
+        if cr_config.dsa_continuous_normal_surface:
+            kwargs["continuous_normal"] = True
+        return kwargs
     return dict()
+
+
+def dsa_area_weights(primitive_state, sf_result, cr_config, registered_variables):
+    """Shock area per surface cell in units of ``dx^(ndim-1)`` that DSA injection uses
+    (``dsa_area_weighting``): ``column_area_weights`` with ``dsa_continuous_normal_surface``
+    (the default) and adaptive sampling, ``surface_area_weights`` (Phase B DB7) for the
+    full-segment surface; ones without weighting."""
+    pressure = primitive_state[registered_variables.pressure_index]
+    density = primitive_state[registered_variables.density_index]
+    if not cr_config.dsa_area_weighting:
+        return jnp.ones_like(pressure)
+    if cr_config.dsa_continuous_normal_surface and cr_config.dsa_adaptive_shock_sampling:
+        return column_area_weights(
+            pressure, density, sf_result.shock_surface_cells, sf_result.shock_zones,
+            sigma=cr_config.dsa_area_normal_smoothing,
+        )
+    return surface_area_weights(pressure, density, sigma=cr_config.dsa_area_normal_smoothing)
 
 
 @partial(jax.jit, static_argnames=["max_steps"])
@@ -449,11 +469,10 @@ def inject_crs_at_shocks(
 
     if cr_config.dsa_area_weighting:
         # A surface cell represents dx^(ndim-1) / |n|_inf of shock area, not
-        # dx^(ndim-1) (Phase B DB7; shock_finder3D._surface_area).
-        delta_e_cr_density = delta_e_cr_density * surface_area_weights(
-            primitive_state[registered_variables.pressure_index],
-            primitive_state[registered_variables.density_index],
-            sigma=cr_config.dsa_area_normal_smoothing,
+        # dx^(ndim-1) (Phase B DB7; shock_finder3D._surface_area), shared
+        # between the cells of a grid line with the continuous-normal surface.
+        delta_e_cr_density = delta_e_cr_density * dsa_area_weights(
+            primitive_state, sf_result, cr_config, registered_variables
         )
 
     if cr_config.dsa_adaptive_shock_sampling:

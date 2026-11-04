@@ -271,6 +271,25 @@ class CosmicRayGreyConfig(NamedTuple):
     #: non-symmetric orientations and over-weights by 5-10%.
     dsa_area_normal_smoothing: float = 2.0
 
+    #: shock surface DSA injects at (only with dsa_adaptive_shock_sampling;
+    #: default since 2026-11-04): True finds the surface along the continuous
+    #: shock normal (find_shocks_pfrommer(continuous_normal=True), the surface
+    #: of astronomix/shock_finder_v2; zones and Mach sampling stay ours) and
+    #: weights the area with shock_finder3D._surface_area.column_area_weights
+    #: (with dsa_area_weighting). False: one surface cell per zone segment
+    #: along the dominant axis (argmin of div v), weighted by
+    #: surface_area_weights. Late-time injection equals False's within ~1% on
+    #: the Sedov shell and B8.2's planar shocks (CWB E_cr 0.995); the energy
+    #: per unit shock area depends less on the orientation (body diagonals -4%
+    #: instead of -24% at 160^3), and injection calls are 2-4x cheaper at
+    #: 96^3-256^3 (False's surface search is O(N^4)). Sedov-type blasts end
+    #: with 5% (48^3) to 1% (160^3) more CR energy, injected while the blast is
+    #: a few cells across (closer to the self-similar reference). The zones of
+    #: shock_finder_v2 (along the normal too) are not used: a compression a few
+    #: cells upstream left a one-cell zone gap the Mach walk crossed (B8.2
+    #: (1,1,1) M = 10: +70%). pytests/shock_finder3D/finder_v2_comparison/README.md.
+    dsa_continuous_normal_surface: bool = True
+
     #: density-consistent DSA deposit (only with dsa_adaptive_shock_sampling;
     #: opt-in, Phase B decision DB9 = option b, 2026-10-21): scale each
     #: post-shock cell's share of the injection by

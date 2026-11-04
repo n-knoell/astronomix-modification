@@ -69,6 +69,7 @@ def _velocity_consistent(primitive_state, config, registered_variables, shock_di
         "mach_sampling_extend",
         "mach_velocity_consistency",
         "mach_estimator",
+        "continuous_normal",
     ],
 )
 def find_shocks_pfrommer(
@@ -82,6 +83,7 @@ def find_shocks_pfrommer(
     mach_sampling_extend: bool = False,
     mach_velocity_consistency: float = 0.0,
     mach_estimator: str = "pressure",
+    continuous_normal: bool = False,
 ) -> ShockFinderResult:
     """
     Main entry point: Identify shocks using Pfrommer et al. 2017 methodology.
@@ -176,6 +178,22 @@ def find_shocks_pfrommer(
             the CR-loaded shock compresses more than the gas-only RH relation
             assumes. The thermal-energy flux uses this Mach number with the
             same pre-shock state.
+        continuous_normal: default False here; DSA turns it on by default
+            (``CosmicRayGreyConfig.dsa_continuous_normal_surface``), 2D/3D: phase 3
+            along the continuous shock normal instead of the dominant grid axis
+            (the surface of ``astronomix/shock_finder_v2``; the zones stay ours).
+            The surface is every zone cell whose div v is a
+            local minimum one cell ahead / behind along the normal
+            (``_shock_surface._find_shock_surface_along_normal``), instead of
+            the argmin over the whole zone segment along the dominant axis.
+            The surface no longer changes where the dominant normal component
+            switches axis, and it costs O(N^3) instead of the segment scan's
+            O(N^4) (0.6 vs 174 ms at 160^3, 3.5 vs 1135 ms at 256^3, RTX 2080
+            Ti). It can hold more than one cell per grid line through a zone,
+            so its area needs ``_surface_area.column_area_weights`` instead of
+            ``surface_area_weights``. Mach sampling (phases 4-5) is unchanged.
+            Sedov / planar / CWB comparison:
+            ``pytests/shock_finder3D/finder_v2_comparison/README.md``.
 
     Returns:
         ShockFinderResult
@@ -196,7 +214,10 @@ def find_shocks_pfrommer(
     # Phase 1: shock direction (ndim, *spatial_shape)
     shock_direction = _calculate_shock_direction(pressure, density, config, r)
 
-    # Phase 2: shock zones (*spatial_shape)
+    # Phase 2: shock zones (*spatial_shape). Always along the dominant axis:
+    # with zones along the continuous normal too, a compression a few cells
+    # upstream left only a one-cell zone gap that the adaptive walk crossed
+    # (finder_v2_comparison/README.md, Part 4)
     shock_zones = identify_shock_zones(
         primitive_state, config, registered_variables,
         helper_data, shock_direction, mach_min,
@@ -205,7 +226,7 @@ def find_shocks_pfrommer(
     # Phase 3: shock surface (*spatial_shape)
     shock_surface = identify_shock_surface(
         primitive_state, shock_zones, shock_direction,
-        config, registered_variables,
+        config, registered_variables, continuous_normal,
     )
 
     if mach_sampling_adaptive:

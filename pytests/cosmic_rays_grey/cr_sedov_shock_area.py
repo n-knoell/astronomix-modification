@@ -112,9 +112,12 @@ def test_cr_sedov_shock_area():
         assert np.isclose(raw["dsa_t"][i], t)
         R, M_true = float(raw["dsa_R_true"][i]), float(raw["dsa_M_true"][i])
         state_j = jnp.asarray(state)
+        # the full-segment surface (one cell per grid line along the dominant axis) that DB7's
+        # 1 / |n|_inf weight is derived for, requested explicitly (DSA defaults to the
+        # continuous-normal surface with column_area_weights since 2026-11-04)
         sf = find_shocks_pfrommer(
-            state_j, config, rv, helper_data,
-            mach_min=cr_params.dsa_mach_min, **dsa_shock_finder_kwargs(cr_config),
+            state_j, config, rv, helper_data, mach_min=cr_params.dsa_mach_min,
+            **dsa_shock_finder_kwargs(cr_config._replace(dsa_continuous_normal_surface=False)),
         )
         surface = np.asarray(sf.shock_surface_cells)
         mach = np.asarray(sf.mach_numbers)[surface]

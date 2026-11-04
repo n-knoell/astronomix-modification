@@ -484,14 +484,14 @@ def get_post_pre_shock_values_adaptive(
     return outputs
 
 
-def sample_along_direction(field, shock_direction, steps):
+def sample_along_direction(field, shock_direction, steps, order=1):
     """Sample ``field`` at ``cell + steps * shock_direction`` for every cell
     (trilinear, ``mode="nearest"``), i.e. at the points the adaptive walk of
     ``get_post_pre_shock_values_adaptive`` sampled when ``steps`` is one of
     its ``return_sample_steps`` outputs (negative for the post-shock side).
     Lets callers read further fields at the walk's sample points without
     repeating the walk. The sample positions carry no gradient (as in the
-    walk)."""
+    walk). ``order=0`` reads the nearest cell instead of interpolating."""
     shape = field.shape
     base = jnp.stack(
         jnp.meshgrid(*[jnp.arange(n, dtype=shock_direction.dtype) for n in shape], indexing="ij"),
@@ -499,7 +499,7 @@ def sample_along_direction(field, shock_direction, steps):
     )
     coords = jax.lax.stop_gradient(base + steps[None] * shock_direction)
     return jax.scipy.ndimage.map_coordinates(
-        field, [coords[d] for d in range(field.ndim)], order=1, mode="nearest"
+        field, [coords[d] for d in range(field.ndim)], order=order, mode="nearest"
     )
 
 

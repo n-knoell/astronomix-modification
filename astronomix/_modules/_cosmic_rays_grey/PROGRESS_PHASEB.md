@@ -48,6 +48,7 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | DB7 (new) | Area under-count of oblique shock surfaces (Y10): correct the per-cell area by `1/|n|_inf`? | **decided 2026-10-19** (user): yes, with the normal of the Gaussian-smoothed temperature (`dsa_area_weighting=True`, `dsa_area_normal_smoothing=2`) | Sedov injection area 1.05 / 1.07 / 1.03; B8.2 angle dependence < 2%; log 2026-10-20 |
 | DB8 (new) | CR back-reaction on the finder Mach number (Y11): the finder reads M from the **gas**-pressure jump, which the injected CRs lower. (a) Mach from the total-pressure jump (composite RH), (b) from the density/velocity jump, or (c) accept? | decided 2026-10-14: (c) accept for now (user). Reopened 2026-10-27 (velocity Mach since DB4 reads high: +6.6% at `zeta` 0.1, +11% KR13, and low with CR-loaded upstream). **Decided 2026-10-27** (user): CR-aware inversion of the velocity jump, a switch that is on by default (`dsa_mach_cr_aware=None` = on with adaptive sampling + velocity Mach); gas Mach convention (KR13) kept; DB9 keeps the gas-only `rho_RH`; log 2026-10-27 | planar vs true M: `zeta` 0.1 +2.6% (was +6.6%), 0.5 -1.7% (+8.0%), KR13 strong +2.1 / +2.4% (+11%), CR-loaded upstream (B8.5) -0.4 to +10% (-17 to -57%); Sedov injection 3.5% lower (N 48 / 96) |
 | DB9 (new) | Deposit surplus (B7.2): CRs deposited into the smeared, under-compressed shock shell later lose less to expansion than CRs injected at the RH post-shock density. (a) accept and document (it offsets part of the injection deficit), (b) density-consistent deposit: scale each cell's share by `min(1, (rho/rho_RH)^(gamma_cr - 1))`, the withheld energy stays in the gas, or (c) other? | **decided 2026-10-21** (user): (b), opt-in (`dsa_density_consistent_deposit=True`, default off); implemented + regression run 2026-10-21 | with the flag: Sedov E_cr / prediction 0.985 / 0.990 / 0.990, E_cr/E end 0.84 / 0.90 / 0.93 (injection deficit no longer offset), planar P_cr -0.8%. Before: injected-part surplus +18 / +14 / +11% (Sedov N 48 / 96 / 160), +2.6% planar (B7.4). Scratch prototype of (b): planar -0.8%, Sedov -13 / -7 / -5% (over-corrects where the shell is unresolved); log 2026-10-21 |
+| DB10 (new) | DSA shock surface: full-segment argmin (one cell per grid line along the dominant axis, `1/|n|_inf` weight) or the continuous-normal surface of `shock_finder_v2` (our walk, `column_area_weights`)? | **decided 2026-11-04: continuous-normal surface with our (dominant-axis) zones, default on** (`dsa_continuous_normal_surface=True`); v2's zones along the normal rejected (walk crossed a one-cell zone gap into a nearby compression, B8.2 (1,1,1) M 10 +70%) | late-time Sedov injection = old within 1.2%; energy per shock area at body diagonals -4% (old -24%, N 160); injection 2-4x cheaper (CWB DSA run 328 vs 540 s); Sedov E_cr end +5.4/+2.3/+1.0% (N 48/96/160); 5 tests re-baselined; log 2026-11-04 |
 
 ## Infrastructure
 
@@ -73,6 +74,42 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
       0.4% at N 48 / 96 / 160
 
 ## Log (newest first)
+
+### 2026-11-04 (later): DB10 decided: our zones + continuous-normal surface, default on (re-baselined; uncommitted)
+
+**Fix.** `find_shocks_pfrommer(continuous_normal=True)` now changes only phase 3 (surface); the zones (criterion 3) are always ours along the dominant axis, so the one-cell zone gap of the failure mode below is gone (v2 zone sampler removed). `CosmicRayGreyConfig.dsa_continuous_normal_surface` now defaults to `True`.
+
+**Results** (`pytests/shock_finder3D/finder_v2_comparison/README.md` Part 5):
+- B8.2 (1,1,1) M 10, injection / exact: 0.972 / 1.002 (old 0.966 / 0.998; v2 zones 1.177 / 1.208).
+- (2,1,0) M 10: 0.800 / 0.848 (old 0.875 / 0.891); (2,1,1) M 10 `zeta` 0.1: 0.889 (old 0.946).
+  - Per snapshot, D agrees with old within 1% except in the last snapshot of the |k| >= sqrt 5 runs. There the next periodic slab is 1-2 cells ahead and old misreads too (median M 6.4 / 4.35 instead of 10).
+- Sedov late-time injection: equal to old within 1.2%.
+- Sedov `E_cr_over_ref_end`: +5.4 / +2.3 / +1.0% at N 48 / 96 / 160, injected while the blast is a few cells across.
+- Sedov orientation at N 160: body-diagonal energy per area 0.958 (old 0.762). Mach scatter equal.
+- CWB 128: E_cr 0.995; DSA run 328 vs 540 s.
+- Sedov 256 finder test: PASS.
+
+**Regression.** DSA jobs, flag forced, against the HEAD registry; GPUs 0/1/3, pins verified.
+- All physics gates pass.
+- Registry gates fail in 5 tests:
+  - `cr_sedov_taylor` and `cr_dsa_mach_dependence`: CR fraction +5.4% at N 48;
+  - `cr_sedov_injection_rate`: plain cell-count `dsa_area_ratio` 1.14-1.20, against about 0.85 before (several cells per line, divided out by `column_area_weights`; `area_ratio_inj` unchanged);
+  - `cr_snr_clumpy_medium`: +3.3%;
+  - `cr_sedov_self_similar` N 48: shell ratios +3%, `L1_p_cr` -5 to -8%.
+- These 5 tests were re-baselined from the logs (entries dated 2026-11-04). `cr_sedov_self_similar` N 160 was not re-measured.
+
+### 2026-11-04: DB10 continuous-normal DSA surface: opt-in, not default (superseded by the entry above) (failure mode found; uncommitted)
+
+**What.** `CosmicRayGreyConfig.dsa_continuous_normal_surface` (opt-in, default `False`; only with `dsa_adaptive_shock_sampling`): `find_shocks_pfrommer(continuous_normal=True)` builds the shock zones (criterion 3 sampled one cell along the normal) and the surface (zone cells whose div v is a local minimum one cell ahead / behind along the normal) as `astronomix/shock_finder_v2` does, O(N^3) instead of the full-segment scan's O(N^4); Mach walk, velocity Mach and CR-aware flux unchanged. That surface can hold several cells per grid line, so the area weight is `_surface_area.column_area_weights` (DB7's `1/|n|_inf` divided by the surface cells in the same zone segment along the dominant axis, reach 3). `cr_grey_injection.dsa_area_weights` picks the weight; `cr_dsa_mach_dependence.py` and `cr_sedov_injection_rate.py` use it. The finder's own `continuous_normal` default stays `False`. Comparison, figures and numbers: `pytests/shock_finder3D/finder_v2_comparison/README.md` (Parts 2-3b).
+
+**Results.** Late-time Sedov injection rate equals the old surface within 1% (`area_ratio_inj`, `D_over_ref`), planar B8.1 / B7.4 unchanged, CWB 128 `E_cr` 0.997 (DSA run -38% wall). Per-cell DSA Mach scatter equal (N 160: 0.014 both); the body-diagonal Mach dip of the old surface is gone (0.960 -> 0.993 of the median); injected energy per exact shock area at the body diagonals -7% (old -24%, N 160, t 0.07). Sedov-type blasts end with more CR energy (`cr_sedov_taylor` +5 / +8 / +6%, N 48 / 96 / 160; SNR uniform +14%, clumpy +9%): the new surface injects 9-12% more while the blast is a few cells across (t 0.007, R 8-16 cells; higher Mach read there), from t 0.014 on the rates agree within 1-3%. Both stay below the self-similar reference (`E_cr_over_ref_end` 0.714 -> 0.757 at N 160).
+
+**Regression** (all CR tests except M7, flag forced on): 86 pass, 12 fail = `test_cr_ring_flux_cap_alone` (pre-existing) + 11 DSA-energy gates. A trial switch of the default with those values re-baselined passed all 18 affected tests, but was reverted (registry unchanged):
+
+**Failure mode (why not default).** B8.2's injection probe (`cr_oblique_planar_shocks.py`, N 64) with the flag: (1,1,1) injection / exact (M 3 / M 10, `zeta` 0 / 0.1) 1.04 / 1.07 / 1.18 / 1.21 (old surface 1.01 / 1.04 / 0.97 / 1.00); (2,1,1) M 10 `zeta` 0.1 1.005 (old 0.946); (2,1,0) M 10 0.91 (old 0.88-0.89); (1,0,0) identical, the rest within 1%. Table: `finder_v2_comparison/README.md` Part 4. Per snapshot (`finder_v2_comparison/planar_inj_check.py`): the amount D = sum(flux w) agrees within 2% until the last snapshot, where it is +82%; the injection pipeline itself (spread, cap) is neutral (inj / zeta D equal). In that snapshot the next periodic compression sits ~3 cells upstream; the continuous-normal zones leave a one-cell gap to its zone (the old zones two), the adaptive walk runs 5-8 steps (old 2) and samples the pre-shock state inside the compression: same cells, median M 7.0 instead of 10.0 but mean flux 2.6x (c_pre and rho_pre high). Any shock with a compression a few cells upstream is exposed (clumpy media, SN-driven turbulence, reverse shocks). Possible fixes, untested: our (dominant-axis) zones with the continuous-normal surface, or stop the walk at a zone gap.
+
+`cr_sedov_shock_area.py`, `cr_oblique_planar_shocks.py` and `cr_sedov_mach_estimators.py` study DB7's weight on the full-segment surface and now request it explicitly (`dsa_continuous_normal_surface=False`). The forced regression run overwrote `/export/scratch/nknoell/phaseB/db7/db7_N48.npz` with continuous-normal values; replaced by a full-segment rerun with the current code (area_exact 1.025; the 2026-10-14 original is lost).
+
 
 ### 2026-10-27: DB8 reopened + decided: CR-aware velocity-jump Mach number, default on (implemented; regression passed; uncommitted)
 

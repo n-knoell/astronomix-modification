@@ -1,0 +1,119 @@
+## sedov64 (N=64)
+ours surface              : area weight 0.978, cells/column 1.000, columns with >1 cell 0.000
+v2 zones + ours surface   : area weight 0.978, cells/column 1.000, columns with >1 cell 0.000
+ours zones + v2 surface   : area weight 1.388, cells/column 1.366, columns with >1 cell 0.364
+v2 surface                : area weight 1.385, cells/column 1.364, columns with >1 cell 0.364
+variant                                   surf   valid  M/Msed  s_tot  s_sys s_rand  s_loc cnt_cv empty r_spr
+zours_sours_ours_p_off0                   4968    4968   0.849  0.012  0.006  0.009  0.010  0.768   160  0.25
+zours_sours_ours_u_off0                   4968    4968   0.931  0.021  0.006  0.019  0.021  0.768   160  0.25
+zours_sours_v2_off0                       4968    4968   0.837  0.050  0.022  0.030  0.036  0.768   160  0.25
+zours_sours_v2_profile_off0               4968    4968   0.863  0.013  0.012  0.006  0.004  0.768   160  0.25
+zours_sv2_ours_p_off0                     7784    7784   0.851  0.012  0.010  0.009  0.009  0.766   144  0.39
+zours_sv2_ours_u_off0                     7784    7784   0.930  0.017  0.005  0.016  0.016  0.766   144  0.39
+zours_sv2_v2_off0                         7784    7784   0.842  0.056  0.015  0.043  0.058  0.766   144  0.39
+zours_sv2_v2_offv2                        7784    7784   0.841  0.045  0.029  0.033  0.046  0.766   144  0.39
+zours_sv2_v2_profile_off0                 7784    7784   0.863  0.012  0.013  0.006  0.005  0.766   144  0.39
+zours_sv2_v2_profile_offv2                7784    7784   0.862  0.012  0.014  0.006  0.005  0.766   144  0.39
+zv2_sours_ours_p_off0                     4968    4968   0.849  0.012  0.006  0.009  0.010  0.768   160  0.25
+zv2_sours_ours_u_off0                     4968    4968   0.931  0.021  0.006  0.019  0.021  0.768   160  0.25
+zv2_sours_v2_off0                         4968    4968   0.846  0.018  0.011  0.014  0.014  0.768   160  0.25
+zv2_sours_v2_profile_off0                 4968    4968   0.863  0.014  0.012  0.006  0.004  0.768   160  0.25
+zv2_sv2_ours_p_off0                       7760    7760   0.851  0.012  0.009  0.008  0.009  0.765   144  0.39
+zv2_sv2_ours_u_off0                       7760    7760   0.930  0.017  0.005  0.016  0.016  0.765   144  0.39
+zv2_sv2_v2_off0                           7760    7760   0.849  0.016  0.012  0.013  0.013  0.765   144  0.39
+zv2_sv2_v2_offv2                          7760    7760   0.850  0.018  0.011  0.017  0.020  0.765   144  0.39
+zv2_sv2_v2_profile_off0                   7760    7760   0.863  0.013  0.011  0.006  0.005  0.765   144  0.39
+zv2_sv2_v2_profile_offv2                  7760    7760   0.862  0.012  0.011  0.006  0.005  0.765   144  0.39
+full finder ours_full_p     :    0.01 s, valid 9264, median M 119.17
+full finder ours_full_u     :    0.01 s, valid 9264, median M 130.65
+full finder v2_full         :    0.00 s, valid 12872, median M 119.19
+full finder v2_full_profile :    0.00 s, valid 12872, median M 121.22
+
+## sedov128 (N=128)
+ours surface              : area weight 0.990, cells/column 1.000, columns with >1 cell 0.000
+v2 zones + ours surface   : area weight 0.990, cells/column 1.000, columns with >1 cell 0.000
+ours zones + v2 surface   : area weight 1.366, cells/column 1.346, columns with >1 cell 0.343
+v2 surface                : area weight 1.359, cells/column 1.342, columns with >1 cell 0.342
+variant                                   surf   valid  M/Msed  s_tot  s_sys s_rand  s_loc cnt_cv empty r_spr
+zours_sours_ours_p_off0                  32352   32352   0.899  0.013  0.013  0.005  0.004  0.262    16  0.33
+zours_sours_ours_u_off0                  32352   32352   0.950  0.014  0.010  0.010  0.010  0.262    16  0.33
+zours_sours_v2_off0                      32352   32352   0.874  0.028  0.007  0.024  0.026  0.262    16  0.33
+zours_sours_v2_profile_off0              32352   32352   0.904  0.012  0.011  0.004  0.002  0.262    16  0.33
+zours_sv2_ours_p_off0                    45008   45008   0.898  0.011  0.012  0.006  0.005  0.269    16  0.41
+zours_sv2_ours_u_off0                    45008   45008   0.952  0.013  0.009  0.011  0.011  0.269    16  0.41
+zours_sv2_v2_off0                        45008   45008   0.876  0.035  0.008  0.030  0.037  0.269    16  0.41
+zours_sv2_v2_offv2                       45008   45008   0.876  0.044  0.009  0.035  0.042  0.269    16  0.41
+zours_sv2_v2_profile_off0                45008   45008   0.905  0.012  0.012  0.004  0.002  0.269    16  0.41
+zours_sv2_v2_profile_offv2               45008   45008   0.905  0.012  0.012  0.004  0.002  0.269    16  0.41
+zv2_sours_ours_p_off0                    32352   32352   0.900  0.013  0.013  0.005  0.004  0.262    16  0.33
+zv2_sours_ours_u_off0                    32352   32352   0.950  0.014  0.010  0.010  0.010  0.262    16  0.33
+zv2_sours_v2_off0                        32352   32352   0.890  0.017  0.011  0.014  0.015  0.262    16  0.33
+zv2_sours_v2_profile_off0                32352   32352   0.903  0.012  0.011  0.004  0.002  0.262    16  0.33
+zv2_sv2_ours_p_off0                      44784   44784   0.899  0.011  0.011  0.006  0.005  0.267    16  0.41
+zv2_sv2_ours_u_off0                      44784   44784   0.952  0.013  0.009  0.011  0.011  0.267    16  0.41
+zv2_sv2_v2_off0                          44784   44784   0.894  0.019  0.014  0.014  0.016  0.267    16  0.41
+zv2_sv2_v2_offv2                         44784   44784   0.891  0.018  0.012  0.015  0.017  0.267    16  0.41
+zv2_sv2_v2_profile_off0                  44784   44784   0.905  0.012  0.012  0.004  0.002  0.267    16  0.41
+zv2_sv2_v2_profile_offv2                 44784   44784   0.904  0.011  0.012  0.004  0.002  0.267    16  0.41
+full finder ours_full_p     :    0.09 s, valid 36744, median M 127.37
+full finder ours_full_u     :    0.10 s, valid 36744, median M 134.67
+full finder v2_full         :    0.02 s, valid 49560, median M 126.15
+full finder v2_full_profile :    0.04 s, valid 49560, median M 128.32
+
+## sedov256 (N=256)
+ours surface              : area weight 0.994, cells/column 1.000, columns with >1 cell 0.000
+v2 zones + ours surface   : area weight 0.994, cells/column 1.000, columns with >1 cell 0.000
+ours zones + v2 surface   : area weight 1.365, cells/column 1.341, columns with >1 cell 0.340
+v2 surface                : area weight 1.359, cells/column 1.337, columns with >1 cell 0.337
+variant                                   surf   valid  M/Msed  s_tot  s_sys s_rand  s_loc cnt_cv empty r_spr
+zours_sours_ours_p_off0                 145656  145656   0.935  0.010  0.008  0.004  0.002  0.121     0  0.43
+zours_sours_ours_u_off0                 145656  145656   0.967  0.010  0.007  0.006  0.006  0.121     0  0.43
+zours_sours_v2_off0                     145656  145656   0.899  0.032  0.010  0.028  0.029  0.121     0  0.43
+zours_sours_v2_profile_off0             145656  145656   0.938  0.010  0.008  0.003  0.001  0.121     0  0.43
+zours_sv2_ours_p_off0                   196136  196136   0.936  0.010  0.009  0.004  0.002  0.038     0  0.49
+zours_sv2_ours_u_off0                   196136  196136   0.969  0.010  0.008  0.006  0.006  0.038     0  0.49
+zours_sv2_v2_off0                       196136  196136   0.900  0.035  0.008  0.033  0.035  0.038     0  0.49
+zours_sv2_v2_offv2                      196136  196136   0.899  0.045  0.007  0.038  0.041  0.038     0  0.49
+zours_sv2_v2_profile_off0               196136  196136   0.939  0.010  0.008  0.003  0.001  0.038     0  0.49
+zours_sv2_v2_profile_offv2              196136  196136   0.939  0.010  0.008  0.003  0.001  0.038     0  0.49
+zv2_sours_ours_p_off0                   145656  145656   0.935  0.010  0.008  0.004  0.002  0.121     0  0.43
+zv2_sours_ours_u_off0                   145656  145656   0.967  0.010  0.007  0.006  0.006  0.121     0  0.43
+zv2_sours_v2_off0                       145656  145656   0.916  0.024  0.013  0.020  0.019  0.121     0  0.43
+zv2_sours_v2_profile_off0               145656  145656   0.939  0.010  0.008  0.003  0.001  0.121     0  0.43
+zv2_sv2_ours_p_off0                     195480  195480   0.936  0.010  0.008  0.004  0.002  0.032     0  0.49
+zv2_sv2_ours_u_off0                     195480  195480   0.969  0.010  0.008  0.007  0.006  0.032     0  0.49
+zv2_sv2_v2_off0                         195480  195480   0.920  0.024  0.016  0.019  0.018  0.032     0  0.49
+zv2_sv2_v2_offv2                        195480  195480   0.918  0.023  0.015  0.020  0.020  0.032     0  0.49
+zv2_sv2_v2_profile_off0                 195480  195480   0.939  0.010  0.007  0.003  0.001  0.032     0  0.49
+zv2_sv2_v2_profile_offv2                195480  195480   0.940  0.010  0.007  0.003  0.001  0.032     0  0.49
+full finder ours_full_p     :    1.33 s, valid 145656, median M 132.78
+full finder ours_full_u     :    1.35 s, valid 145656, median M 137.39
+full finder v2_full         :    0.16 s, valid 195480, median M 130.43
+full finder v2_full_profile : failed (out of memory)
+
+## cwb128 (N=128)
+variant                                   surf   valid   M_med   M_p90  s_tot  s_loc
+zours_sours_ours_p_off0                  21520   21520    6.10    7.62  0.176  0.023
+zours_sours_ours_u_off0                  21520   21393    5.13    7.55  0.248  0.027
+zours_sours_v2_off0                      21520   21520    5.60    7.61  0.272  0.059
+zours_sours_v2_profile_off0              21520   21520    6.28    7.81  0.136  0.008
+zours_sv2_ours_p_off0                    28149   28149    5.89    7.36  0.162  0.032
+zours_sv2_ours_u_off0                    28149   27686    4.93    7.24  0.224  0.029
+zours_sv2_v2_off0                        28149   28149    5.29    7.34  0.247  0.071
+zours_sv2_v2_offv2                       28149   28149    5.29    7.21  0.263  0.081
+zours_sv2_v2_profile_off0                28149   28149    6.11    7.59  0.125  0.009
+zours_sv2_v2_profile_offv2               28149   28149    6.11    7.58  0.126  0.009
+zv2_sours_ours_p_off0                    21520   21520    6.10    7.62  0.176  0.023
+zv2_sours_ours_u_off0                    21520   21393    5.13    7.55  0.248  0.027
+zv2_sours_v2_off0                        21520   21520    5.63    7.63  0.254  0.058
+zv2_sours_v2_profile_off0                21520   21520    6.28    7.81  0.131  0.008
+zv2_sv2_ours_p_off0                      28074   28074    5.90    7.37  0.162  0.032
+zv2_sv2_ours_u_off0                      28074   27627    4.93    7.24  0.224  0.029
+zv2_sv2_v2_off0                          28074   28074    5.35    7.35  0.229  0.072
+zv2_sv2_v2_offv2                         28074   28074    5.37    7.24  0.251  0.081
+zv2_sv2_v2_profile_off0                  28074   28074    6.12    7.60  0.120  0.010
+zv2_sv2_v2_profile_offv2                 28074   28074    6.12    7.58  0.119  0.010
+full finder ours_full_p     :    0.10 s, valid 25699, median M 5.94
+full finder ours_full_u     :    0.10 s, valid 25572, median M 4.91
+full finder v2_full         :    0.02 s, valid 33653, median M 5.23
+full finder v2_full_profile :    0.03 s, valid 33653, median M 6.00

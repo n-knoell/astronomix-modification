@@ -1,0 +1,7 @@
+contact at x index 74 (box-centred x = +0.082)
+ours (1/|n|_inf)         D/D_ours total 1.000, wind-1 side 1.000, star-2 side 1.000, injecting cells 25572
+hybrid + column w        D/D_ours total 0.989, wind-1 side 0.995, star-2 side 0.986, injecting cells 33206
+hybrid + unit w          D/D_ours total 1.036, wind-1 side 1.027, star-2 side 1.039, injecting cells 33206
+hybrid + 1/|n|_inf       D/D_ours total 1.111, wind-1 side 1.067, star-2 side 1.132, injecting cells 33206
+v2 default + column w    D/D_ours total 0.742, wind-1 side 0.568, star-2 side 0.820, injecting cells 33653
+v2 profile + column w    D/D_ours total 0.809, wind-1 side 0.606, star-2 side 0.901, injecting cells 33653

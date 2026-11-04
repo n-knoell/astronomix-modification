@@ -53,11 +53,15 @@ at which the reference reaches ``R``; and against the simulated shock itself,
 ``D / D_meas = (A_inj / 4 pi R^2) (<f> / f_meas)``.
 
 - ``A_inj / 4 pi R^2``: a shock with normal ``n`` crosses ``|n|_inf`` cells
-  per ``dx^2`` of its area (``A_cells / 4 pi R^2``, the plain cell count, is
-  ~0.84 at every resolution; ``<|n|_inf>`` = 0.831 over a sphere). With the
-  area weight each cell counts ``dx^2 / |n|_inf`` with the normal of the
-  Gaussian-smoothed temperature (``A_oblique``; ~1.02-1.07 here, slightly
-  above 1 since the normal is still tilted ~3 deg away from the grid axes).
+  per ``dx^2`` of its area along the dominant axis (on the full-segment
+  surface ``A_cells / 4 pi R^2``, the plain cell count, is ~0.84 at every
+  resolution; ``<|n|_inf>`` = 0.831 over a sphere). With the area weight each
+  cell counts ``dx^2 / |n|_inf`` with the normal of the Gaussian-smoothed
+  temperature (``A_oblique``; ~1.02-1.07 here, slightly above 1 since the
+  normal is still tilted ~3 deg away from the grid axes). The continuous-normal
+  surface (default since 2026-11-04) can hold more than one cell per grid line
+  (``A_cells`` ~1.14-1.20); ``column_area_weights`` divides the weight by that
+  count and gives the same ``A_oblique``.
 - ``<f> / f_meas``: at these Mach numbers (~150-500, ``delta(M)`` saturated)
   ~ ``(M_finder / M_true)^3``. So the finder's Mach bias enters the injection
   with its third power. Behind the thin Sedov shell the pressure falls
@@ -116,7 +120,6 @@ from astronomix import (
     time_integration,
 )
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
-from astronomix.shock_finder3D._surface_area import surface_area_weights
 
 # astronomix modules
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
@@ -125,6 +128,7 @@ from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
 )
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
     dsa_mach_and_flux,
+    dsa_area_weights,
     dsa_shock_finder_kwargs,
     inject_crs_at_shocks,
 )
@@ -294,11 +298,12 @@ def _analyse(run, reference, zeta):
         flux = np.asarray(flux_dsa)
         # A shock with normal n crosses |n|_inf cells per dx^2 of its area (one
         # surface cell per grid line along the dominant axis), so the true area
-        # a surface cell represents is dx^2 / |n|_inf (DB7). A_oblique: that
+        # a surface cell represents is dx^2 / |n|_inf (DB7; divided by the cells
+        # per grid line on the continuous-normal surface). A_oblique: that
         # area with the smoothed-temperature normal; the injection weights by
         # it when dsa_area_weighting is on (default), else counts dx^2 per cell.
-        weights = np.asarray(surface_area_weights(
-            p_gas, rho, sigma=cr_config.dsa_area_normal_smoothing))
+        weights = np.asarray(dsa_area_weights(
+            state, sf, cr_config._replace(dsa_area_weighting=True), rv))
         w_inj = weights if cr_config.dsa_area_weighting else np.ones_like(weights)
         D = float(np.sum(flux * w_inj)) * dx**2
         A_oblique = float(np.sum(weights[surface])) * dx**2

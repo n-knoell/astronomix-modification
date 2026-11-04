@@ -121,7 +121,6 @@ from astronomix import (
     time_integration,
 )
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
-from astronomix.shock_finder3D._surface_area import surface_area_weights
 
 # astronomix modules
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
@@ -134,6 +133,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
     _spread_over_post_shock_cells,
     dsa_efficiency_kang_ryu_2013,
     dsa_mach_and_flux,
+    dsa_area_weights,
     dsa_shock_finder_kwargs,
     inject_crs_at_shocks,
 )
@@ -336,13 +336,10 @@ def _formula_cross_check(control, cross_check_tol):
         expected_efficiency * thermal_energy_flux
         / kr13_config.grid_spacing * CROSS_CHECK_DT
     )
-    if cr_config.dsa_area_weighting:
-        # each surface cell represents dx^2 / |n|_inf of shock area (DB7)
-        expected_delta_e_cr = expected_delta_e_cr * surface_area_weights(
-            control_state[registered_variables.pressure_index],
-            control_state[registered_variables.density_index],
-            sigma=cr_config.dsa_area_normal_smoothing,
-        )
+    # each surface cell represents dx^2 / |n|_inf of shock area (DB7)
+    expected_delta_e_cr = expected_delta_e_cr * dsa_area_weights(
+        control_state, sf_result, cr_config, registered_variables
+    )
     if adaptive:
         # adaptive sampling spreads each shock's injection over its post-shock
         # cells (cr_grey_injection._spread_over_post_shock_cells); the spread
