@@ -1,0 +1,8 @@
+DB11: cr_wind_bubble DSA run (N 128) under different CR transport; energies in L_w t_end
+run                             E_cr     inj E_cr/inj    work    rest   R_fs  v_sh l_pre/dx kap/v_sh/dx  steps
+advective (v_red 0)           0.0675  0.0711    0.949 +0.0000 -0.0037  0.408  0.71     1.35           -   5989
+undamped wave (v_red 1)       0.1552  0.0768    2.021 +0.0717 +0.0067  0.398  0.70     4.93           -   5989
+kappa 0.001 (v_red 100)       0.0717  0.0727    0.986 +0.0057 -0.0067  0.408  0.72     1.43        0.15  20052
+kappa 0.01 (v_red 100)        0.0959  0.0748    1.282 +0.0239 -0.0028  0.408  0.76     2.64        1.41  20056
+kappa 0.1 (v_red 100)         0.1020  0.0778    1.312 +0.0213 +0.0030  0.408  0.76     9.32       14.08  20023
+kappa 1 (v_red 100)           0.0798  0.0796    1.003 +0.0029 -0.0027  0.408  0.74    17.62      143.77  20058

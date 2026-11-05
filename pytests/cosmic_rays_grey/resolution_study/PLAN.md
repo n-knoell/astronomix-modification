@@ -560,3 +560,195 @@ Convergence methodology:
 6. CWB upstream: **`run_cwb` defaults (no dual energy, no wind floor; apex M ≈ 10)**,
    consistent with all earlier CWB + DSA results; the dual-energy + 1e4 K variant
    (apex M ≈ 150) only on request.
+
+---
+
+## 9. Extension D: DSA with CR diffusion (plan, 2026-11-05)
+
+Status: plan only. Steps D0-D4 run on the local RTX 2080 Ti ladders. D5 moves the
+diffusion series to the H200s (compgpu12) for higher N, after the H200 extension of
+`EXTENSION_KICKSTART.md` (or in the same queue).
+
+### 9.1 Why
+
+Sections 1-8 measure the shock finder and the injection with the CRs advected with the gas
+(S-SS / S-CP: `v_red = 0`) or with κ far below the grid scale (CWB, κ = 1 code ≈ 5e20 cm²/s:
+precursor ~0.2 cells at 128³; decision 5). That is the right baseline, because it isolates
+finder and injection from CR transport. It is not the physics we want to study, which is DSA
+with CR diffusion.
+
+DB11 (user decision 2026-11-05: `cr_wind_bubble` baselines at `v_red = 0`) showed that
+diffusion changes the outcome at the 30% level. In the wind bubble's κ scan (N 128,
+`v_red` 100, `resolution_study/pics/DB11_summary.txt`) E_cr / injected is:
+
+| κ (code) | 0 | 1e-3 | 1e-2 | 0.1 | 1 |
+|---|---|---|---|---|---|
+| E_cr / injected | 0.95 | 0.99 | 1.28 | 1.31 | 1.00 |
+
+CRs that diffuse ahead of the shock are compressed again when it overtakes them. A
+precursor also pre-compresses the gas, so the sub-shock Mach number the finder reads drops
+below the hydro value. That is a regime the finder (and DB8's CR-aware Mach) has not been
+tested in.
+
+### 9.2 Questions
+
+- **QD1 Precursor.** Does the measured precursor length converge to the expected
+  κ / v_sh (planar; ~0.63 of it in the spherical wind bubble), and from how many cells per
+  precursor length?
+- **QD2 Finder in a precursor.** Does the finder still find one shock per front? Does it
+  read the sub-shock or the total compression, and how does its Mach error scale with
+  R/dx *and* l/dx? Do false-positive zones appear in the smooth pre-compression?
+- **QD3 Injection and re-acceleration.** How do the injection rate and E_cr / injected
+  converge with N at fixed λ = κ / (v_sh R)? Separate the injection (finder × ζ) from the
+  re-acceleration (centred −P_cr ∇·v work, `db11_probe.py`'s accumulator).
+- **QD4 Q5 rule with diffusion.** Cells per shock radius for 10% / 5% in Mach, injection
+  and E_cr, as a function of λ. Does the rule of Q5 survive, or does l/dx take over?
+- Not answered here: whether re-accelerating freshly injected CRs at their own shock
+  double-counts DSA (the injection efficiency already stands for the full acceleration).
+  The study measures the size of the effect; whether it is physical is a model decision
+  (new DB item if needed).
+
+### 9.3 Design
+
+1. **Fix the physics by the dimensionless λ = κ / (v_sh R), not by κ.** λ is the precursor
+   length per shock radius. At fixed λ an N ladder is a clean convergence series: the
+   precursor goes from unresolved (l/dx = λ R/dx < 1) to resolved. In the wind-bubble scan,
+   κ = 1e-3 / 1e-2 / 0.1 / 1 is λ ≈ 0.003 / 0.03 / 0.3 / 3, and re-acceleration peaks at
+   λ ≈ 0.03-0.3. **Three representative values, the same in every setup: λ = 0.03, 0.1,
+   0.3** (user 2026-11-05: three κ suffice). λ = 0.03 is a precursor that is unresolved on
+   most of the local ladder (nearest to the advective limit), 0.1 sits at the re-acceleration
+   peak, 0.3 is well resolved but needs box margin (item 3). Each setup translates them into
+   its own κ (Sedov has no physical units, so a common κ in cm²/s does not exist). The
+   advective (λ = 0) runs are the anchor, not a fourth κ: they exist already for S-SS, S-CP
+   and the CWB (κ = 1 there is λ ≈ 0.02, effectively advective), and W runs them anyway.
+   - λ is not constant in time: in Sedov v_sh R ∝ R^(-1/2), so λ grows ×2.3 from R 0.08 to
+     0.42; in the wind bubble it falls as t^(-0.2); in the CWB it is constant. Quote λ at
+     the end of the run (Sedov: at the stop radius). The analysis bins by the local λ(t),
+     the same way the existing study bins by R/dx.
+   - "Physically sensible": GeV Bohm (~1e22 cm²/s) is λ << 0.01 in every setup, which is the
+     advective limit we already have. The Galactic average (~3e28) fills the box, and in the
+     CWB at 128³ it already went NaN (2026-10-20). The window λ 0.03-0.3 corresponds to
+     ~1e24-1e26 cm²/s in the wind bubble (self-generated turbulence near the shock), which
+     is where transport and resolution both matter.
+2. **`v_red` well above the flow, with a sensitivity check.** The F_cr relaxation
+   (`diffusive_relaxation=True`) relaxes to Fick's law only for `v_red` >> v_sh and
+   >> κ / l = v_sh. **Default: `v_red` ≈ 5 × the largest upstream flow speed of the run**
+   (wind bubble: 100 code = 5 × v_∞; the scan's runs took 3.4× the steps of `v_red = 0`).
+   At one N per setup the run is repeated with 2 × `v_red`, and must agree within the
+   per-run noise (as X1). The CWB's current `v_red` = 1000 is only 1.2 × v_∞1 and must be
+   raised (~4000 code) for its diffusion series.
+3. **Box margin.** CRs that leave the box are lost to the budget. Stop each run where the
+   front plus three precursor lengths reaches the box half-width, i.e. R (1 + 3 λ) ≤ 0.5
+   (Sedov, `--stop-radius`). For S-CP that is R ≤ 0.46 / 0.38 / 0.26 at λ = 0.03 / 0.1 /
+   0.3, so λ = 0.3 loses the low-Mach end (M ≳ 4 only). Record the boundary CR flux (energy
+   budget as `cr_wind_bubble_diffusion.py` check 1).
+4. **No analytic reference.** With a precursor the Sedov / Weaver solutions are no longer
+   exact, and the sub-shock Mach is physically below the hydro Mach. Convergence is judged
+   by self-convergence on the r = 2 chains (Richardson, observed order), with the highest N
+   as the reference. The hydro (λ = 0) runs stay as the anchor: λ → 0 must recover them.
+   For QD1 the planar steady precursor exp(−x v_sh / κ) is the reference shape.
+5. **Same machinery.** Same setups, ladders, snapshot schedule, InjectionAccumulator and
+   metrics (Section 4) as the existing study. New per-snapshot diagnostics (from
+   `db11_probe.py` / `db11_analyse.py`): radial P_cr profile, precursor length
+   l = ∫_{R_fs} e_cr dr / e_cr(R_fs), binned −P_cr ∇·v work, boundary CR flux, and the
+   gas pre-compression ρ_1 / ρ_0 just upstream of the finder's zone.
+6. **Cost.** Diffusion runs cost ~3-5 × the advective run of the same N (`v_red` sets the
+   time step). Local budget, all D runs: ~60-90 GPU-h on the 2080 Tis. D0 refines it.
+
+### 9.4 Setups and ladders (local GPUs, 2080 Ti)
+
+| Setup | Base | Runs per N | Ladder (local) | Notes |
+|---|---|---|---|---|
+| **W**: wind bubble (new in the study) | `cr_wind_bubble._run_wind_bubble` (now takes `reduced_streaming_speed`, `diffusion_coefficient`) | DSA ζ 0.1 at λ 0.03, 0.1, 0.3 (+ advective anchor) | 64, 96, 128, 160, 192 | moderate Mach (~3) at the forward shock, cheap; the setup where the effect was found |
+| **S-SS** | `build_sedov_ss` | ζ 0.1 at λ 0.03, 0.1, 0.3 | 48, 96, 192 (+64, 128 for r = 2 chains) | strong shock; `v_red` from v_sh at R_start 0.15; λ 0.3 only covers R 0.15 → 0.26 (box margin) |
+| **S-CP** (p₀ 0.6) | `build_sedov_ss` + p₀ | ζ 0.1 and KR13 at λ 0.03, 0.1, 0.3 | 48, 64, 96, 128, 192 | DSA-relevant M 2.5-30; KR13 is the most Mach-sensitive (A 5-12), so the precursor matters most here |
+| **CWB** | `build_cwb` | ζ 0.1 at κ for λ_wind2 = 0.03, 0.1, 0.3 (≈ 1.7, 5.5, 17 code) | 64, 96, 128, 192 | stationary shocks, λ constant; the existing κ = 1 runs (λ ≈ 0.02 wind 2 / 0.004 wind 1) are the anchor; `v_red` raised to ~4000 |
+
+S-PE gets no diffusion series: the unresolved start dominates its E_cr (S3), and S-SS covers
+the strong-shock case.
+
+Rough λ → κ (to be measured in D0): wind bubble κ ≈ λ × 0.29 code (v_sh 0.72, R 0.41);
+CWB wind 2 κ ≈ λ × 55 code (u₁ ≈ 695, R_ts ≈ 0.08), so λ 0.1 / 0.3 ≈ κ 5 / 17 code
+(≈ 3e21 / 8e21 cm²/s). Precursor in cells: l/dx = λ R/dx. On the local ladders λ = 0.03
+reaches l ≈ 2-3 cells only at the top (R/dx ≈ 90), λ = 0.1 is resolved from R/dx ≈ 30, and
+the CWB wind-2 precursor at λ 0.1 is ~1 cell at 128³. This is the reason for D5.
+
+### 9.5 Work plan
+
+#### D0: sizing and checks (local GPU + CPU)
+- [ ] From the existing λ = 0 runs: v_sh(R) and R at the stop time per setup → κ per λ,
+  `v_red`, stop radius, step-count and memory estimate (`step0_probe.py memory` with
+  `diffusive_relaxation` on; F_cr adds 3 variables).
+- [ ] Extend the run scripts: `sedov_study.py` / `cwb_study.py` / a new `wind_study.py` take
+  `--kappa`, `--vred` (`--kappa` switches on `diffusive_relaxation`), and record the new
+  diagnostics of 9.3 item 5. `db11_probe.py` is the template for W.
+- [ ] `v_red` sensitivity at one N per setup (2 × `v_red`).
+- [ ] **Check the existing S-PE runs for the DB11 effect.** `build_sedov_pe` (and the
+  `cr_sedov_taylor` regression) run at the placeholder `v_red = 1` without relaxation. The
+  undamped CR front (0.75 v_sh + v_red/√3) outruns the blast once v_sh < 2.3, i.e.
+  M ≲ 180 at p₀ = 1e-4. The S-PE runs end at M ≈ 150, so the last part of every S-PE run
+  is in the DB11 regime. Compare E_cr / injected at the end with an S-PE `v_red = 0` rerun
+  at one N; if it differs, mark the affected S-PE rows in RESULTS.md (S3, S5).
+- [x] `cr_wind_bubble_diffusion.py` passed 2026-11-05 (N 128, λ ≈ 0.3: precursor 0.63 κ/v_sh, E_cr ×1.51 over advective, 55 min); use
+  it as the D1 reference point.
+- Done when: a table of (setup, λ, κ, `v_red`, stop radius, N, est. hours, memory) is in
+  RESULTS.md, and the D runs are queued as `jobs/D_*.sh`.
+
+#### D1: wind bubble W
+- [ ] λ 0.03 / 0.1 / 0.3 (+ advective anchor) × N 64-192. QD1 (precursor shape and length vs κ / v_sh),
+  QD3 (E_cr / injected, injection vs work split, as `DB11_summary.txt`).
+- Done when: E_cr / injected and l / (κ / v_sh) have observed orders on 64-128 and 96-192.
+
+#### D2: Sedov S-SS and S-CP
+- [ ] S-SS ζ 0.1 at λ 0.03, 0.1, 0.3; S-CP ζ 0.1 and KR13 at λ 0.03, 0.1, 0.3.
+- [ ] Analysis as S1-S5 (`s*_analyse.py`), plus the precursor diagnostics and the
+  finder-in-precursor checks (QD2: zones per front, Mach read vs sub-shock and total
+  compression from the radial profile).
+
+#### D3: CWB
+- [ ] κ for λ_wind2 = 0.03, 0.1, 0.3 × N 64-192 (anchor: the existing κ = 1 runs). Watch the NaN risk (high κ went NaN at 128³ on 2026-10-20,
+  in CR-dominated wind cells): one 128³ probe per κ before the ladder.
+- [ ] Analysis as C1-C5; the wind-1 apex over-read and the 1.5-1.6× injection bias:
+  do they change with a resolved precursor?
+
+#### D4: local summary
+- [ ] QD1-QD4 for the local ladders in RESULTS.md (new section "D: CR diffusion"), with
+  the λ-dependent Q5 table, and which λ / setups need higher N (input for D5).
+- [ ] Log in PROGRESS_PHASEB.md; open DB items for anything found.
+
+#### D5: H200 (compgpu12)
+- [ ] Same rules as `EXTENSION_KICKSTART.md`: NATIVE_JAX pinned, at most 2 H200s at once,
+  `launcher/autoqueue.py`, raw data in the same tree (`sedov/<setup>/N<n>/`, `cwb/N<n>/`,
+  `wind/N<n>/`), and first an overlap check (one local D run repeated on the H200 must
+  match before data are mixed).
+- [ ] Higher N only for the series D4 marks as unresolved: expected λ = 0.03 on Sedov
+  (256, 384, 448) and the CWB diffusion series (256, 320, 384), where the wind-2 precursor
+  gets to ≥ 3 cells.
+- [ ] Order: after the hydro (λ = 0) H200 extension, so that every diffusion series has
+  its λ = 0 anchor at the same N; or in the same queue if the hydro runs are already done.
+
+### 9.6 Decisions for the user (defaults in bold)
+
+**All decided 2026-11-05 (user): items 1-5 as the defaults below; λ = 0.3 kept (not ~1).**
+
+1. λ values: **0.03, 0.1, 0.3 in every setup** (decided 2026-11-05: three representative
+   values). Sub-choice decided: keep 0.3. The alternative was λ ~ 1, the CR-escape regime
+   (CRs leave the shock region faster than it overtakes them; E_cr / injected falls back to
+   ~1.0 at λ ≈ 3 in the scan), possible in W only (Sedov box margin) and with boundary losses.
+2. Wind bubble as a third study setup (W): **include** (cheap, the setup the effect was
+   found in).
+3. `v_red`: **~5 × the largest upstream flow speed**, checked with 2 × `v_red` at one N.
+4. S-PE: **no diffusion series**; only the D0 check of the existing S-PE runs for the DB11
+   effect.
+5. Re-acceleration double counting: **measure only**; the model decision is separate.
+   What it is: ζ (constant or KR13) is calibrated on the full DSA problem, in which CRs
+   scatter back and forth across the shock, including their upstream precursor. In the
+   two-fluid picture that acceleration *is* the −P_cr ∇·v work on the CRs in the precursor
+   and at the sub-shock. With the precursor resolved, our grey fluid performs that work
+   itself on the CRs we injected at the same shock, on top of the ζ that already contains
+   it: double counting. It is physical where the compressed CRs come from elsewhere
+   (pre-existing / ambient CRs, CRs from another shock, e.g. termination-shock CRs reaching
+   the wind bubble's forward shock): that is genuine re-acceleration. It vanishes in the
+   advective limit (injected CRs sit downstream and never re-cross) and when CRs escape
+   (λ >> 1). Optional D0 probe to size the self part: injection off after t_end / 2 at
+   λ 0.1 (as `db11_probe.py --off-after`), gain of the existing CRs over the second half.

@@ -9,6 +9,8 @@ progress bar, for ``common.run_segments``.
   efficiency model selectable for S-CP).
 * ``build_sedov_ss``: S-SS / S-CP, started from the self-similar state.
 * ``build_cwb``: the CWB of ``_cwb_setup.run_cwb`` with its defaults.
+
+All builders pin ``backend=NATIVE_JAX`` (the backend of every 2080 Ti run).
 """
 
 import common  # noqa: F401  (paths, autocvd patch)
@@ -16,7 +18,8 @@ import common  # noqa: F401  (paths, autocvd patch)
 import numpy as np
 import jax.numpy as jnp
 
-from astronomix import (CARTESIAN, FINITE_VOLUME, HLLC, MINMOD, SimulationConfig, SimulationParams,
+from astronomix import (CARTESIAN, FINITE_VOLUME, HLLC, MINMOD, NATIVE_JAX, BackendConfig, SimulationConfig,
+                        SimulationParams,
                         construct_primitive_state, finalize_config, get_helper_data,
                         get_registered_variables)
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import (
@@ -36,7 +39,7 @@ def build_sedov_pe(num_cells, zeta, p_ambient=item7.P_AMBIENT, kr13=False, t_end
     config = SimulationConfig(
         geometry=CARTESIAN, solver_mode=FINITE_VOLUME, riemann_solver=HLLC, limiter=MINMOD,
         dimensionality=3, num_cells=num_cells, exact_end_time=True, progress_bar=False,
-        cosmic_ray_grey_config=cr_config,
+        cosmic_ray_grey_config=cr_config, backend_config=BackendConfig(backend=NATIVE_JAX),
     )
     helper_data = get_helper_data(config)
     rv = get_registered_variables(config)
@@ -77,7 +80,7 @@ def build_sedov_ss(num_cells, zeta, p_ambient=item7.P_AMBIENT, r_start=0.15, kr1
     config = SimulationConfig(
         geometry=CARTESIAN, solver_mode=FINITE_VOLUME, riemann_solver=HLLC, limiter=MINMOD,
         dimensionality=3, num_cells=num_cells, exact_end_time=True, progress_bar=False,
-        cosmic_ray_grey_config=cr_config,
+        cosmic_ray_grey_config=cr_config, backend_config=BackendConfig(backend=NATIVE_JAX),
     )
     helper_data = get_helper_data(config)
     rv = get_registered_variables(config)
@@ -106,4 +109,9 @@ def build_sedov_ss(num_cells, zeta, p_ambient=item7.P_AMBIENT, r_start=0.15, kr1
 def build_cwb(num_cells, zeta):
     """The CWB of ``_cwb_setup.run_cwb`` (defaults) with efficiency ``zeta``."""
     state, config, params, helper_data, rv = _cwb_setup.build_cwb(num_cells, dsa_efficiency=zeta)
-    return state, config._replace(progress_bar=False), params, helper_data, rv
+    # NATIVE_JAX pinned (as on the 2080 Ti runs): OPTIMAL_BACKEND would resolve to
+    # PALLAS on CC >= 8.0 GPUs (H200 extension, EXTENSION_KICKSTART.md); the FV
+    # Pallas kernel is off for HLLC / grey CRs anyway, so this keeps one code path.
+    config = config._replace(progress_bar=False,
+                             backend_config=config.backend_config._replace(backend=NATIVE_JAX))
+    return state, config, params, helper_data, rv

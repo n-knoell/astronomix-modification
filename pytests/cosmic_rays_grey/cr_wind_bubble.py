@@ -43,8 +43,8 @@ baseline + differential CR check" scope:**
    energy exactly (diverts thermal pressure into ``e_cr``, touching neither
    density nor velocity), the thermal+kinetic energy the DSA run "loses"
    relative to the control run must equal the CR energy it gained. Calibrated:
-   holds to a relative error of ~3e-4 (dsa_efficiency=0.1, dsa_mach_min=1.3,
-   forward-shock Mach ~3). ``E_cr`` is ~13% of the DSA run's own realized
+   holds to a relative error of ~5e-4 (dsa_efficiency=0.1, dsa_mach_min=1.3,
+   forward-shock Mach ~3). ``E_cr`` is ~5.7% of the DSA run's own realized
    total (thermal+kinetic+CR) energy.
 
 3. **Absolute energy budget (both runs):** final thermal+kinetic+CR energy
@@ -63,15 +63,14 @@ old 1.6% agreement of the forward shock with Weaver's ``R_2`` was a
 cancellation: the 0.66 luminosity shrank the bubble by 0.66^(1/5) ~ 0.92,
 compensating the thick-shell lead above.
 
-**Open (2026-11-05, DB11):** the DSA run ends with ~2.0x more CR energy in the box
-than was ever injected (injected 0.077 ``L_w t_end``, ``E_cr`` 0.155 ``L_w t_end``). Cause:
-this test runs the two-moment CR transport without ``diffusive_relaxation`` and with the
-placeholder ``reduced_streaming_speed = 1`` -- an undamped CR wave at ``v_red / sqrt(3)``
-relative to the gas. From t ~ 0.3 t_end on the forward shock is slower than that front, the
-CRs stream ahead of it and the shock re-compresses them (the gas pays: total energy and the
-partition identity below are unaffected). With ``reduced_streaming_speed = 0`` the run holds
-0.95 of the injected energy. Which transport this test should use is open; see
-PROGRESS_PHASEB.md DB11. The CR fraction band below (0.001, 0.2) still holds.
+**CR transport: advection only (DB11, user decision 2026-11-05).** ``reduced_streaming_speed
+= 0``: the CRs move with the gas, the zero-diffusion limit (valid where kappa / v_sh << dx, e.g.
+GeV CRs at near-Bohm diffusion), as in the Sedov DSA tests. The DSA run then holds 0.95 of the
+injected energy. Until 2026-11-05 the test inherited the placeholder ``reduced_streaming_speed =
+1`` without ``diffusive_relaxation``: an undamped CR wave at ``v_red / sqrt(3)`` that outran the
+forward shock after ~0.3 t_end and was re-compressed by it, leaving ~2.0x the injected energy in
+the box (``E_cr / E_total`` 0.131). What diffusion does is probed separately in
+``cr_wind_bubble_diffusion.py``.
 
 **Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
 the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
@@ -85,6 +84,10 @@ velocity Mach, continuous-normal surface): ``E_cr / E_total`` 0.1312, energy-par
 3.2e-4, control-vs-DSA total energy 4.3e-5, energy budget 1.0017 (control) / 1.0016 (DSA), Weaver
 forward shock 8.7% and interior pressure 6.7%. (At the pre-fix luminosity the current defaults give
 ``E_cr / E_total`` 0.113: the 2026-10-10 value 0.043 predates the Phase B DSA changes.)
+
+**Re-measured 2026-11-05 with ``reduced_streaming_speed = 0``** (DB11): ``E_cr / E_total`` 0.0570,
+energy-partition identity 5.5e-4, control-vs-DSA total energy 3.1e-5, energy budget 1.0017 /
+1.0016, Weaver forward shock 8.7% and interior pressure 6.7% (control run, unchanged).
 """
 
 # ==== GPU selection ====
@@ -140,6 +143,11 @@ BOX_SIZE = 1.2  # code_units.code_length units (-> 3.6 pc physical box)
 NUM_INJECTION_CELLS = 4
 DSA_MACH_MIN = 1.3
 DSA_EFFICIENCY = 0.1
+# CRs advected with the gas only (no two-moment wave, no diffusion; as the Sedov DSA tests).
+# The library default 1.0 is a placeholder: without diffusive_relaxation it makes the CRs an
+# undamped wave at v_red / sqrt(3) that outruns the forward shock after ~0.3 t_end and is
+# re-compressed by it (DB11). Diffusion is probed separately (resolution_study/db11_probe.py).
+REDUCED_STREAMING_SPEED = 0.0
 
 CODE_UNITS = CodeUnits(3 * u.parsec, 1 * u.M_sun, 100 * u.km / u.s)
 
@@ -154,8 +162,16 @@ T_END_PHYS = 1e4 * u.yr
 T_END = T_END_PHYS.to(CODE_UNITS.code_time).value
 
 
-def _run_wind_bubble(dsa_efficiency: float):
-    """Run one 3D CR-DSA wind-bubble simulation; return final state and diagnostics."""
+def _run_wind_bubble(
+    dsa_efficiency: float,
+    reduced_streaming_speed: float = REDUCED_STREAMING_SPEED,
+    diffusion_coefficient: float | None = None,
+):
+    """Run one 3D CR-DSA wind-bubble simulation; return final state and diagnostics.
+
+    ``diffusion_coefficient`` (code units) switches on the F_cr relaxation
+    (``diffusive_relaxation``, CR diffusion); then ``reduced_streaming_speed`` must lie well
+    above the flow speeds (``cr_wind_bubble_diffusion.py``)."""
     config = SimulationConfig(
         progress_bar=True,
         geometry=CARTESIAN,
@@ -171,7 +187,8 @@ def _run_wind_bubble(dsa_efficiency: float):
             num_injection_cells=NUM_INJECTION_CELLS,
         ),
         cosmic_ray_grey_config=CosmicRayGreyConfig(
-            grey_cosmic_rays=True, diffusive_shock_acceleration=True
+            grey_cosmic_rays=True, diffusive_shock_acceleration=True,
+            diffusive_relaxation=diffusion_coefficient is not None,
         ),
     )
     helper_data = get_helper_data(config)
@@ -207,7 +224,9 @@ def _run_wind_bubble(dsa_efficiency: float):
         gamma=GAMMA,
         wind_params=wind_params,
         cosmic_ray_grey_params=CosmicRayGreyParams(
-            dsa_efficiency=dsa_efficiency, dsa_mach_min=DSA_MACH_MIN
+            dsa_efficiency=dsa_efficiency, dsa_mach_min=DSA_MACH_MIN,
+            reduced_streaming_speed=reduced_streaming_speed,
+            **({} if diffusion_coefficient is None else {"diffusion_coefficient": diffusion_coefficient}),
         ),
     )
 
@@ -274,11 +293,11 @@ def test_cr_wind_bubble(
             the wind normalisation fix).
         partition_tol: Max relative error on the differential CR
             energy-partition identity (see module docstring). Calibrated
-            observed error ~3.2e-4.
+            observed error ~5.5e-4.
         self_consistency_tol: Max relative error between the control and DSA
             runs' own realized total (thermal+kinetic+CR) energy -- both draw
             from the same injected energy budget. Calibrated observed error
-            ~4.3e-5.
+            ~3.1e-5.
         energy_budget_tol: Max relative error of each run's realized total
             energy minus the initial ambient thermal energy against the
             nominal wind energy ``L_w * t_end``. Calibrated observed error

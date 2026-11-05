@@ -8,7 +8,7 @@ Runs the cr_wind_bubble DSA setup in segments and records
 ``--off-after f`` sets ``dsa_efficiency = 0`` from ``f t_end`` on (do existing CRs gain energy?).
 
 Output ``RAW/db11/<name>.npz``. Usage:
-    python db11_probe.py --name def [--n 128] [--off-after 0.5] [--snapshots 24] [--vred 0] [key=value ...]
+    python db11_probe.py --name def [--n 128] [--off-after 0.5] [--snapshots 24] [--vred 0] [--kappa 0.1] [key=value ...]
 """
 
 import argparse
@@ -34,8 +34,10 @@ ap.add_argument("--n", type=int, default=m.NUM_CELLS)
 ap.add_argument("--off-after", type=float, default=None)
 ap.add_argument("--snapshots", type=int, default=24)
 ap.add_argument("--vred", type=float, default=None, help="CosmicRayGreyParams.reduced_streaming_speed")
+ap.add_argument("--kappa", type=float, default=None,
+                help="CosmicRayGreyParams.diffusion_coefficient (code units); also sets diffusive_relaxation")
 args, rest = ap.parse_known_args()
-overrides = {}
+overrides = {} if args.kappa is None else {"diffusive_relaxation": True}
 for item in rest:
     key, value = item.split("=")
     overrides[key] = {"0": False, "1": True}.get(value, value)
@@ -70,7 +72,8 @@ params = SimulationParams(
     wind_params=WindParams(wind_mass_loss_rates=jnp.array([mdot]), wind_final_velocities=jnp.array([vinf])),
     cosmic_ray_grey_params=m.CosmicRayGreyParams(
         dsa_efficiency=m.DSA_EFFICIENCY, dsa_mach_min=m.DSA_MACH_MIN,
-        **({} if args.vred is None else {"reduced_streaming_speed": args.vred})),
+        **({} if args.vred is None else {"reduced_streaming_speed": args.vred}),
+        **({} if args.kappa is None else {"diffusion_coefficient": args.kappa})),
 )
 L_w = 0.5 * mdot * vinf**2
 
@@ -115,7 +118,7 @@ times = np.geomspace(0.02 * m.T_END, m.T_END, args.snapshots)
 off = None if args.off_after is None else args.off_after * m.T_END
 if off is not None:
     times = np.unique(np.append(times, off))
-print(f"db11 {args.name} N {N} gpu {gpu} overrides {overrides} off_after {args.off_after} vred {args.vred}", flush=True)
+print(f"db11 {args.name} N {N} gpu {gpu} overrides {overrides} off_after {args.off_after} vred {args.vred} kappa {args.kappa}", flush=True)
 
 snaps = []
 
