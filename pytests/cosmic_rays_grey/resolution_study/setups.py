@@ -10,6 +10,11 @@ progress bar, for ``common.run_segments``.
 * ``build_sedov_ss``: S-SS / S-CP, started from the self-similar state.
 * ``build_cwb``: the CWB of ``_cwb_setup.run_cwb`` with its defaults.
 
+Extension D (PLAN.md Section 9): every builder takes ``kappa`` (CR diffusion coefficient,
+code units; switches on ``diffusive_relaxation``) and ``vred`` (``reduced_streaming_speed``).
+``None`` keeps the setup's default transport (S-SS / S-CP ``v_red = 0``, S-PE the library
+placeholder 1, CWB kappa = 1 and v_red = 1000).
+
 All builders pin ``backend=NATIVE_JAX`` (the backend of every 2080 Ti run).
 """
 
@@ -29,13 +34,26 @@ import cr_sedov_taylor as item7
 import _cwb_setup
 
 
-def build_sedov_pe(num_cells, zeta, p_ambient=item7.P_AMBIENT, kr13=False, t_end=item7.T_END):
+def _with_transport(cr_config, cr_params, kappa, vred):
+    """Extension D: CR diffusion (``kappa``, F_cr relaxation) and ``v_red`` overrides."""
+    if kappa is not None:
+        cr_config = cr_config._replace(diffusive_relaxation=True)
+        cr_params = cr_params._replace(diffusion_coefficient=float(kappa))
+    if vred is not None:
+        cr_params = cr_params._replace(reduced_streaming_speed=float(vred))
+    return cr_config, cr_params
+
+
+def build_sedov_pe(num_cells, zeta, p_ambient=item7.P_AMBIENT, kr13=False, t_end=item7.T_END,
+                   kappa=None, vred=None):
     """S-PE: the item-7 point explosion (E = rho_0 = 1, tanh-tapered thermal
     deposit of radius ``R_EXPLOSION`` over ``SMOOTH_CELLS`` cells), constant
     ``zeta`` or KR13 (``kr13``, ``zeta`` then unused)."""
     cr_config = CosmicRayGreyConfig(grey_cosmic_rays=True, diffusive_shock_acceleration=True)
     if kr13:
         cr_config = cr_config._replace(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013)
+    cr_config, cr_params = _with_transport(
+        cr_config, CosmicRayGreyParams(dsa_efficiency=zeta, dsa_mach_min=item7.DSA_MACH_MIN), kappa, vred)
     config = SimulationConfig(
         geometry=CARTESIAN, solver_mode=FINITE_VOLUME, riemann_solver=HLLC, limiter=MINMOD,
         dimensionality=3, num_cells=num_cells, exact_end_time=True, progress_bar=False,
@@ -55,14 +73,13 @@ def build_sedov_pe(num_cells, zeta, p_ambient=item7.P_AMBIENT, kr13=False, t_end
     config = finalize_config(config, state.shape)
     params = SimulationParams(
         t_end=t_end, gamma=item7.GAMMA,
-        cosmic_ray_grey_params=CosmicRayGreyParams(
-            dsa_efficiency=zeta, dsa_mach_min=item7.DSA_MACH_MIN),
+        cosmic_ray_grey_params=cr_params,
     )
     return state, config, params, helper_data, rv
 
 
 def build_sedov_ss(num_cells, zeta, p_ambient=item7.P_AMBIENT, r_start=0.15, kr13=False,
-                   t_end=item7.T_END, density_floor=0.02, n_sub=4):
+                   t_end=item7.T_END, density_floor=0.02, n_sub=4, kappa=None, vred=None):
     """S-SS / S-CP: the blast started from the self-similar two-fluid state at
     radius ``r_start`` (``cr_sedov_self_similar._run``: cell averages of the
     conserved densities, core density floored, ``v_red = 0``, gamma_cr 4/3), in
@@ -77,6 +94,8 @@ def build_sedov_ss(num_cells, zeta, p_ambient=item7.P_AMBIENT, r_start=0.15, kr1
     cr_config = CosmicRayGreyConfig(grey_cosmic_rays=True, diffusive_shock_acceleration=True)
     if kr13:
         cr_config = cr_config._replace(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013)
+    cr_config, cr_params = _with_transport(
+        cr_config, CosmicRayGreyParams(dsa_efficiency=zeta, dsa_mach_min=item7.DSA_MACH_MIN), kappa, vred)
     config = SimulationConfig(
         geometry=CARTESIAN, solver_mode=FINITE_VOLUME, riemann_solver=HLLC, limiter=MINMOD,
         dimensionality=3, num_cells=num_cells, exact_end_time=True, progress_bar=False,
@@ -99,16 +118,21 @@ def build_sedov_ss(num_cells, zeta, p_ambient=item7.P_AMBIENT, r_start=0.15, kr1
     config = finalize_config(config, state.shape)
     params = SimulationParams(
         t_start=float(t_start), t_end=t_end, gamma=item7.GAMMA,
-        cosmic_ray_grey_params=CosmicRayGreyParams(
-            gamma_cr=4.0 / 3.0, reduced_streaming_speed=0.0, dsa_efficiency=zeta,
-            dsa_mach_min=item7.DSA_MACH_MIN),
+        cosmic_ray_grey_params=_with_transport(
+            cr_config, CosmicRayGreyParams(gamma_cr=4.0 / 3.0, reduced_streaming_speed=0.0, dsa_efficiency=zeta,
+                                           dsa_mach_min=item7.DSA_MACH_MIN), kappa, vred)[1],
     )
     return state, config, params, helper_data, rv
 
 
-def build_cwb(num_cells, zeta):
+def build_cwb(num_cells, zeta, kappa=None, vred=None):
     """The CWB of ``_cwb_setup.run_cwb`` (defaults) with efficiency ``zeta``."""
-    state, config, params, helper_data, rv = _cwb_setup.build_cwb(num_cells, dsa_efficiency=zeta)
+    state, config, params, helper_data, rv = _cwb_setup.build_cwb(
+        num_cells, dsa_efficiency=zeta,
+        **({} if kappa is None else {"diffusion_coefficient": float(kappa)}))
+    if vred is not None:
+        params = params._replace(cosmic_ray_grey_params=params.cosmic_ray_grey_params._replace(
+            reduced_streaming_speed=float(vred)))
     # NATIVE_JAX pinned (as on the 2080 Ti runs): OPTIMAL_BACKEND would resolve to
     # PALLAS on CC >= 8.0 GPUs (H200 extension, EXTENSION_KICKSTART.md); the FV
     # Pallas kernel is off for HLLC / grey CRs anyway, so this keeps one code path.

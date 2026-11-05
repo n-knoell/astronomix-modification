@@ -565,6 +565,10 @@ Convergence methodology:
 
 ## 9. Extension D: DSA with CR diffusion (plan, 2026-11-05)
 
+**Status 2026-11-06:** D0, D1, D2, D4 done (RESULTS.md "Extension D"). D3 (CWB) **excluded** by the
+user after the CWB diffusion runs went non-finite (DB12). D5 jobs prepared (`RAW/jobs/queue_D5.txt`:
+W 256 / 320, S-CP 256 / 384); S-SS waits for DB13. Not launched: the H200 extension is paused.
+
 Status: plan only. Steps D0-D4 run on the local RTX 2080 Ti ladders. D5 moves the
 diffusion series to the H200s (compgpu12) for higher N, after the H200 extension of
 `EXTENSION_KICKSTART.md` (or in the same queue).
@@ -676,14 +680,14 @@ the CWB wind-2 precursor at λ 0.1 is ~1 cell at 128³. This is the reason for D
 ### 9.5 Work plan
 
 #### D0: sizing and checks (local GPU + CPU)
-- [ ] From the existing λ = 0 runs: v_sh(R) and R at the stop time per setup → κ per λ,
+- [x] (2026-11-05, `d0_sizing.py`, RESULTS.md D0) From the existing λ = 0 runs: v_sh(R) and R at the stop time per setup → κ per λ,
   `v_red`, stop radius, step-count and memory estimate (`step0_probe.py memory` with
   `diffusive_relaxation` on; F_cr adds 3 variables).
-- [ ] Extend the run scripts: `sedov_study.py` / `cwb_study.py` / a new `wind_study.py` take
+- [x] (2026-11-05) Extend the run scripts: `sedov_study.py` / `cwb_study.py` / a new `wind_study.py` take
   `--kappa`, `--vred` (`--kappa` switches on `diffusive_relaxation`), and record the new
   diagnostics of 9.3 item 5. `db11_probe.py` is the template for W.
-- [ ] `v_red` sensitivity at one N per setup (2 × `v_red`).
-- [ ] **Check the existing S-PE runs for the DB11 effect.** `build_sedov_pe` (and the
+- [x] `v_red` sensitivity at one N per setup (2 × `v_red`): ≤ 0.4% (W, S-SS, S-CP; CWB excluded).
+- [x] (+3.9% E_cr at 128³, injection / Mach unchanged; caveat added to RESULTS.md) **Check the existing S-PE runs for the DB11 effect.** `build_sedov_pe` (and the
   `cr_sedov_taylor` regression) run at the placeholder `v_red = 1` without relaxation. The
   undamped CR front (0.75 v_sh + v_red/√3) outruns the blast once v_sh < 2.3, i.e.
   M ≲ 180 at p₀ = 1e-4. The S-PE runs end at M ≈ 150, so the last part of every S-PE run
@@ -695,35 +699,46 @@ the CWB wind-2 precursor at λ 0.1 is ~1 cell at 128³. This is the reason for D
   RESULTS.md, and the D runs are queued as `jobs/D_*.sh`.
 
 #### D1: wind bubble W
-- [ ] λ 0.03 / 0.1 / 0.3 (+ advective anchor) × N 64-192. QD1 (precursor shape and length vs κ / v_sh),
+- [x] (2026-11-05, 20 runs) λ 0.03 / 0.1 / 0.3 (+ advective anchor) × N 64-192. QD1 (precursor shape and length vs κ / v_sh),
   QD3 (E_cr / injected, injection vs work split, as `DB11_summary.txt`).
 - Done when: E_cr / injected and l / (κ / v_sh) have observed orders on 64-128 and 96-192.
+  Outcome: orders exist for λ 0.1 and for l / (κ / v_sh) at λ 0.1 / 0.3; E_cr / injected at
+  λ 0.03 / 0.3 does not converge by 192³ (→ D5).
+- [x] (2026-11-06) Figures: `D_wind_convergence.png` (final state vs N), `D1_wind_time.png`
+  (time-resolved), `G3_wind_diffusion_gallery.png` (G1 style, columns = λ).
 
 #### D2: Sedov S-SS and S-CP
-- [ ] S-SS ζ 0.1 at λ 0.03, 0.1, 0.3; S-CP ζ 0.1 and KR13 at λ 0.03, 0.1, 0.3.
-- [ ] Analysis as S1-S5 (`s*_analyse.py`), plus the precursor diagnostics and the
+- [x] (2026-11-05, 45 runs) S-SS ζ 0.1 at λ 0.03, 0.1, 0.3; S-CP ζ 0.1 and KR13 at λ 0.03, 0.1, 0.3.
+- [x] (2026-11-06) Analysis: time-resolved Mach / injection / E_cr against the advective run at
+  the same N and R, precursor length, finder Mach vs the Rankine-Hugoniot Mach of the gas
+  pressure jump (sub-shock and total), false-positive fraction (`d_plots.py` →
+  `D2_<setup>.png`); G1-style galleries `G4`-`G6`. Not redone: the S2 hydro/finder split and
+  the S1 orientation metrics (no analytic reference with a precursor). Original item: Analysis as S1-S5 (`s*_analyse.py`), plus the precursor diagnostics and the
   finder-in-precursor checks (QD2: zones per front, Mach read vs sub-shock and total
   compression from the radial profile).
 
-#### D3: CWB
+#### D3: CWB — **excluded** (user 2026-11-06)
+Runs went non-finite at 192³ (all λ, t/t_end 0.10-0.15, the DB12 window) and at 128³ for
+λ 0.3; see RESULTS.md D3. Items below not done.
 - [ ] κ for λ_wind2 = 0.03, 0.1, 0.3 × N 64-192 (anchor: the existing κ = 1 runs). Watch the NaN risk (high κ went NaN at 128³ on 2026-10-20,
   in CR-dominated wind cells): one 128³ probe per κ before the ladder.
 - [ ] Analysis as C1-C5; the wind-1 apex over-read and the 1.5-1.6× injection bias:
   do they change with a resolved precursor?
 
 #### D4: local summary
-- [ ] QD1-QD4 for the local ladders in RESULTS.md (new section "D: CR diffusion"), with
+- [x] (2026-11-06) QD1-QD4 for the local ladders in RESULTS.md (new section "D: CR diffusion"), with
   the λ-dependent Q5 table, and which λ / setups need higher N (input for D5).
-- [ ] Log in PROGRESS_PHASEB.md; open DB items for anything found.
+- [x] (2026-11-06) Log in PROGRESS_PHASEB.md; open DB items for anything found (DB12 extended, DB13 new).
 
 #### D5: H200 (compgpu12)
 - [ ] Same rules as `EXTENSION_KICKSTART.md`: NATIVE_JAX pinned, at most 2 H200s at once,
   `launcher/autoqueue.py`, raw data in the same tree (`sedov/<setup>/N<n>/`, `cwb/N<n>/`,
   `wind/N<n>/`), and first an overlap check (one local D run repeated on the H200 must
   match before data are mixed).
-- [ ] Higher N only for the series D4 marks as unresolved: expected λ = 0.03 on Sedov
-  (256, 384, 448) and the CWB diffusion series (256, 320, 384), where the wind-2 precursor
-  gets to ≥ 3 cells.
+- [ ] Higher N only for the series D4 marks as unresolved. From D4 (2026-11-06): W λ 0.03 / 0.3
+  at 256 / 320 (+ advective anchors), S-CP ζ 0.1 / KR13 λ 0.03 / 0.1 at 256 / 384; S-SS after
+  DB13; no CWB. Job scripts written (`RAW/jobs/queue_D5.txt`, `launcher/mk_d_jobs.py d5`), not
+  launched (H200 extension paused; compgpu12 not reachable from compgpu4 without interaction).
 - [ ] Order: after the hydro (λ = 0) H200 extension, so that every diffusion series has
   its λ = 0 anchor at the same N; or in the same queue if the hydro runs are already done.
 

@@ -1,0 +1,62 @@
+H200 queue (launcher/mk_h200_jobs.py): est. = 2080 Ti hours (N^4 from the finest existing run);
+divide by the H200 speed-up measured in phase 0. Peak memory ~ 6.8 GB x (N/192)^3 (2080 Ti, peak_bytes_in_use).
+
+phase 0: 6 jobs, 1 h (2080 Ti) -> queue_h200_0.txt
+  E_check_sedov                  
+  E_check_cwb                    
+  E_probe_sedov                  
+  E_probe_cwb                    
+  H_check_wind                    0.7 h  ~   2 GB
+  H_check_cp_lam                  0.2 h  ~   2 GB
+phase 1: 27 jobs, 151 h (2080 Ti) -> queue_h200_1.txt
+  H_cp_control_N256               1.7 h  ~  16 GB
+  H_cp_kr13_N256                  1.9 h  ~  16 GB
+  H_cp_z0.1_N256                  2.0 h  ~  16 GB
+  H_cwb_control_N256              1.5 h  ~  16 GB
+  H_cwb_z0.1_N256                 1.5 h  ~  16 GB
+  H_pe_control_N256               0.6 h  ~  16 GB
+  H_pe_z0.1_N256                  0.6 h  ~  16 GB
+  H_ss_control_N256               0.9 h  ~  16 GB
+  H_ss_z0.1_N256                  0.9 h  ~  16 GB
+  H_w_adv_N256                    2.9 h  ~  16 GB
+  H_cwb_control_N320              3.6 h  ~  31 GB
+  H_cwb_z0.1_N320                 3.6 h  ~  31 GB
+  H_w_adv_N320                    7.1 h  ~  31 GB
+  H_cp_control_N384               8.7 h  ~  54 GB
+  H_cp_kr13_N384                  9.8 h  ~  54 GB
+  H_cp_z0.1_N384                  9.9 h  ~  54 GB
+  H_cwb_control_N384              7.5 h  ~  54 GB
+  H_cwb_z0.1_N384                 7.5 h  ~  54 GB
+  H_pe_control_N384               3.0 h  ~  54 GB
+  H_pe_z0.1_N384                  3.0 h  ~  54 GB
+  H_ss_control_N384               4.6 h  ~  54 GB
+  H_ss_z0.1_N384                  4.5 h  ~  54 GB
+  H_cp_control_N448              16.1 h  ~  86 GB
+  H_cp_kr13_N448                 18.1 h  ~  86 GB
+  H_cp_z0.1_N448                 18.4 h  ~  86 GB
+  H_pe_control_N448               5.6 h  ~  86 GB
+  H_pe_z0.1_N448                  5.6 h  ~  86 GB
+phase 2: 18 jobs, 181 h (2080 Ti) -> queue_h200_2.txt
+  H_cp_kr13_lam0.03_N256          2.4 h  ~  16 GB
+  H_cp_kr13_lam0.1_N256           2.4 h  ~  16 GB
+  H_cp_z0.1_lam0.03_N256          2.4 h  ~  16 GB
+  H_cp_z0.1_lam0.1_N256           2.4 h  ~  16 GB
+  H_ss_z0.1_lam0.03_N256          1.0 h  ~  16 GB
+  H_ss_z0.1_lam0.1_N256           1.0 h  ~  16 GB
+  H_w_lam0.03_N256               10.7 h  ~  16 GB
+  H_w_lam0.1_N256                10.6 h  ~  16 GB
+  H_w_lam0.3_N256                10.9 h  ~  16 GB
+  H_w_lam0.03_N320               26.0 h  ~  31 GB
+  H_w_lam0.1_N320                25.9 h  ~  31 GB
+  H_w_lam0.3_N320                26.7 h  ~  31 GB
+  H_cp_kr13_lam0.03_N384         12.0 h  ~  54 GB
+  H_cp_kr13_lam0.1_N384          12.1 h  ~  54 GB
+  H_cp_z0.1_lam0.03_N384         12.2 h  ~  54 GB
+  H_cp_z0.1_lam0.1_N384          12.0 h  ~  54 GB
+  H_ss_z0.1_lam0.03_N384          5.2 h  ~  54 GB
+  H_ss_z0.1_lam0.1_N384           5.2 h  ~  54 GB
+phase 3: 4 jobs, 43 h (2080 Ti) -> queue_h200_3.txt
+  H_cwb_kr13_N192                 0.5 h  ~   7 GB
+  H_cwb_kr13_N256                 1.5 h  ~  16 GB
+  H_cp_z0.1_N512                 31.4 h  ~ 129 GB
+  H_pe_z0.1_N512                  9.6 h  ~ 129 GB

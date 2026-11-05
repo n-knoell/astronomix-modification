@@ -22,6 +22,10 @@ The ``InjectionAccumulator`` (32^3 block map) adds the realized injection per st
 Output ``RAW/cwb/N<n>/<name>.npz`` (arrays over snapshots, axis profiles, the
 accumulator, the last state, the code stamp). ``<name>``: ``control`` / ``z<zeta>``.
 
+Extension D (PLAN.md Section 9): ``--kappa`` / ``--vred`` override the CR transport
+(default kappa = 1, v_red = 1000); then the centred compression work per step (whole box,
+``work_t``, ``work``) is stored too.
+
 Usage: python cwb_study.py --n 64 --zeta 0.1 [--snapshots 20] [--t-first-frac 0.05]
 """
 
@@ -156,10 +160,15 @@ def main():
     ap.add_argument("--kr13", action="store_true", help="Kang & Ryu (2013) zeta(M) (C4; --zeta then unused)")
     ap.add_argument("--cfl", type=float, default=None, help="C_cfl override")
     ap.add_argument("--name", default=None)
+    ap.add_argument("--kappa", type=float, default=None, help="CR diffusion coefficient (extension D)")
+    ap.add_argument("--vred", type=float, default=None, help="reduced_streaming_speed (extension D)")
     args = ap.parse_args()
     gpu = require_pinned_gpu()
-    InjectionAccumulator.install(coarse_cells=32)
-    state, config, params, hd, rv = build_cwb(args.n, args.zeta if not args.kr13 else cwb.DSA_EFFICIENCY)
+    transport = args.kappa is not None or args.vred is not None
+    InjectionAccumulator.install(
+        coarse_cells=32, work_bins=(args.n, np.zeros(args.n**3, int), 1) if transport else None)
+    state, config, params, hd, rv = build_cwb(args.n, args.zeta if not args.kr13 else cwb.DSA_EFFICIENCY,
+                                              kappa=args.kappa, vred=args.vred)
     if args.kr13:
         cr = config.cosmic_ray_grey_config._replace(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013)
         config = config._replace(cosmic_ray_grey_config=cr)
@@ -195,7 +204,13 @@ def main():
                mdot_nominal=np.array([cwb.mlr1, cwb.mlr2]), v_inf=np.array([cwb.v_inf1, cwb.v_inf2]),
                stars=np.asarray(cwb.STAR_POSITIONS), r_inj=(args.n // 32) / args.n, sphere_radius=SPHERE_RADIUS,
                x_axis=(np.arange(args.n) + 0.5) / args.n - 0.5, peak_gpu_GB=peak_gpu_bytes() / 1e9, gpu=gpu,
-               state_last=last["state"])
+               state_last=last["state"],
+               kappa=float(params.cosmic_ray_grey_params.diffusion_coefficient),
+               vred=float(params.cosmic_ray_grey_params.reduced_streaming_speed))
+    if transport:
+        work_t, work = acc.work_series()
+        if work is not None:
+            out.update(work_t=work_t, work=work[:, 0])
     path = save_npz(RAW / "cwb" / f"N{args.n}" / f"{name}.npz", **out)
     print(f"saved {path}: injected {acc.total():.5g}, E_cr {rows[-1]['E_cr']:.5g}, wall {sum(walls):.0f} s",
           flush=True)

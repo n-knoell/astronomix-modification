@@ -24,7 +24,9 @@ continuous-normal DSA surface default + re-baselined registry) plus the uncommit
   Strong shocks: 0.89-0.92 of the reference at ~90 cells per radius, order ~0.6. E_cr
   profits from the deposit surplus (+3.5% at 90 cells, decaying). Point-explosion starts
   carry a fixed E_cr deficit from the unresolved deposit phase that decays only like
-  (t_onset/t)^0.3 (S3); use a resolved start for E_cr statements.
+  (t_onset/t)^0.3 (S3); use a resolved start for E_cr statements. (Extension D0: the S-PE
+  runs use the placeholder `v_red = 1`, which raises their final E_cr by +3.9% at 128³
+  through the DB11 effect; injection and Mach are unaffected.)
 - **Q4 Mach range.** Contrary to PLAN.md's expectation, Mach errors matter at every Mach
   number: A = 3 even when ζ and δ saturate (the flux is ∝ v_s³). A = 4 at M = 3 (constant
   ζ); with KR13 A = 5 for 5 < M < 15 and 9-12 for 2 < M < 5, which makes KR13 injection
@@ -567,3 +569,216 @@ profiles, every injecting surface cell with position / Mach / w / injection);
   binary-axis ρ and e_cr, per-shock median Mach (16-84%) against R_inj in cells. Wind-1
   M50 3.6 → 6.2 and wind-2 2.3 → 4.4 at t_end, wind 1 still rising at 6 cells; the
   wind-1 apex reads ~10 at every N.
+
+---
+
+# Extension D: DSA with CR diffusion (PLAN.md Section 9)
+
+Started 2026-11-05 on the local RTX 2080 Ti (all free GPUs, `launcher/dispatch.sh`). Code:
+`setups.py` (`kappa`, `vred` for every builder), `common.InjectionAccumulator(work_bins=...)`
+(centred −P_cr ∇·v work per step, binned), `sedov_study.py` / `cwb_study.py` `--kappa --vred`
+(Sedov: shell profiles of ρ, p, e_cr, v_r per snapshot, `E_cr0`), new `wind_study.py` (setup
+W: radial profiles, finder split into forward / termination shock, per-step injection and
+binned work), `d0_sizing.py`, `launcher/mk_d_jobs.py` (job scripts and queue). Raw data in the
+same tree: `RAW/wind/N<n>/{adv,lam<λ>}.npz`, `RAW/sedov/{ss,cp_p0.6}/N<n>/{z0.1,kr13}_lam<λ>.npz`,
+`RAW/cwb/N<n>/z0.1_lam<λ>.npz`.
+
+## D0: sizing (2026-11-05)
+
+`d0_sizing.py` (output `pics/D0_sizing.txt`, `D0_sizing.json`): κ = λ v_sh R at the stop
+radius from the finest existing advective run, `v_red` = 5 × the largest shock / upstream
+speed, cost = existing wall × (1 + CR signal speed / gas signal speed) (upper bound).
+
+| setup | shock used for λ | v_sh at R_stop | κ (λ = 0.03 / 0.1 / 0.3) | `v_red` | R_stop (λ = 0.03 / 0.1 / 0.3) |
+|---|---|---|---|---|---|
+| W | forward shock, R 0.408 at t_end | 0.71 | 0.0087 / 0.029 / 0.087 (8.1e23 / 2.7e24 / 8.1e24 cm²/s) | 100 | t_end (box loss measured) |
+| S-SS | blast, R_start 0.157 | 2.2 / 2.3 / 4.1 | 0.026 / 0.089 / 0.33 | 45 | 0.394 (end) / 0.385 / 0.263 |
+| S-CP (ζ 0.1, KR13) | blast, R_start 0.087 | 2.4 / 2.6 / 4.4 | 0.029 / 0.099 / 0.34 | 110 | 0.407 (end) / 0.385 / 0.263 |
+| CWB | wind-2 termination shock, R_ts2 0.084, u₁ 629 | 629 | 1.6 / 5.3 / 16 (8e20 / 2.6e21 / 8e21 cm²/s) | 4100 | t_end |
+
+- The CWB's default κ = 1 is λ ≈ 0.019 on wind 2 and 0.004 on wind 1 (λ_wind1 = κ / 224
+  for the D runs: 0.007 / 0.024 / 0.071).
+- Estimated cost (upper bound, one ζ model): W 0.05-3.7 h per run (64-192), S-SS
+  0.02-0.5 h, S-CP 0.03-1.3 h, CWB 0.05-1.1 h; ~43 GPU-h plus S-CP KR13 (~5 GPU-h).
+- Smoke runs (W 64 λ 0.1, S-SS 48 λ 0.1, S-CP KR13 48 λ 0.1, CWB 64 λ 0.1) ran
+  through. W 64 λ 0.1: energy budget 1.0002, E_cr / injected 1.30; CWB 64: CR energy
+  leaves through the open boundary (E_cr − injected − work = −0.36 of the injected), as
+  the winds carry it out.
+- Queue (`RAW/jobs/queue_D_all.txt`, 82 jobs): D0 checks (`v_red` × 2 at N 96 per setup,
+  S-PE 128 at `v_red` 0, W 128 injection off after t_end / 2 for λ 0.1 and advective),
+  then W, Sedov, CWB ladders, largest N first.
+
+### D0 checks (2026-11-05; `d_analyse.py d0` → `pics/D0_checks.txt`)
+
+- **S-PE at the placeholder `v_red = 1`** (existing runs) vs `v_red = 0` (N 128, ζ 0.1): the
+  injection is the same (0.15136 vs 0.15157) and so is the final M50 (162.0 vs 162.8). E_cr
+  ends **+3.9% higher** with the placeholder. The gap grows steadily: +0.6 / +1.4 / +2.5 /
+  +3.9% at t / t_end 0.25 / 0.5 / 0.75 / 1, i.e. the DB11 re-compression of CRs that run
+  ahead of the blast. The S-PE finder and injection rows of S1-S5 are unaffected. S-PE E_cr
+  statements (the start-up deficit in S3) carry this +4% bias at the end. S3's E_cr numbers
+  were taken from the resolved start (S-SS, `v_red = 0`) and are unaffected.
+- **Self re-acceleration probe** (W, N 128, injection off from t_end / 2): over the second
+  half the CR energy present at t_end / 2 changes by **+18%** at λ 0.1 (centred work
+  +0.167 E_cr(t_end/2)) and by **−10%** advectively (work −0.096). So existing CRs that
+  diffuse ahead of the shock gain ~28% of their energy per half run relative to the
+  advective case. In this grey setup the two sources can't be separated: the forward
+  shock's own CRs and termination-shock CRs that diffused out.
+- **`v_red` × 2** (N 96, λ 0.1): E_cr +0.37% / −0.19% / +0.01% (W / S-SS / S-CP), injection
+  ≤ 0.14%, M50 ≤ 0.12%, at 1.8-1.9× the steps. `v_red` = 5 × the largest speed is converged;
+  CWB pending (D3).
+
+## D1: wind bubble W (2026-11-05; `d_analyse.py wind` → `pics/D_wind_summary.txt`, `D_wind_convergence.png`; time-resolved `D1_wind_time.png` from `d_plots.py`)
+
+N 64-192 (R_fs/dx 22-65), advective and λ 0.03 / 0.1 / 0.3, ζ 0.1, all 20 runs complete.
+
+- **Energy budget** (E_tot − E_ambient) / (L_w t_end) 1.0000-1.0018 in every run, so no CR
+  energy is lost through the box even at λ 0.3.
+- **QD1 precursor.** Measured length / (κ / v_sh) at 192³: 1.45 / 0.96 / 0.62 for λ 0.03 / 0.1 /
+  0.3. λ 0.3 converges to 0.62 (from 0.74 at 64³; the spherical value; precursor 5-12 cells).
+  λ 0.1 reaches ~1.0 from 128³ on (4.4-6.3 cells). λ 0.03 is still numerically broadened at
+  192³ (2.8 cells, vs ~1.2 cells shock width advectively; 2.1 → 1.45 of the model from 64 to 192).
+- **QD2 finder.** The forward-shock M50 is the same with and without diffusion (5.00-5.17,
+  within 1.5% of the advective run at the same N), and the gas two cells ahead of the
+  front is compressed to the same 1.04-1.13 ρ₀. At M ≈ 5 and these λ the precursor does not
+  measurably modify the shock, and the finder reads it as before. No false positives.
+- **QD3 injection vs re-acceleration.** The total realized injection is 4-11% above the
+  advective run at every N (192³: 0.080 / 0.081 / 0.083 vs 0.075 L_w t_end; the odd/even N
+  pattern follows the injection radius 2-6 cells and is in the advective runs too). The
+  forward-shock nominal injection is the same (192³: 0.0258 / 0.0255 / 0.0249 vs 0.0252), so
+  the excess comes from the termination shock / interior (not split further). E_cr / injected at 192³: 0.92 (advective) / 1.31 / 1.34 / 1.50 (λ 0.03 / 0.1 / 0.3).
+  The surplus is compression work at and ahead of the front (w_front 0.031 / 0.024 / 0.016
+  L_w t_end, vs 0.004 advectively), plus work behind it at λ 0.3.
+- **Convergence.** Injection converges (10% at ~30-40 cells per forward-shock radius, all
+  λ). E_cr / injected does **not** converge by 192³ for λ 0.03 and 0.3 (1.22 → 1.31 and
+  1.22 → 1.50 from 64 to 192, still rising; the fits hit the exponent bound). λ 0.1 is
+  flat at 1.27-1.34. The re-acceleration grows as the precursor gets resolved, so the
+  surplus is a resolution-dependent quantity at λ 0.03 and 0.3 on the local ladders: input for D5.
+
+## D2: Sedov S-SS and S-CP (2026-11-05; `d_analyse.py sedov` → `pics/D_sedov_summary.txt`; figures `D2_{ss,cp}_{z0.1,kr13}.png` from `d_plots.py`)
+
+N 48-192, λ 0.03 / 0.1 / 0.3 (λ 0.3 stops at R 0.263, so no R = 0.3 values), S-SS ζ 0.1,
+S-CP ζ 0.1 and KR13, all 45 runs complete. Most self-convergence fits hit the exponent
+bounds (non-monotone in N), so the D2 numbers are quoted as values, not as Q5 rules.
+
+- **QD2, moderate Mach (S-CP, M ≈ 3.4 at R 0.3):** M50(λ) / M50(advective) at the same N =
+  0.99-1.00 (λ 0.03) and 0.97-0.98 (λ 0.1, ζ 0.1), 0.95-0.98 (λ 0.1, KR13). The ratio falls
+  with N (resolving the precursor), consistent with a physical sub-shock reduction of a
+  few percent. The KR13 injection at R 0.3 follows it (A ≈ 5-12).
+- **QD2, strong shock (S-SS, M ≈ 250 at R 0.3): open anomaly.** With diffusion the finder
+  reads **higher** than advectively, increasingly with N: λ 0.03 1.00 / 1.00 / 1.02 / 1.04 /
+  **1.20** (N 48-192), λ 0.1 1.01-1.06. At 192³ λ 0.03 the spread widens (M16-M84 179-214 vs
+  163-167 advective at t_end). A precursor cannot raise the true Mach number, so this is a
+  finder / upstream-state effect with a resolved CR precursor at very high Mach. Not
+  investigated yet.
+- **QD3:** E_cr / (E_cr0 + injected) rises with N for every λ (e.g. S-CP ζ 0.1 λ 0.1 0.71 →
+  0.84, λ 0.03 0.59 → 0.70; S-SS λ 0.03 0.71 → 0.87), so it is not converged by 192³. The
+  injection rate behaves as in the advective study (S-CP: 10% at ~35-50 cells per radius
+  at R 0.3).
+
+**Time-resolved D2 figures (2026-11-06, `D2_*.png`):** (a) M50 over the advective M50 at the same N
+and R, through the whole run; (b) finder M50 over the Rankine-Hugoniot Mach of the shell-mean
+gas-pressure jump (sub-shock: p behind / p at R + 3 dx; total: p behind / p₀), with the advective
+final state at 192³ as one point (from the stored final state, no rerun); (c) injection rate over
+the advective one; (d) precursor length against κ / v_sh in cells; (e) E_cr / (E_cr0 + injected) over
+time; (f) false-positive fraction. Readings:
+- S-SS: the over-read (DB13) builds up over the run and is not monotone in N. At 192³ λ 0.03 it peaks at
+  +21% (R/dx ≈ 60) and is +15% at the end. The finder / RH(sub-shock) ratio is 1.14 there vs
+  1.08 advectively. So about +9% of the +15% shows up in the shell-mean gas-pressure jump itself,
+  and only the rest is the finder. Indicative only: shell means, 3-cell upstream offset.
+- S-SS λ 0.3 (and λ 0.1 at 64-96³): **start-up transient.** Right after the self-similar start
+  (R/dx ≈ 20-33) the finder flags up to 50% false-positive surface cells for one or two
+  snapshots, with injection up to 2×, while the CR precursor forms from the precursor-free
+  initial state. It is gone by R/dx ≈ 35.
+- S-CP: M50 / M50_adv falls smoothly with R/dx (to 0.97-0.98 at λ 0.1); no false positives.
+- E_cr / (E_cr0 + injected) (S-SS 192³) ends at 0.61 advective, 0.87 / 0.92 / 0.95 (λ 0.03 / 0.1
+  / 0.3): with diffusion the interior adiabatic loss of the initial CR content is largely offset.
+
+## Galleries (G1 style) for the diffusion runs (2026-11-06)
+
+`gallery_d_extract.py` (GPU) re-runs the finder with the DSA settings on the **stored** final states
+(192³; no simulation rerun) and stores mid-plane slices, shell profiles and every injecting surface
+cell in `RAW/gallery_d/`. `gallery_d_plot.py` (CPU) draws one figure per setup, with columns
+advective / λ 0.03 / 0.1 / 0.3:
+- rows 1-2: mid-plane ρ and e_cr (log, 4 decades, so the precursor shows);
+- row 3: the injecting surface in 3D (upper hemisphere; W: forward shock), coloured by the DSA
+  Mach number over the advective median at the same R (Sedov) or at t_end (W);
+- bottom row: shell-mean ρ and P_cr around the front with the planar precursor, and the
+  final-state Mach distribution over the advective median against R/dx for every N.
+
+- `pics/G3_wind_diffusion_gallery.png` (W): ρ is identical in all columns. The precursor grows
+  from a few cells (λ 0.03) to filling the box edge (λ 0.3). The surface Mach is unchanged
+  (median M / M_adv 1.003 / 0.998 / 0.995), with the same grid pattern (poles / face centres
+  high) as advectively.
+- `pics/G4_ss_diffusion_gallery.png` (S-SS): DB13 in 3D. At λ 0.03 the surface reads up to +20%
+  in patches that follow the grid (around the face centres and along bands), median 1.145.
+  λ 0.1 / 0.3 have high patches as well, with medians near 1.
+- `pics/G5_cp_z0.1_diffusion_gallery.png`, `G6_cp_kr13_diffusion_gallery.png` (S-CP): the
+  surface reads uniformly lower with diffusion (median 0.984 / 0.968 / 0.961 for ζ 0.1). The
+  shell compression is unchanged (peak shell-mean ρ 2.42 / 2.42 / 2.41 at t_end; λ 0.3, which
+  stops at R 0.26 and higher Mach, 2.67).
+
+## D3: CWB: **excluded** (user decision 2026-11-06)
+
+The CWB diffusion runs go **non-finite** while the termination shocks form or soon after:
+λ 0.03 (κ 1.6) and λ 0.1 (κ 5.3) at 192³ at t / t_end 0.15 / 0.10, λ 0.3 (κ 16) at 192³ at
+0.10 and at 128³ at 0.45. λ 0.03 / 0.1 at 64-128³ and all 96³ runs (incl. `v_red` × 2) ran
+through. The 192³ failures sit in the window of DB12 (KR13 CWB 192³ non-finite at 0.10-0.15),
+so DB12 is not specific to KR13 (PROGRESS_PHASEB.md DB12). The user excluded the CWB from the
+diffusion study for now (2026-11-06). Its partial data stay in `RAW/cwb/N<n>/z0.1_lam*.npz`, not
+analysed.
+
+## D4: local summary (2026-11-06)
+
+**QD1 precursor.** Across W (all λ, N), the measured precursor length over the model
+depends on κ / v_sh in cells alone, until the geometry takes over:
+
+| κ / v_sh in cells | 0.65 | 0.98 | 1.30 | 1.64 | 1.97 | 2.17 | 3.27 | 4.35 | 5.48 | 6.56 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| measured / κ / v_sh | 2.12 | 1.85 | 1.61 | 1.40 | 1.45 | 1.27 | 1.075 | 1.007 | 1.005 | 0.963 |
+
+Below ~3 cells the numerical shock width (~1.2 cells) sets a floor. From ~3 cells the
+precursor is within 10%, from ~4 cells within 1% of the planar κ / v_sh. At λ = 0.3 it
+converges to the spherical value 0.62 (6.5 → 20 cells: 0.74 → 0.62). So a precursor needs
+**κ / v_sh ≳ 3 cells, i.e. R / dx ≳ 3 / λ**: ~100 cells per radius at λ 0.03 (not reached
+locally), ~30 at λ 0.1, ~10 at λ 0.3.
+
+**QD2 finder with a precursor.**
+- W (M ≈ 5) and S-CP (M ≈ 3.4): the finder reads the same or slightly lower Mach than
+  advectively. W within 1.5%; S-CP −1% (λ 0.03) to −3 / −5% (λ 0.1, ζ 0.1 / KR13) at
+  192³, decreasing with N. That is consistent with the precursor weakening the sub-shock.
+  The precursor raises the gas just ahead of the front by < 10% in ρ, and the Q5 Mach rule
+  (10% / 5% at ~20 / ~60 cells per radius) carries over.
+- S-SS (M ≈ 250): the finder reads **higher** with diffusion, by up to +20% (λ 0.03, 192³).
+  Open as **DB13** (PROGRESS_PHASEB.md).
+
+**QD3 injection and re-acceleration.**
+- Injection converges as advectively: W 10% at ~30-40 cells per forward-shock radius for
+  every λ; S-CP 10% at ~35-50 cells at R 0.3. At the W forward shock it is unchanged by
+  diffusion. The W total is 4-11% higher, from the termination shock / interior.
+- Re-acceleration is the new non-converging quantity. W E_cr / injected at 192³: 1.31 /
+  1.34 / 1.50 (λ 0.03 / 0.1 / 0.3) vs 0.92 advective. It is flat within ±3% only for λ 0.1,
+  from 128³ (precursor ≥ 4 cells) on. At λ 0.03 it still rises because the precursor isn't
+  resolved. At λ 0.3 it rises (1.22 → 1.50, 64 → 192) although the precursor is resolved; the
+  growing part is work behind the front (r < R − 2 dx: −0.003 → +0.021 L_w t_end), cause not
+  identified.
+- Sedov E_cr / (E_cr0 + injected) rises with N for every λ (S-CP ζ 0.1 λ 0.1 0.71 → 0.84), not
+  converged by 192³.
+
+**QD4 Q5 rule with diffusion** (cells per shock radius; "–" = not reached on the local ladders):
+
+| quantity | λ 0.03 | λ 0.1 | λ 0.3 |
+|---|---|---|---|
+| precursor length within 10% | ~100 (–) | ~30 | ~10 |
+| Mach (W M ≈ 5, S-CP M ≈ 3.4) | as advective (~20 / ~60 for 10 / 5%) | as advective, −3 to −5% physical | as advective (W) |
+| Mach (S-SS M ≈ 250) | DB13 | DB13 | – |
+| injection, W, 10% | ~31 | ~33 | ~37 |
+| injection, S-CP ζ 0.1, 10% (R 0.3) | ~50 | ~36 | – (stops at R 0.26) |
+| E_cr / injected (W), ±3% | – (still rising at 65) | ~45 | – (still rising at 65) |
+
+**Input for D5 (H200).** Higher N is needed where the local ladders end before convergence:
+1. W λ 0.03 (precursor: needs R / dx ≈ 100, i.e. N ≈ 300) and λ 0.3 (E_cr / injected):
+   N 256, 320 (+ advective anchors). W 192³ took 3.4 h on a 2080 Ti; 320³ is ~7.7× that.
+2. S-SS λ 0.03 / 0.1 at 256-384, after DB13 is understood (otherwise the high-Mach rows mix a
+   finder artefact into the convergence).
+3. S-CP ζ 0.1 / KR13 λ 0.03 / 0.1 at 256-384 (E_cr not converged; KR13 Mach sensitivity).
+

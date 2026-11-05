@@ -13,7 +13,9 @@
 * ``InjectionAccumulator``: wraps ``inject_crs_at_shocks`` inside the time
   loop and sums the realized injection (``delta e_cr dx^3`` after the cap) of
   every step on the host, in total and on a coarse block map, through
-  ``jax.debug.callback``. No library code changes.
+  ``jax.debug.callback``. No library code changes. Optionally (extension D) also the
+  centred CR compression work ``-P_cr div(v) dV dt`` per step, binned by a given cell
+  index (radial bins, or one bin).
 * ``restrict``: conservative block average of a primitive state (PLAN.md
   principle 5).
 """
@@ -117,15 +119,23 @@ class InjectionAccumulator:
     _original = None
     _active = None
     _coarse_cells = None
+    _work = None
 
     @classmethod
-    def install(cls, coarse_cells=None):
+    def install(cls, coarse_cells=None, work_bins=None):
+        """``work_bins = (num_cells, bin_index, num_bins)`` (``bin_index``: int array over the
+        N^3 interior cells) also accumulates the centred compression work
+        ``-(gamma_cr - 1) e_cr div(v) dx^3 dt`` per bin and step (as ``db11_probe.py``; the
+        estimate the DB11 budget used, not the scheme's own discrete work)."""
         if cls._original is not None:
             if coarse_cells != cls._coarse_cells:
                 raise RuntimeError("InjectionAccumulator already installed with another coarse_cells")
             return
         cls._original = _ilu.inject_crs_at_shocks
         cls._coarse_cells = coarse_cells
+        if work_bins is not None:
+            n, idx, nb = work_bins
+            cls._work = (int(n), jnp.asarray(idx, dtype=jnp.int32).reshape(-1), int(nb))
 
         def wrapped(primitive_state, config, params, registered_variables, helper_data,
                     current_time, dt):
@@ -139,15 +149,26 @@ class InjectionAccumulator:
                 coarse = delta.reshape(m, f, m, f, m, f).sum(axis=(1, 3, 5))
             else:
                 coarse = jnp.zeros(())
-            jax.debug.callback(cls._dispatch, current_time, dt, jnp.sum(delta), coarse)
+            if cls._work is not None:
+                n, idx, nb = cls._work
+                g = (primitive_state.shape[1] - n) // 2  # the time loop's state carries ghost cells
+                ps = primitive_state[:, g:g + n, g:g + n, g:g + n] if g else primitive_state
+                v = registered_variables.velocity_index
+                h = config.grid_spacing
+                div_v = sum(jnp.gradient(ps[c], h, axis=a) for a, c in enumerate((v.x, v.y, v.z)))
+                w = -(params.cosmic_ray_grey_params.gamma_cr - 1.0) * ps[i] * div_v * h**3 * dt
+                work = jnp.bincount(idx, weights=w.reshape(-1), length=nb)
+            else:
+                work = jnp.zeros(())
+            jax.debug.callback(cls._dispatch, current_time, dt, jnp.sum(delta), coarse, work)
             return out
 
         _ilu.inject_crs_at_shocks = wrapped
 
     @classmethod
-    def _dispatch(cls, t, dt, total, coarse):
+    def _dispatch(cls, t, dt, total, coarse, work):
         if cls._active is not None:
-            cls._active._add(t, dt, total, coarse)
+            cls._active._add(t, dt, total, coarse, work)
 
     def __init__(self):
         self.reset()
@@ -155,6 +176,7 @@ class InjectionAccumulator:
     def reset(self):
         self.steps = []  # (t, dt, injected energy of the step)
         self.coarse = None
+        self.work = []  # per step: binned compression work (only with work_bins)
 
     def activate(self):
         if InjectionAccumulator._original is None:
@@ -163,14 +185,23 @@ class InjectionAccumulator:
         InjectionAccumulator._active = self
         return self
 
-    def _add(self, t, dt, total, coarse):
+    def _add(self, t, dt, total, coarse, work=None):
         self.steps.append((float(t), float(dt), float(total)))
+        if work is not None and np.ndim(work) == 1:
+            self.work.append((float(t), np.asarray(work, dtype=np.float64)))
         if np.ndim(coarse) == 3:
             c = np.asarray(coarse, dtype=np.float64)
             self.coarse = c if self.coarse is None else self.coarse + c
 
     def total(self):
         return float(sum(s[2] for s in self.steps))
+
+    def work_series(self):
+        """Arrays t (step start) and binned work (steps x bins), time-ordered; None without work_bins."""
+        if not self.work:
+            return None, None
+        order = np.argsort([w[0] for w in self.work])
+        return (np.array([self.work[k][0] for k in order]), np.stack([self.work[k][1] for k in order]))
 
     def series(self):
         """Arrays t (step start), dt, injected energy per step (time-ordered)."""
