@@ -1,0 +1,19 @@
+# S5: cells per shock radius R/dx for |1 - ratio| < tol (measured: all pooled points beyond;
+#     fit: power law over R/dx >= 15, '*' = extrapolated beyond the finest point)
+metric case                                         p R/dx max  tol: measured / fit
+Mach  control S-SS (M 170-760)                  0.61       89   10%:     18 /    17  |   5%:     55 /    54  |   2%:   >max /   239*
+Mach  control S-PE (M 170-760)                  0.57       89   10%:     22 /    17  |   5%:     64 /    57  |   2%:   >max /   282*
+Mach  control S-CP M >= 8                       0.59       39   10%:     19 /    18  |   5%:   >max /    58* |   2%:   >max /   279*
+Mach  control S-CP M <= 4                       0.72       92   10%:     21 /    19  |   5%:     63 /    50  |   2%:   >max /   179*
+Mach  DSA zeta 0.1 S-SS                         0.57       87   10%:     20 /    19  |   5%:     62 /    62  |   2%:   >max /   306*
+Mach  DSA KR13 S-CP M >= 8                      0.54       36   10%:     25 /    24  |   5%:   >max /    85* |   2%:   >max /   468*
+Mach  DSA KR13 S-CP M <= 4                      0.71       90   10%:     19 /    18  |   5%:     59 /    48  |   2%:   >max /   172*
+D     zeta 0.1 S-SS (M 170-760)                 0.61       87   20%:     29 /    27  |  10%:     82 /    82 
+D     zeta 0.1 S-PE (M 170-760)                 0.52       87   20%:     33 /    18  |  10%:   >max /    68 
+D     zeta 0.1 S-CP M >= 8                      0.45       38   20%:   >max /    45* |  10%:   >max /   208*
+D     zeta 0.1 S-CP M <= 4                      0.64       91   20%:     46 /    45  |  10%:     91 /   133*
+D     KR13 S-CP M >= 8                          0.41       36   20%:   >max /    74* |  10%:   >max /   404*
+D     KR13 S-CP M <= 4                          0.55       90   20%:   >max /   167* |  10%:   >max /   596*
+E_cr  zeta 0.1 S-SS: realized inj x surplus     0.65       87   20%:     22 /    19  |  10%:     60 /    55 
+E_cr  zeta 0.1 S-CP: realized inj (late)        0.59       91   20%:     49 /    50  |  10%:   >max /   162*
+E_cr  KR13 S-CP: realized inj (late)            0.48       90   20%:   >max /   241* |  10%:   >max /  1035*

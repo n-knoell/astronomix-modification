@@ -49,6 +49,8 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
 | DB8 (new) | CR back-reaction on the finder Mach number (Y11): the finder reads M from the **gas**-pressure jump, which the injected CRs lower. (a) Mach from the total-pressure jump (composite RH), (b) from the density/velocity jump, or (c) accept? | decided 2026-10-14: (c) accept for now (user). Reopened 2026-10-27 (velocity Mach since DB4 reads high: +6.6% at `zeta` 0.1, +11% KR13, and low with CR-loaded upstream). **Decided 2026-10-27** (user): CR-aware inversion of the velocity jump, a switch that is on by default (`dsa_mach_cr_aware=None` = on with adaptive sampling + velocity Mach); gas Mach convention (KR13) kept; DB9 keeps the gas-only `rho_RH`; log 2026-10-27 | planar vs true M: `zeta` 0.1 +2.6% (was +6.6%), 0.5 -1.7% (+8.0%), KR13 strong +2.1 / +2.4% (+11%), CR-loaded upstream (B8.5) -0.4 to +10% (-17 to -57%); Sedov injection 3.5% lower (N 48 / 96) |
 | DB9 (new) | Deposit surplus (B7.2): CRs deposited into the smeared, under-compressed shock shell later lose less to expansion than CRs injected at the RH post-shock density. (a) accept and document (it offsets part of the injection deficit), (b) density-consistent deposit: scale each cell's share by `min(1, (rho/rho_RH)^(gamma_cr - 1))`, the withheld energy stays in the gas, or (c) other? | **decided 2026-10-21** (user): (b), opt-in (`dsa_density_consistent_deposit=True`, default off); implemented + regression run 2026-10-21 | with the flag: Sedov E_cr / prediction 0.985 / 0.990 / 0.990, E_cr/E end 0.84 / 0.90 / 0.93 (injection deficit no longer offset), planar P_cr -0.8%. Before: injected-part surplus +18 / +14 / +11% (Sedov N 48 / 96 / 160), +2.6% planar (B7.4). Scratch prototype of (b): planar -0.8%, Sedov -13 / -7 / -5% (over-corrects where the shell is unresolved); log 2026-10-21 |
 | DB10 (new) | DSA shock surface: full-segment argmin (one cell per grid line along the dominant axis, `1/|n|_inf` weight) or the continuous-normal surface of `shock_finder_v2` (our walk, `column_area_weights`)? | **decided 2026-11-04: continuous-normal surface with our (dominant-axis) zones, default on** (`dsa_continuous_normal_surface=True`); v2's zones along the normal rejected (walk crossed a one-cell zone gap into a nearby compression, B8.2 (1,1,1) M 10 +70%) | late-time Sedov injection = old within 1.2%; energy per shock area at body diagonals -4% (old -24%, N 160); injection 2-4x cheaper (CWB DSA run 328 vs 540 s); Sedov E_cr end +5.4/+2.3/+1.0% (N 48/96/160); 5 tests re-baselined; log 2026-11-04 |
+| DB11 (new) | `cr_wind_bubble` DSA run holds ~2.0x more CR energy than was injected. **Cause found 2026-11-05:** the test runs the two-moment CR transport without `diffusive_relaxation` and with the placeholder `reduced_streaming_speed = 1` (100 km/s), i.e. an undamped CR wave at v_red/sqrt(3) relative to the gas. From t ~ 0.3 t_end on the forward shock is slower than the CR front (downstream speed + 0.58), the CRs free-stream ahead of it (F_cr/e_cr = 0.584 v_red in the unshocked gas, P_cr 4.7 p_0 at rho 1.45 rho_0) and the shock re-compresses them (net +P_cr div v work). Decide: (a) `reduced_streaming_speed = 0` in `cr_wind_bubble` (pure advection, as the Sedov DSA tests; E_cr/injected 0.95, re-baseline), (b) physical transport (`diffusive_relaxation`, kappa, v_red >> flow, as the CWB; costly, and re-compressing freshly injected CRs at their own shock double-counts DSA), (c) keep and document | **cause found** (2026-11-05), decision open | probe `resolution_study/db11_probe.py`: injection off at t_end/2 -> E_cr still x2.3 (v_red 1) vs -10% (v_red 0); centred -P_cr div v work +0.050 of the +0.061 L t_end gain; v_red 0: E_cr/injected 0.95 (N 128) / 0.98 (N 96) vs 2.02 / 1.75; earlier probes (wind fix, surface, DB8, cr_entropy, DB9) all 1.85-2.09; other DSA tests on default v_red without relaxation (`cr_sedov_taylor`, `cr_dsa_mach_dependence`, `cr_snr_*`, `cr_phase_d_*`) not checked; log 2026-11-05 (DB11) |
+| DB12 (new) | KR13 CWB at 192^3 goes non-finite at t/t_end 0.10-0.15 (termination shocks forming, M 15-17, zeta 0.211), reproducibly at C_cfl 0.4 and 0.2; constant zeta at 192^3 and KR13 at 128^3 are stable. Investigate? | open (found 2026-11-05) | log 2026-11-05 |
 
 ## Infrastructure
 
@@ -74,6 +76,43 @@ Status: `todo` / `running` / `done` / `blocked` / `dropped`.
       0.4% at N 48 / 96 / 160
 
 ## Log (newest first)
+
+### 2026-11-05 (later): DB11 cause found: undamped two-moment CR waves outrun the wind bubble's forward shock (uncommitted, no library change)
+
+Probe `pytests/cosmic_rays_grey/resolution_study/db11_probe.py` (cr_wind_bubble DSA setup, segments; per step the injection and a centred `-P_cr div v dV dt` estimate binned in radius; snapshots of E_cr and radial profiles; raw `/export/scratch/nknoell/resolution_study/db11/`).
+
+| run (N 128 unless noted) | E_cr / injected at t_end | E_cr / (L_w t) at 0.3 / 1.0 t_end |
+|---|---|---|
+| default (v_red 1, no relaxation) | 2.02 (N 96: 1.75) | 0.078 / 0.155 |
+| injection off after t_end / 2 | 3.29 (E_cr x2.3 over the 2nd half, nothing injected) | 0.078 / 0.108 |
+| `reduced_streaming_speed = 0` | 0.95 (N 96: 0.98) | 0.064 / 0.068 |
+| v_red 0, injection off after t_end / 2 | 0.91 (E_cr -10% over the 2nd half) | 0.063 / 0.028 |
+
+- Existing CRs gain the energy, fresh deposits are not the source: with injection off E_cr still grows x2.3; the centred compression work accounts for +0.050 of the +0.061 L_w t_end.
+- Where: the CR front runs ahead of the forward shock. On the x axis at t_end the unshocked gas (rho 1.0-1.1 rho_0) carries F_cr / e_cr = 0.584 v_red (the free-streaming 1/sqrt(3)) and P_cr up to 4.7 p_0; P_cr peaks inside the shock transition, not in the dense shell. 76% of E_cr is outside the contact (54% with v_red 0).
+- Why only late: without `diffusive_relaxation` the two-moment system is an undamped wave (signal speed v_red / sqrt(3) = 0.58 relative to the gas). The forward shock slows as t^-0.4 (0.74 code at t_end) and drops below the CR front speed (0.75 v_sh + 0.58) at t ~ 0.3 t_end, where E_cr / (L_w t) starts rising.
+- Injection is unaffected: 0.077 vs 0.071 L_w t_end, about half each at the termination and the forward shock.
+- Energy is conserved throughout (partition identity 3e-4): the gas pays the work, so the test's identity checks cannot see this.
+- `cr_wind_bubble` never chose its CR transport: it inherits the placeholder v_red = 1 (the CWB setup documents the same placeholder and sets v_red 1000 with kappa = 1). Other DSA tests on the same defaults (`cr_sedov_taylor`, `cr_dsa_mach_dependence`, `cr_snr_*`, `cr_phase_d_*`) are affected wherever their shocks drop below ~0.6 code velocity; not checked.
+
+Decision DB11 open (options in the table).
+
+### 2026-11-05: resolution study (Sedov + CWB) done; `_wind_ei3D` normalisation fixed; `cr_wind_bubble` re-baselined (uncommitted)
+
+Study: `pytests/cosmic_rays_grey/resolution_study/` (PLAN.md, RESULTS.md with the Q1-Q5 summary, figures in `pics/`, raw data `/export/scratch/nknoell/resolution_study/`). Sedov S-PE / S-SS / S-CP at N 32-224, CWB at 64-192, all on GPU with pinned UUIDs.
+
+**Main results** (RESULTS.md):
+- Finder Mach number: |dM/M| ~ 0.55 (R/dx)^-0.6, universal over setups, M 2.5-760 and zeta models; finder share first order (-(2-3) dx/R), Sedov hydro share opposite sign, CWB hydro share same sign.
+- Injection error = A x Mach error + area excess (single-Mach prediction within 1-3%); A = 3 even for saturated zeta, delta; KR13 A 5-12 for 2 < M < 15.
+- Q5 (cells per shock radius): Mach 10% / 5% at ~20 / ~60; injection 10% at ~80 (constant zeta, strong), hundreds for KR13 at moderate M; CWB total injection within 5% from R_inj 4 cells / wind-2 stand-off 12 cells.
+- X1: no cell-based parameter (sampling steps, area smoothing, CFL, limiter) carries the error; X2: old vs continuous-normal surface within 1% on the Sedov blast.
+- CWB carries two non-converging biases: wind-1 apex Mach over-read +17-25%, injection 1.5-1.6x the exact-upstream estimate (cf. 2026-10-20 "+41%").
+
+**`_wind_ei3D` fix (user-approved 2026-11-05).** The FV EI wind divided Mdot and L by the analytic 4/3 pi R_inj^3 but deposits only into cells with r <= R_inj - dx/2: the winds delivered 0.33 / 0.54 / 0.67 / 0.76 of Mdot at R_inj = 2 / 3 / 5 / 6 cells (the CWB study's C0 stop condition). Now normalised by the discrete mask volume (as `_wind_ei3D_source`). CWB Mdot after the fix 0.95-0.99 of nominal at all N. `analytic_wind_zone.py` 7/7 pass.
+
+**`cr_wind_bubble` re-baselined** (user-approved): energy budget (E_total - E_ambient) / (L_w t_end) 1.0017 / 1.0016 (was ~0.66), now asserted (tol 0.02); Weaver forward shock 8.7% outside the thin-shell R_2 (tol 0.05 -> 0.12; the Mach ~3 shell is ~0.11 R_2 thick; the old 1.6% was the 0.66 luminosity cancelling it); interior pressure 6.7% (tol 0.35 -> 0.15); partition identity 3.2e-4, control vs DSA 4.3e-5, E_cr / E_total 0.131 (2026-10-10: 0.043; 0.113 at the pre-fix luminosity with today's DSA defaults). New open item DB11 (CR energy 2x the injected).
+
+**C4:** KR13 on the CWB at 128^3: injection 1.44x constant zeta (wind 1 x1.8, wind 2 x0.69). 192^3 non-finite (DB12).
 
 ### 2026-11-04 (later): DB10 decided: our zones + continuous-normal surface, default on (re-baselined; uncommitted)
 

@@ -273,7 +273,7 @@ nbody_state = binary_starting_orbits_at_phase(
 )
 
 
-def run_cwb(
+def build_cwb(
     num_cells,
     dsa_efficiency=DSA_EFFICIENCY,
     analytic_wind_zone=False,
@@ -286,69 +286,10 @@ def run_cwb(
     unsplit=True,
     diffusion_coefficient=CR_DIFFUSION_COEFFICIENT,
 ):
-    """Run one 3D stationary colliding-wind-binary simulation and find its shocks.
-
-    Grey two-moment cosmic rays are active by default (``grey_cosmic_rays=True``,
-    ``diffusive_shock_acceleration=True``) so the registered-variable layout
-    (and hence array shapes/indices) is identical across calls -- only
-    ``dsa_efficiency`` varies between a CR-off control (``dsa_efficiency=0``,
-    DSA code path live but injecting nothing) and a CR-on run. Everything
-    else about the physical setup (wind/ambient/cooling/resolution/BCs) is
-    unchanged from the original hydro-only CWB setup. ``cosmic_rays=False``
-    drops the CR module entirely (pure hydro, smaller state, no per-step DSA
-    shock finding): the N=256 control does not fit an 11 GB GPU with CRs on.
-
-    Args:
-        num_cells: The number of cells per dimension (cubic domain).
-        dsa_efficiency: Fraction of each detected shock's dissipated
-            kinetic-energy flux diverted into ``e_cr`` (diffusive shock
-            acceleration). ``0.0`` gives a CR-free control run with the same
-            state layout as a CR-on run.
-        analytic_wind_zone: Overwrite an extended zone around each star with
-            the analytic adiabatically-cooled free wind every step
-            (``WindConfig.analytic_wind_zone``, base state
-            ``WIND_BASE_RADIUS`` / ``WIND_BASE_TEMPERATURE``). ``False`` is
-            the plain EI injection.
-        wind_zone_stagnation_fraction: Zone radius as a fraction of each
-            star's distance to the stagnation point
-            (``WindParams.wind_zone_stagnation_fraction``). Only read when
-            ``analytic_wind_zone`` is on.
-        dual_energy: Use the dual-energy (entropy) pressure in cold,
-            unshocked, supersonic cells (``SimulationConfig.dual_energy``),
-            so the free wind is not re-heated by kinetic-energy truncation
-            error between injection and the shock. ``False`` is the plain
-            total-energy scheme.
-        dual_energy_shock_dilation: Shock-zone widening (cells) for the
-            dual-energy switch (``SimulationConfig.dual_energy_shock_dilation``).
-        wind_floor_kelvin: Wind temperature floor in K
-            (``WindConfig.wind_temperature_floor``), e.g. ``1e4``. ``None``
-            (default) leaves the wind unfloored.
-        cosmic_rays: Enable the grey-CR module (default ``True``). With
-            ``False`` the run is pure hydro, ``dsa_efficiency`` is ignored and
-            the state has no CR rows (``axis_profile`` then returns a zero CR
-            pressure).
-        num_injection_cells: Wind injection radius in cells. ``None``
-            (default) keeps ``num_cells // 32``, i.e. a fixed 1/32 of the box at
-            every resolution. The EI wind is thermally driven, and its Mach number
-            at the termination shock is the Chevalier & Clegg (1985) value at
-            (shock distance / injection radius) -- about 10 for the default at
-            every N (FIXES_TODO.md, 2026-10-14). A fixed value (e.g. ``2``) lets
-            that ratio, and so the pre-shock Mach number, grow as ``N^(2/3)``.
-            ``1`` injects nothing (the stars sit on cell corners in y/z).
-        unsplit: Unsplit FV scheme with SSP-RK2 (default since 2026-10-20,
-            needed for the CR diffusion); ``False`` is the dimensionally split
-            MUSCL-Hancock scheme used until then.
-        diffusion_coefficient: CR diffusivity in code units (default
-            ``CR_DIFFUSION_COEFFICIENT``, 1 code unit ~ 5e20 cm^2/s), via the F_cr relaxation
-            (``CosmicRayGreyConfig.diffusive_relaxation``, unsplit only).
-            ``None`` switches the relaxation off (pure two-moment wave mode,
-            CRs free-stream at ``REDUCED_STREAMING_SPEED``).
-
-    Returns:
-        A dict with the final primitive ``state``, the ``config``,
-        ``helper_data``, ``registered_variables`` and the shock finder's
-        ``ShockFinderResult``.
-    """
+    """The initial state and setup of :func:`run_cwb` (same arguments), without
+    running it: ``(initial_state, config, params, helper_data, registered_variables)``.
+    Lets a driver integrate the run in segments (resolution study,
+    ``pytests/cosmic_rays_grey/resolution_study``)."""
     config = SimulationConfig(
         progress_bar=True,
         first_order_fallback=False,
@@ -556,6 +497,92 @@ def run_cwb(
         ),
     )
 
+    return initial_state, config, params, helper_data, registered_variables
+
+
+def run_cwb(
+    num_cells,
+    dsa_efficiency=DSA_EFFICIENCY,
+    analytic_wind_zone=False,
+    wind_zone_stagnation_fraction=WIND_ZONE_STAGNATION_FRACTION,
+    dual_energy=False,
+    dual_energy_shock_dilation=1,
+    wind_floor_kelvin=None,
+    cosmic_rays=True,
+    num_injection_cells=None,
+    unsplit=True,
+    diffusion_coefficient=CR_DIFFUSION_COEFFICIENT,
+):
+    """Run one 3D stationary colliding-wind-binary simulation and find its shocks.
+
+    Grey two-moment cosmic rays are active by default (``grey_cosmic_rays=True``,
+    ``diffusive_shock_acceleration=True``) so the registered-variable layout
+    (and hence array shapes/indices) is identical across calls -- only
+    ``dsa_efficiency`` varies between a CR-off control (``dsa_efficiency=0``,
+    DSA code path live but injecting nothing) and a CR-on run. Everything
+    else about the physical setup (wind/ambient/cooling/resolution/BCs) is
+    unchanged from the original hydro-only CWB setup. ``cosmic_rays=False``
+    drops the CR module entirely (pure hydro, smaller state, no per-step DSA
+    shock finding): the N=256 control does not fit an 11 GB GPU with CRs on.
+
+    Args:
+        num_cells: The number of cells per dimension (cubic domain).
+        dsa_efficiency: Fraction of each detected shock's dissipated
+            kinetic-energy flux diverted into ``e_cr`` (diffusive shock
+            acceleration). ``0.0`` gives a CR-free control run with the same
+            state layout as a CR-on run.
+        analytic_wind_zone: Overwrite an extended zone around each star with
+            the analytic adiabatically-cooled free wind every step
+            (``WindConfig.analytic_wind_zone``, base state
+            ``WIND_BASE_RADIUS`` / ``WIND_BASE_TEMPERATURE``). ``False`` is
+            the plain EI injection.
+        wind_zone_stagnation_fraction: Zone radius as a fraction of each
+            star's distance to the stagnation point
+            (``WindParams.wind_zone_stagnation_fraction``). Only read when
+            ``analytic_wind_zone`` is on.
+        dual_energy: Use the dual-energy (entropy) pressure in cold,
+            unshocked, supersonic cells (``SimulationConfig.dual_energy``),
+            so the free wind is not re-heated by kinetic-energy truncation
+            error between injection and the shock. ``False`` is the plain
+            total-energy scheme.
+        dual_energy_shock_dilation: Shock-zone widening (cells) for the
+            dual-energy switch (``SimulationConfig.dual_energy_shock_dilation``).
+        wind_floor_kelvin: Wind temperature floor in K
+            (``WindConfig.wind_temperature_floor``), e.g. ``1e4``. ``None``
+            (default) leaves the wind unfloored.
+        cosmic_rays: Enable the grey-CR module (default ``True``). With
+            ``False`` the run is pure hydro, ``dsa_efficiency`` is ignored and
+            the state has no CR rows (``axis_profile`` then returns a zero CR
+            pressure).
+        num_injection_cells: Wind injection radius in cells. ``None``
+            (default) keeps ``num_cells // 32``, i.e. a fixed 1/32 of the box at
+            every resolution. The EI wind is thermally driven, and its Mach number
+            at the termination shock is the Chevalier & Clegg (1985) value at
+            (shock distance / injection radius) -- about 10 for the default at
+            every N (FIXES_TODO.md, 2026-10-14). A fixed value (e.g. ``2``) lets
+            that ratio, and so the pre-shock Mach number, grow as ``N^(2/3)``.
+            ``1`` injects nothing (the stars sit on cell corners in y/z).
+        unsplit: Unsplit FV scheme with SSP-RK2 (default since 2026-10-20,
+            needed for the CR diffusion); ``False`` is the dimensionally split
+            MUSCL-Hancock scheme used until then.
+        diffusion_coefficient: CR diffusivity in code units (default
+            ``CR_DIFFUSION_COEFFICIENT``, 1 code unit ~ 5e20 cm^2/s), via the F_cr relaxation
+            (``CosmicRayGreyConfig.diffusive_relaxation``, unsplit only).
+            ``None`` switches the relaxation off (pure two-moment wave mode,
+            CRs free-stream at ``REDUCED_STREAMING_SPEED``).
+
+    Returns:
+        A dict with the final primitive ``state``, the ``config``,
+        ``helper_data``, ``registered_variables`` and the shock finder's
+        ``ShockFinderResult``.
+    """
+    initial_state, config, params, helper_data, registered_variables = build_cwb(
+        num_cells, dsa_efficiency=dsa_efficiency, analytic_wind_zone=analytic_wind_zone,
+        wind_zone_stagnation_fraction=wind_zone_stagnation_fraction, dual_energy=dual_energy,
+        dual_energy_shock_dilation=dual_energy_shock_dilation, wind_floor_kelvin=wind_floor_kelvin,
+        cosmic_rays=cosmic_rays, num_injection_cells=num_injection_cells, unsplit=unsplit,
+        diffusion_coefficient=diffusion_coefficient,
+    )
     state = time_integration(initial_state, config, params, registered_variables)
 
     # mach_sampling_adaptive: walks each ray until it exits the shock zone

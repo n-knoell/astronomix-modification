@@ -23,11 +23,13 @@ baseline + differential CR check" scope:**
    this repo but was never exercised by any pytest -- a real, previously
    untested gap this closes. The control run's forward (outer) shock radius,
    found via the same ``find_shocks_pfrommer`` used for DSA injection
-   (the outermost detected shock-surface cell), matches Weaver's ``R_2(t)``
-   to <1% at the calibrated resolution/setup below. The shocked-wind
+   (the outermost detected shock-surface cell), lies 8.7% outside Weaver's
+   thin-shell ``R_2(t)``: the forward shock has Mach ~3, compression ~2.95,
+   so the swept-up shell is ~R_2 / (3 * 2.95) ~ 0.11 R_2 thick and the shock
+   leads the thin-shell radius by about that much. The shocked-wind
    interior pressure plateau (averaged over a radial shell strictly between
    the inner and critical radii, away from both shocks) matches Weaver's
-   analytic interior-pressure formula to ~19%. The inner (wind-termination)
+   analytic interior-pressure formula to ~7%. The inner (wind-termination)
    shock is deliberately **not** checked quantitatively against Weaver's
    ``R_1(t)`` -- confirmed (by comparing the detected inner shock's radius
    to the injection region's own edge, ``num_injection_cells * grid_spacing``)
@@ -41,35 +43,35 @@ baseline + differential CR check" scope:**
    energy exactly (diverts thermal pressure into ``e_cr``, touching neither
    density nor velocity), the thermal+kinetic energy the DSA run "loses"
    relative to the control run must equal the CR energy it gained. Calibrated:
-   holds to a relative error of ~2.4e-4 (dsa_efficiency=0.1, dsa_mach_min=1.3,
-   forward-shock Mach ~2.9). ``E_cr`` is ~1.6% of the DSA run's own realized
-   total (thermal+kinetic+CR) energy -- clearly nonzero, physically bounded,
-   and lower than item 7's Sedov blast (~5.3%) as expected for a much weaker
-   (Mach ~3 vs. Mach ~3-29) shock.
+   holds to a relative error of ~3e-4 (dsa_efficiency=0.1, dsa_mach_min=1.3,
+   forward-shock Mach ~3). ``E_cr`` is ~13% of the DSA run's own realized
+   total (thermal+kinetic+CR) energy.
 
-**A real, pre-existing finding surfaced while calibrating, not fixed here
-(out of scope -- unrelated to CR-grey):** the wind module's 3D thermal-
-energy-injection scheme (``_wind_ei3D``) normalizes its injected power by
-the *nominal* spherical injection volume
-(``4/3 * pi * (num_injection_cells * grid_spacing)**3``), but the actual
-per-cell injection mask uses a conservative radius shrunk by half a grid
-cell (``dist <= injection_radius - grid_spacing / 2``). At small
-``num_injection_cells`` this is a large fractional volume mismatch --
-verified directly: at ``num_injection_cells=4`` the shrunk-vs-nominal volume
-ratio is ``(3.5/4)**3 ~= 0.67``, and the measured total injected energy
-(final thermal+kinetic+CR minus initial ambient thermal, across ~1e4 yr) is
-``~66%`` of the nominal ``L_w * t_end`` wind luminosity -- matching this
-predicted ratio almost exactly. Because of this, this test does **not**
-assert an absolute energy budget against the nominal ``L_w * t_end``
-formula (it would fail by a wide, resolution-dependent margin that has
-nothing to do with CR-grey correctness). Instead it uses two budget checks
-that are insensitive to this bias: (a) the differential CR-partition
-identity above, which only compares the two runs against each other, and
-(b) a tight self-consistency check that the control and DSA runs' own
-*realized* total energy (thermal+kinetic+CR) agree with each other (both
-runs share the same, biased, injected-energy budget -- ``dsa_efficiency``
-only redirects a couple of percent of it into ``e_cr``), calibrated to
-agree to ~4e-6 relative error.
+3. **Absolute energy budget (both runs):** final thermal+kinetic+CR energy
+   minus the initial ambient thermal energy equals the nominal wind energy
+   ``L_w * t_end`` (calibrated 1.0017), plus a tight self-consistency check
+   that the control and DSA runs' realized total energies agree (~4e-5).
+
+**Wind normalisation fixed 2026-11-05 (resolution study, PLAN.md C0):**
+``_wind_ei3D`` used to normalise its mass and energy rates by the analytic
+volume ``4/3 * pi * (num_injection_cells * grid_spacing)**3`` while
+injecting only into cells with ``dist <= injection_radius - grid_spacing / 2``,
+so at ``num_injection_cells=4`` it delivered ~66% of the nominal ``L_w`` (and
+of Mdot), and this test could not assert an absolute energy budget. It now
+normalises by the discrete mask volume (as ``_wind_ei3D_source`` does). The
+old 1.6% agreement of the forward shock with Weaver's ``R_2`` was a
+cancellation: the 0.66 luminosity shrank the bubble by 0.66^(1/5) ~ 0.92,
+compensating the thick-shell lead above.
+
+**Open (2026-11-05, DB11):** the DSA run ends with ~2.0x more CR energy in the box
+than was ever injected (injected 0.077 ``L_w t_end``, ``E_cr`` 0.155 ``L_w t_end``). Cause:
+this test runs the two-moment CR transport without ``diffusive_relaxation`` and with the
+placeholder ``reduced_streaming_speed = 1`` -- an undamped CR wave at ``v_red / sqrt(3)``
+relative to the gas. From t ~ 0.3 t_end on the forward shock is slower than that front, the
+CRs stream ahead of it and the shock re-compresses them (the gas pays: total energy and the
+partition identity below are unaffected). With ``reduced_streaming_speed = 0`` the run holds
+0.95 of the injected energy. Which transport this test should use is open; see
+PROGRESS_PHASEB.md DB11. The CR fraction band below (0.001, 0.2) still holds.
 
 **Re-measured 2026-10-10 with the total-pressure HLLC flux** (P_cr in the HLLC flux, pdv work from
 the face velocities; DESIGN.md "Resolved: total-pressure HLLC flux"; values of 2026-10-09 with the
@@ -77,6 +79,12 @@ stage-wise source coupling in brackets):
 ``E_cr / E_total`` (DSA run) 0.0430 [0.0438], energy-partition identity 1.4e-4 [1.8e-4],
 control-vs-DSA total energy 6.2e-6 [8.0e-6], Weaver forward shock 1.6% [1.2%] and interior
 pressure 22.7% [23.5%] (CR-free control; P2 widens its HLLC signal speeds by 1.1 too).
+
+**Re-measured 2026-11-05 after the wind normalisation fix** (current DSA defaults: DB8 CR-aware
+velocity Mach, continuous-normal surface): ``E_cr / E_total`` 0.1312, energy-partition identity
+3.2e-4, control-vs-DSA total energy 4.3e-5, energy budget 1.0017 (control) / 1.0016 (DSA), Weaver
+forward shock 8.7% and interior pressure 6.7%. (At the pre-fix luminosity the current defaults give
+``E_cr / E_total`` 0.113: the 2026-10-10 value 0.043 predates the Phase B DSA changes.)
 """
 
 # ==== GPU selection ====
@@ -244,10 +252,11 @@ def _run_wind_bubble(dsa_efficiency: float):
 
 
 def test_cr_wind_bubble(
-    weaver_shock_radius_tol: float = 0.05,
-    weaver_interior_pressure_tol: float = 0.35,
+    weaver_shock_radius_tol: float = 0.12,
+    weaver_interior_pressure_tol: float = 0.15,
     partition_tol: float = 1e-2,
     self_consistency_tol: float = 1e-3,
+    energy_budget_tol: float = 0.02,
     domain_half_width: float = BOX_SIZE / 2,
     containment_margin: float = 0.1,
 ):
@@ -256,20 +265,24 @@ def test_cr_wind_bubble(
     Args:
         weaver_shock_radius_tol: Max relative error on the control run's
             forward-shock radius (from ``find_shocks_pfrommer``) vs. Weaver's
-            analytic ``R_2(t)``. Calibrated observed error ~0.4%.
+            analytic thin-shell ``R_2(t)``. Calibrated observed error 8.7%:
+            the Mach ~3 forward shock leads the thin-shell radius by the
+            shell thickness (module docstring).
         weaver_interior_pressure_tol: Max relative error on the control run's
             shocked-wind interior pressure plateau vs. Weaver's analytic
-            value. Calibrated observed error ~19%; a looser tolerance than
-            the shock-radius check since this compares a resolution-sensitive
-            volume average, not a single well-defined front position.
+            value. Calibrated observed error 6.7% (2026-11-05; ~19-23% before
+            the wind normalisation fix).
         partition_tol: Max relative error on the differential CR
             energy-partition identity (see module docstring). Calibrated
-            observed error ~2.4e-4.
+            observed error ~3.2e-4.
         self_consistency_tol: Max relative error between the control and DSA
             runs' own realized total (thermal+kinetic+CR) energy -- both draw
-            from the same (systematically biased, see module docstring)
-            injected energy budget, so these must closely agree regardless of
-            that bias. Calibrated observed error ~4e-6.
+            from the same injected energy budget. Calibrated observed error
+            ~4.3e-5.
+        energy_budget_tol: Max relative error of each run's realized total
+            energy minus the initial ambient thermal energy against the
+            nominal wind energy ``L_w * t_end``. Calibrated observed error
+            ~1.7e-3.
         domain_half_width: Half the box size -- the nearest open boundary's
             distance from the wind source.
         containment_margin: Minimum gap the forward shock must stay within
@@ -345,6 +358,18 @@ def test_cr_wind_bubble(
         f"does not match Weaver's analytic value ({p_interior_weaver:.4e}) -- "
         f"rel. err {interior_rel_err:.4e} >= tol {weaver_interior_pressure_tol}."
     )
+
+    # --- Absolute energy budget (both runs) ---
+    l_wind = 0.5 * M_DOT.to(CODE_UNITS.code_mass / CODE_UNITS.code_time).value * V_INF.to(
+        CODE_UNITS.code_velocity).value ** 2
+    e_ambient = P_AMBIENT.to(CODE_UNITS.code_pressure).value / (GAMMA - 1.0) * BOX_SIZE**3
+    for name, run in (("control", control), ("dsa", dsa)):
+        budget = (run["E_total"] - e_ambient) / (l_wind * T_END)
+        print(f"{name}: (E_total - E_ambient) / (L_w t_end) = {budget:.4f}")
+        assert abs(budget - 1.0) < energy_budget_tol, (
+            f"{name} run's injected energy (E_total - E_ambient) is {budget:.4f} of the nominal "
+            f"wind energy L_w * t_end -- off by more than {energy_budget_tol}."
+        )
 
     # --- Differential CR checks (both runs) ---
     self_consistency_rel_err = abs(control["E_total"] - dsa["E_total"]) / control["E_total"]

@@ -592,13 +592,19 @@ def _wind_ei3D(
     source_term = jnp.zeros_like(primitive_state)
 
     injection_radius = num_injection_cells * config.grid_spacing
-    injection_volume = 4 / 3 * jnp.pi * injection_radius**3
 
     # Inject only inside the spherical injection region around each source.
     dist = _wind_source_distances(config, helper_data, source_positions)
     per_source_mask = (dist <= injection_radius - config.grid_spacing / 2).astype(
         primitive_state.dtype
     )
+
+    # Distribute the rates over the discrete volume of each source's mask (as
+    # in _wind_ei3D_source). The analytic 4/3 pi R^3 is larger than the mask
+    # (cells within R - dx/2): only 36% of it at R = 2 cells, 77% at 6 cells,
+    # so Mdot and L were delivered short by a resolution-dependent factor.
+    injection_volume = jnp.sum(per_source_mask, axis=(1, 2, 3)) * config.grid_spacing**3
+    injection_volume = jnp.where(injection_volume > 0, injection_volume, 1.0)
 
     # Mass injection: a uniform density source rate inside each source's
     # mask, summed over sources.

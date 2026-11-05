@@ -1,0 +1,6 @@
+# S0 sizing, N = 64 (M_true from the front trajectory)
+run                      t(R=0.42)  M_true(R0..)  M_true(0.42)  p0/p_post(R0)  M50/M_true (median)  E_cr/E_cr0
+p0=0.25 control             0.0730          40.7          3.76       5.58e-04                0.878        1.16
+p0=0.4 control              0.0720          32.2          3.05       8.92e-04                0.881        1.15
+p0=0.4 kr13                 0.0765          30.0          2.93       1.08e-03                0.865        0.66
+p0=0.6 control              0.0706          26.4          2.58       1.34e-03                0.880        1.15
