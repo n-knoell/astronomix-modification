@@ -1,0 +1,21 @@
+Gamma-ray proxy step 2: maps and SEDs (cr_gamma_maps.py)
+
+2a units vs astropy          4.4e-16 (tol 1e-12)
+2b band 64 vs 640 pts/dec    9.4e-05 (tol 1e-04)
+2c map/SED identity          4.4e-16 (tol 1e-10)
+2d sphere chord (r < 0.8 R)  0.040
+2e AD vs FD                  4.5e-09 (tol 2e-06)
+
+item 11 clumpy (N=240, t=1 kyr): E_cr = 6.544e+49 erg, sum(n_H e_cr dV) = 7.753e+49 erg
+    $\alpha=2.3$ (default)         E^2F(1 GeV, 1.5 kpc) = 8.413e-12 erg cm^-2 s^-1, L(0.1-100 GeV) = 1.077e+34 erg/s
+    $\alpha=2.0$                   E^2F(1 GeV, 1.5 kpc) = 5.322e-12 erg cm^-2 s^-1, L(0.1-100 GeV) = 1.068e+34 erg/s
+    IC 443 shape (Ackermann+13)    E^2F(1 GeV, 1.5 kpc) = 9.277e-12 erg cm^-2 s^-1, L(0.1-100 GeV) = 1.042e+34 erg/s
+    map/SED identity on stored state (1-10 GeV): -9.0e-08
+item 11 uniform (N=240, t=1 kyr): E_cr = 6.745e+49 erg, sum(n_H e_cr dV) = 6.607e+49 erg
+    $\alpha=2.3$ (default)         E^2F(1 GeV, 1.5 kpc) = 7.170e-12 erg cm^-2 s^-1, L(0.1-100 GeV) = 9.182e+33 erg/s
+    $\alpha=2.0$                   E^2F(1 GeV, 1.5 kpc) = 4.536e-12 erg cm^-2 s^-1, L(0.1-100 GeV) = 9.106e+33 erg/s
+    IC 443 shape (Ackermann+13)    E^2F(1 GeV, 1.5 kpc) = 7.907e-12 erg cm^-2 s^-1, L(0.1-100 GeV) = 8.883e+33 erg/s
+    map/SED identity on stored state (1-10 GeV): -7.2e-08
+    clumpy/uniform E^2F at 1 GeV, $\alpha=2.3$ (default): 1.173
+    clumpy/uniform E^2F at 1 GeV, $\alpha=2.0$: 1.173
+    clumpy/uniform E^2F at 1 GeV, IC 443 shape (Ackermann+13): 1.173

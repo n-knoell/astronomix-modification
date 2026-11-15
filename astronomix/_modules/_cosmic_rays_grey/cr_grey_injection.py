@@ -373,6 +373,55 @@ def dsa_mach_and_flux(primitive_state, sf_result, config, params, registered_var
     return mach_numbers, thermal_energy_flux
 
 
+def dsa_injection_rate_by_slope(
+    primitive_state, config, params, registered_variables, helper_data, slope_edges
+):
+    """Nominal DSA injection rate of a state, binned by the test-particle
+    momentum slope of each injecting shock (GAMMA_RAY_PLAN.md step 3,
+    "alpha budget"). Diagnostic only; not used by the solver.
+
+    Uses exactly what :func:`inject_crs_at_shocks` uses (finder options,
+    ``dsa_mach_and_flux``, ``zeta(M)``, area weights) and returns
+    ``sum zeta * flux * w * dx^(ndim-1)`` per bin -- the injection's total
+    before its positivity cap (the post-shock spread conserves the total).
+    The slope is ``alpha = (r + 2) / (r - 1)`` with the gas-only
+    Rankine-Hugoniot compression ``r(M)`` of the Mach number DSA uses (the
+    CR-aware one under ``dsa_mach_cr_aware``).
+
+    Args:
+        slope_edges: increasing 1D sequence of K bin edges in alpha (static);
+            the result has K + 1 bins: ``(-inf, e_0), [e_0, e_1), ...,
+            [e_{K-1}, inf)``.
+
+    Returns:
+        ``(rate_per_bin, total_rate)``, energy / time in code units.
+    """
+    cr_params = params.cosmic_ray_grey_params
+    cr_config = config.cosmic_ray_grey_config
+    gamma_gas = params.gamma
+    sf_result = find_shocks_pfrommer(
+        primitive_state, config, registered_variables, helper_data,
+        mach_min=cr_params.dsa_mach_min, **dsa_shock_finder_kwargs(cr_config),
+    )
+    mach, flux = dsa_mach_and_flux(primitive_state, sf_result, config, params, registered_variables)
+    rate = (
+        dsa_efficiency_of_mach(cr_config, cr_params)(mach) * flux
+        * dsa_area_weights(primitive_state, sf_result, cr_config, registered_variables)
+        * config.grid_spacing ** (config.dimensionality - 1)
+    )
+    m2 = jnp.maximum(mach, 1.0) ** 2
+    r = (gamma_gas + 1.0) * m2 / ((gamma_gas - 1.0) * m2 + 2.0)
+    alpha = (r + 2.0) / jnp.maximum(r - 1.0, 1e-6)
+    edges = jnp.asarray(slope_edges)
+    bin_index = jnp.searchsorted(edges, alpha, side="right")
+    injecting = mach > 0.0
+    rate_per_bin = jnp.stack([
+        jnp.sum(jnp.where(injecting & (bin_index == k), rate, 0.0))
+        for k in range(len(slope_edges) + 1)
+    ])
+    return rate_per_bin, jnp.sum(jnp.where(injecting, rate, 0.0))
+
+
 @partial(jax.jit, static_argnames=["config", "registered_variables"])
 def inject_crs_at_shocks(
     primitive_state: STATE_TYPE,

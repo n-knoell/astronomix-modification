@@ -1,0 +1,18 @@
+Gamma-ray proxy steps 3-4 (cr_gamma_snr_cloud_demo.py)
+
+Step 3: alpha budget (share of time-integrated DSA injection per test-particle slope)
+  item15 N=128 (401 samples, wall 0.07 h): E_inj = 1.656e+50 erg, E_cr(end) = 9.665e+49 erg; share alpha<2.2 = 1.0000, <2.3 = 1.0000 -> PASS
+      bins [-inf,2.05):1.0000  [2.05,2.1):0.0000  [2.1,2.15):0.0000  [2.15,2.2):0.0000  [2.2,2.3):0.0000  [2.3,2.5):0.0000  [2.5,3):0.0000  [3,inf):0.0000
+  item15 N=192 (401 samples, wall 0.37 h): E_inj = 2.032e+50 erg, E_cr(end) = 1.080e+50 erg; share alpha<2.2 = 1.0000, <2.3 = 1.0000 -> PASS
+      bins [-inf,2.05):1.0000  [2.05,2.1):0.0000  [2.1,2.15):0.0000  [2.15,2.2):0.0000  [2.2,2.3):0.0000  [2.3,2.5):0.0000  [2.5,3):0.0000  [3,inf):0.0000
+  item15 N=240 (401 samples, wall 0.97 h): E_inj = 2.148e+50 erg, E_cr(end) = 1.121e+50 erg; share alpha<2.2 = 1.0000, <2.3 = 1.0000 -> PASS
+      bins [-inf,2.05):1.0000  [2.05,2.1):0.0000  [2.1,2.15):0.0000  [2.15,2.2):0.0000  [2.2,2.3):0.0000  [2.3,2.5):0.0000  [2.5,3):0.0000  [3,inf):0.0000
+  item11u N=240 (401 samples, wall 0.56 h): E_inj = 2.008e+50 erg, E_cr(end) = 1.077e+50 erg; share alpha<2.2 = 1.0000, <2.3 = 1.0000 -> PASS
+      bins [-inf,2.05):1.0000  [2.05,2.1):0.0000  [2.1,2.15):0.0000  [2.15,2.2):0.0000  [2.2,2.3):0.0000  [2.3,2.5):0.0000  [2.5,3):0.0000  [3,inf):0.0000
+
+Step 4: item 15 at 240^3, t = 2000 yr, float32 run; E_cr = 1.121e+50 erg, sum(n_H e_cr dV) = 1.293e+50 erg
+  $\alpha=2.3$ (default)           E^2F(1 GeV, 1.5 kpc) = 1.400e-11, peak at 0.83 GeV, 50 MeV suppression vs 3-30 GeV slope 0.958; IC 443 peak / ours = 8.5
+  $\alpha=2.0$                     E^2F(1 GeV, 1.5 kpc) = 8.953e-12, peak at 148.11 GeV, 50 MeV suppression vs 3-30 GeV slope 0.940; IC 443 peak / ours = 8.7
+  IC 443 fit shape (Ackermann+13)  E^2F(1 GeV, 1.5 kpc) = 1.540e-11, peak at 0.76 GeV, 50 MeV suppression vs 3-30 GeV slope 0.976; IC 443 peak / ours = 7.6
+  IC on CMB (K_ep=0.01, alpha 2.3, no cooling): E^2F(1 GeV) = 1.390e-12; pion/IC at 1 GeV = 10.1
+  1-10 GeV map: brightest pixel 1.00 cells from the cloud centre (cloud radius 12.0 cells)

@@ -7,6 +7,62 @@ file is what's actually done against it.
 Phase A test-plan work (`astronomix_CR_phaseA_test_plan.md`) is tracked in `PROGRESS_PHASEA.md`;
 scheme changes that come out of it are still logged here.
 
+## Done (2026-11-15): γ-ray proxy steps 3 + 4, α budget passes and item-15 demo (uncommitted)
+
+- **Step 3.** New diagnostic `cr_grey_injection.dsa_injection_rate_by_slope`, evaluated in a snapshot
+  callback; the solver is untouched. Unit test `cr_dsa_slope_budget.py` agrees with the actual injection to
+  2e-12.
+  - Runs: item 15 at 128³/192³/240³ and item-11 uniform at 240³, on scratch in `gamma_step3/`.
+  - **> 99.99 % of the injected CR energy is at α < 2.05 in all four.** The ambient gas is 1e4 K, so M ~ 100;
+    weak internal shocks carry 4e-4 of the rate. One global α is justified for these setups.
+  - Re-check before using the proxy for hot media or CWB wings.
+- **Step 4.** `cr_gamma_snr_cloud_demo.py` uses the cached 240³ item-15 state (2 kyr), in `pics/gamma_step3_4/`.
+  - With α = 2.3 the SED peaks at 0.83 GeV, like IC 443's ~0.8 GeV. That fixes the open 2026-10-04 shape issue.
+  - The level is 8.5× below IC 443, as expected for this setup.
+  - 50 MeV suppression is 96 %; the hotspot is 1 cell from the cloud centre; pion/IC(CMB) = 10 at 1 GeV.
+- **Memory.** item 15's pytest runs its simulation in float64 (global x64). The wrapper uses float32 plus
+  `XLA_PYTHON_CLIENT_MEM_FRACTION=0.95` (240³ with the callback: 9.1 GB).
+
+## Done (2026-11-15): γ-ray proxy step 2, maps and SEDs from stored states (uncommitted)
+
+New post-processing functions in `cr_grey_emission.py`, all differentiable:
+- `hadronic_target_field`: code units → `n_H e_cr`, with X_H passed explicitly;
+- `pion_decay_band_energy_per_ecr`: 64 points per decade, < 1e-4;
+- `pion_decay_sed`;
+- `pion_decay_band_map`.
+
+The test `pytests/cosmic_rays_grey/cr_gamma_maps.py` passes on GPU (details in `GAMMA_RAY_PLAN.md` step 2).
+
+The demo uses the stored item-11 240³ states, without rerunning:
+- At α = 2.3 and 1.5 kpc, E²F(1 GeV) = 8.4e-12 (clumpy) and 7.2e-12 (uniform) erg cm⁻² s⁻¹.
+- L(0.1–100 GeV) = 1.1e34 erg/s.
+- Clumpy/uniform = 1.17, and the clumps are the hotspots.
+- Figure: `pytests/cosmic_rays_grey/pics/gamma_step2_maps/`.
+
+## Done (2026-11-13): γ-ray proxy step 1, emissivity per unit kinetic e_cr (uncommitted)
+
+The plan is `GAMMA_RAY_PLAN.md`, the slim version. User decisions: one global α = 2.3, obliquity only after the
+step-4 demo, and the code stays in this module.
+
+- **New code in `cr_grey_emission.py`:** `ProtonMomentumSpectrum`, a power law in p/(m_p c) with low cutoff
+  q = 0.5, exponential cutoff p_max = 1e5, and an optional Ackermann et al. (2013) smooth break.
+  - The constants `ACKERMANN13_IC443` / `ACKERMANN13_W44` give the broken power laws. The proton smoothness
+    is not given in that paper; 0.1 is assumed.
+  - `pion_decay_emissivity_per_ecr(E, spectrum)` returns K with `j_γ = n_H e_cr K`. `n_H` is hydrogen only;
+    the nuclear enhancement covers He. The default gives K(1 GeV) = 1.818e-14.
+  - The legacy `proton_spectrum_normalized_to_energy` path is unchanged.
+- **New test `pytests/cosmic_rays_grey/cr_pion_emissivity_per_ecr.py`:** passes on GPU. Normalisation vs quad
+  9.1e-6, vs Pfrommer+17 Eq. 2 7.7e-6, K vs naima 9.1e-6 (7 cases), AD vs FD 3e-7.
+- **K(new)/K(legacy)** at α = 2.3: 1.30 at 0.1 GeV, 1.06 at 1 GeV, 1.03 at ≥ 3 GeV. So the level change is
+  small, not the ~10–35 % estimated in the plan; the change is mostly in the pion bump.
+- **Bug fixed in `_trapz_loglog`.** The absolute `max(y, 1e-30)` floor turned bins with y < 1e-30 into constant
+  bins, so the unit-amplitude pion kernels were up to 1.2 % high above ~30 GeV (+0.1 % at 1 GeV).
+  - Affected: item 15's `k_pion`, and `_K_PION_1GEV` in the Phase-D scripts (the 1 GeV kernel is 0.11 % high).
+    Neither was rerun; Phase D fits relative to its own forward model, so it is self-consistent.
+  - Leptonic kernels and the item-13/14 tests are unaffected and still pass.
+  - Also added NaN-gradient guards: subnormal values are masked with b = 0, and log differences replace the log
+    of the ratio.
+
 ## Launched (2026-10-14 19:41): M7 rerun with the current default scheme, v_red = 1e4 and 3000 km/s
 
 User decisions (2026-10-14), for a possible M7 section in the status report:

@@ -1,0 +1,14 @@
+Gamma-ray proxy step 1: K(E) per unit kinetic e_cr (cr_pion_emissivity_per_ecr.py)
+
+1a  worst rel. err (norm vs quad)          9.09e-06  (tol 3e-05)
+1a' worst rel. err (norm vs Pfrommer Eq.2) 7.66e-06  (tol 3e-05)
+1b  worst rel. err (K vs naima)            9.09e-06  (tol 3e-05)
+1c  worst rel. err (AD vs FD)              3.01e-07  (tol 2e-06)
+
+K(new) / K(legacy), same alpha, cutoff ~94 TeV:
+  E [GeV]       0.1       0.3       1.0       3.0      10.0     100.0
+  a=2.0      1.213     1.138     1.050     1.030     1.028     1.028
+  a=2.3      1.302     1.195     1.062     1.032     1.028     1.027
+  a=2.5      1.320     1.194     1.033     0.995     0.990     0.990
+
+K(1 GeV), default spectrum (alpha 2.3, q 0.5, p_max 1e5): 1.8183e-14 photons s^-1 GeV^-1 per (cm^-3 erg cm^-3)

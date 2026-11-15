@@ -190,6 +190,243 @@ def proton_spectrum_normalized_to_energy(
     return GreyProtonSpectrum(amplitude=amplitude, e_0=e_0, alpha=alpha, e_cutoff=e_cutoff, beta=beta)
 
 
+# ---------------------------------------------------------------------------
+# Momentum-space spectrum normalised to the fluid's *kinetic* e_cr
+# (GAMMA_RAY_PLAN.md step 1).
+#
+# ``proton_spectrum_normalized_to_energy`` above (kept unchanged for the
+# existing item-15 / Phase-D / gradient-check scripts) uses a power law in
+# *total* energy and matches ``integral(E J dE)`` -- rest mass included, above
+# the pion threshold only -- to the target energy. The fluid variable e_cr is
+# the *kinetic* energy density of the whole CR population (P_cr = e_cr / 3 in
+# the relativistic limit), so that convention biases the gamma-ray level by
+# tens of per cent (GAMMA_RAY_PLAN.md Sec. 3). The functions below follow
+# Pfrommer et al. (2017, ApJL 847, L13, Eqs. 1-2) instead:
+#
+#     f(p) = C g(p),  g(p) = p^-alpha * [smooth break] * exp(-(p/p_max)^beta_c)
+#                            * theta(p - q),
+#     e_cr = integral_q^inf f(p) T(p) dp,
+#
+# with p the dimensionless momentum P / (m_p c) and T the kinetic energy.
+# ---------------------------------------------------------------------------
+
+#: erg -> GeV.
+ERG_TO_GEV = float((1.0 * _u.erg).to(_u.GeV).value)
+
+
+class ProtonMomentumSpectrum(NamedTuple):
+    """Shape of a grey CR-proton spectrum in dimensionless momentum
+    ``p = P / (m_p c)`` (unit amplitude; the amplitude comes from ``e_cr``).
+
+    ``g(p) = p^-alpha [1 + (p/p_break)^((alpha_2 - alpha)/break_smoothness)]^-break_smoothness
+    exp(-(p/p_max)^cutoff_beta) theta(p - q)``
+
+    - Single power law: ``alpha_2=None`` (static; the break factor is dropped).
+    - Ackermann et al. (2013, Science 339, 807, Eq. 1) smoothly broken power
+      law: ``alpha=s1``, ``alpha_2=s2``, ``p_break=p_br / (m_p c)``. Their
+      paper does not state the proton smoothness parameter; the default 0.1
+      (the value they fix for their *photon* broken power law) is an
+      assumption.
+    - ``p_max=None`` (static) drops the exponential cutoff.
+
+    Defaults (GAMMA_RAY_PLAN.md Sec. 6): alpha = 2.3, q = 0.5 (Pfrommer et al.
+    2017), p_max = 1e5 (~94 TeV). Float fields may be traced (differentiable).
+    """
+
+    alpha: float = 2.3
+    q: float = 0.5
+    p_max: float | None = 1.0e5
+    cutoff_beta: float = 1.0
+    alpha_2: float | None = None
+    p_break: float = 1.0e3
+    break_smoothness: float = 0.1
+
+
+#: Ackermann et al. (2013) best-fit proton spectra (s1, s2, p_br [GeV/c]).
+ACKERMANN13_IC443 = dict(alpha=2.36, alpha_2=3.1, p_break=239.0 / M_P_GEV)
+ACKERMANN13_W44 = dict(alpha=2.36, alpha_2=3.5, p_break=22.0 / M_P_GEV)
+
+
+def proton_kinetic_energy_gev(p_hat):
+    """Kinetic energy T(p) = m_p c^2 (sqrt(1 + p^2) - 1), GeV, written as
+    m_p p^2 / (sqrt(1 + p^2) + 1) to avoid cancellation at small p."""
+    p2 = p_hat * p_hat
+    return M_P_GEV * p2 / (jnp.sqrt(1.0 + p2) + 1.0)
+
+
+def proton_momentum_shape(spectrum: ProtonMomentumSpectrum, p_hat):
+    """Unit-amplitude shape g(p) of :class:`ProtonMomentumSpectrum`, per unit
+    dimensionless momentum. Zero below ``q``."""
+    p_safe = jnp.maximum(p_hat, _TINY)
+    g = p_safe ** (-spectrum.alpha)
+    if spectrum.alpha_2 is not None:
+        x = p_safe / spectrum.p_break
+        w = spectrum.break_smoothness
+        g = g * (1.0 + x ** ((spectrum.alpha_2 - spectrum.alpha) / w)) ** (-w)
+    if spectrum.p_max is not None:
+        g = g * jnp.exp(-((p_safe / spectrum.p_max) ** spectrum.cutoff_beta))
+    return jnp.where(p_hat >= spectrum.q, g, 0.0)
+
+
+def proton_unit_kinetic_energy_gev(
+    spectrum: ProtonMomentumSpectrum,
+    p_hat_max: float = 1.0e7,
+    n_per_decade: int = 100,
+):
+    """``integral_q^p_hat_max g(p) T(p) dp`` for the unit-amplitude shape, GeV
+    (per unit amplitude). The grid starts exactly at ``q`` (no step inside the
+    integral) and has a static size, so ``q`` may be traced; it covers
+    ``q >= 1e-3`` with at least ``n_per_decade`` points per decade."""
+    n = max(10, int(n_per_decade * (math.log10(p_hat_max) + 3.0)))
+    q = jnp.asarray(spectrum.q)
+    p = q * (p_hat_max / q) ** jnp.linspace(0.0, 1.0, n)
+    return _trapz_loglog(proton_momentum_shape(spectrum, p) * proton_kinetic_energy_gev(p), p)
+
+
+def proton_number_per_total_energy(spectrum: ProtonMomentumSpectrum, amplitude, e_total_gev):
+    """J(E) = C g(p(E)) dp/dE, particles per GeV of *total* proton energy --
+    the form the Kafexhiu et al. (2014) integral (and naima) expects.
+    With p = P/(m_p c): dp/dE = E / (m_p^2 p)."""
+    p_hat = jnp.sqrt(jnp.maximum(e_total_gev ** 2 - M_P_GEV ** 2, _TINY)) / M_P_GEV
+    return amplitude * proton_momentum_shape(spectrum, p_hat) * e_total_gev / (M_P_GEV ** 2 * p_hat)
+
+
+def pion_decay_emissivity_per_ecr(
+    photon_energy_gev,
+    spectrum: ProtonMomentumSpectrum = ProtonMomentumSpectrum(),
+    *,
+    nuclear_enhancement: bool = True,
+    hi_e_model: str = "Pythia8",
+    e_p_min_gev: float = M_P_GEV + T_TH_GEV + 1e-4,
+    e_p_max_gev: float = 1e7,
+    n_e_p_per_decade: int = 100,
+    p_hat_norm_max: float = 1.0e7,
+    n_norm_per_decade: int = 100,
+):
+    """Pion-decay emissivity kernel K(E_gamma) per unit target density and
+    per unit CR *kinetic* energy density (GAMMA_RAY_PLAN.md step 1):
+
+        j_gamma(E) [photons s^-1 GeV^-1 cm^-3] = n_H [cm^-3] * e_cr [erg cm^-3] * K(E)
+
+    ``n_H`` is the target *hydrogen* density, as in Kafexhiu et al. (2014) /
+    naima's ``nh``; helium and heavier nuclei (in target and CRs) enter
+    through ``nuclear_enhancement`` and must not be added to ``n_H`` again.
+    ``e_cr`` is the fluid CR energy density, interpreted as protons with
+    the shape ``spectrum``.
+
+    The proton-energy integration (``e_p_*``) matches
+    :func:`pion_decay_photon_spectrum` / naima's defaults; ``p_hat_norm_max``
+    and ``n_norm_per_decade`` set the normalisation integral
+    (:func:`proton_unit_kinetic_energy_gev`). All of these are static.
+    K is a per-unit quantity (~1e-13 for E ~ 1 GeV), so it is float32-safe;
+    differentiable in the float fields of ``spectrum``.
+
+    Returns:
+        K, photons s^-1 GeV^-1 per (cm^-3 * erg cm^-3), same shape as
+        ``photon_energy_gev``.
+    """
+    amplitude = ERG_TO_GEV / proton_unit_kinetic_energy_gev(spectrum, p_hat_norm_max, n_norm_per_decade)
+    n_ep = max(10, int(n_e_p_per_decade * math.log10(e_p_max_gev / e_p_min_gev)))
+    Ep = jnp.logspace(math.log10(e_p_min_gev), math.log10(e_p_max_gev), n_ep)
+    J = proton_number_per_total_energy(spectrum, amplitude, Ep)
+    return _pp_photon_rate(Ep, J, photon_energy_gev, 1.0, nuclear_enhancement, hi_e_model)
+
+
+# ---------------------------------------------------------------------------
+# Maps and SEDs from (stored) simulation states -- GAMMA_RAY_PLAN.md step 2.
+#
+# Everything is linear in the per-cell "hadronic target" field
+# w = n_H [cm^-3] * e_cr [erg cm^-3], so a map/SED is K(E) (or its band
+# integral) times a sum of w over cells or along the line of sight. All
+# functions are plain jnp (differentiable in the fields and the float
+# spectrum parameters); unit conversion factors are host-side floats.
+# ---------------------------------------------------------------------------
+
+#: 4 pi, for intensities per steradian.
+_FOUR_PI = 4.0 * math.pi
+
+
+def hadronic_target_field(rho_code, e_cr_code, code_units, hydrogen_mass_fraction: float):
+    """Per-cell ``w = n_H e_cr`` [cm^-3 * erg cm^-3] from code-unit density
+    and CR energy density.
+
+    ``n_H = hydrogen_mass_fraction * rho / m_p``. Pass the value the setup
+    assumes: the item-11/15 setups define ``rho = n m_p`` with ``n`` meant as
+    hydrogen, i.e. ``1.0``; a cosmic mixture is ~0.71. Helium is *not* added to
+    n_H -- the nuclear-enhancement factor in K already accounts for it.
+
+    Args:
+        rho_code: density field, code units.
+        e_cr_code: CR energy density field, code units (energy / length^3).
+        code_units: an ``astronomix.CodeUnits`` instance.
+        hydrogen_mass_fraction: X_H (required, see above).
+    """
+    rho_to_cgs = float((1.0 * code_units.code_density).to(_u.g / _u.cm ** 3).value)
+    ecr_to_cgs = float((1.0 * code_units.code_energy / code_units.code_length ** 3).to(_u.erg / _u.cm ** 3).value)
+    n_h_per_rho = hydrogen_mass_fraction * rho_to_cgs / float(_const.m_p.to(_u.g).value)
+    return (n_h_per_rho * ecr_to_cgs) * rho_code * e_cr_code
+
+
+def pion_decay_band_energy_per_ecr(
+    e_min_gev: float,
+    e_max_gev: float,
+    spectrum: ProtonMomentumSpectrum = ProtonMomentumSpectrum(),
+    n_per_decade: int = 64,
+    **kernel_kwargs,
+):
+    """Band-integrated energy emissivity per unit target field,
+    ``integral_{e_min}^{e_max} E K(E) dE``, erg s^-1 per (cm^-3 * erg cm^-3).
+    The band edges are static. Second-order convergent; the default 64 points
+    per decade agree with 640 to < 1e-4 in every band from 30 MeV to 10 TeV
+    (worst in the pion bump; 16/decade would give ~1.3e-3;
+    ``pytests/cosmic_rays_grey/cr_gamma_maps.py``)."""
+    n = max(4, int(math.ceil(n_per_decade * math.log10(e_max_gev / e_min_gev))) + 1)
+    E = jnp.logspace(math.log10(e_min_gev), math.log10(e_max_gev), n)
+    K = pion_decay_emissivity_per_ecr(E, spectrum, **kernel_kwargs)
+    return _trapz_loglog(E * K, E) / ERG_TO_GEV
+
+
+def pion_decay_sed(
+    target_field,
+    cell_volume_cm3: float,
+    photon_energy_gev,
+    spectrum: ProtonMomentumSpectrum = ProtonMomentumSpectrum(),
+    distance_cm: float | None = None,
+    **kernel_kwargs,
+):
+    """Domain-total pion-decay SED from a ``hadronic_target_field``.
+
+    Returns ``E^2 dL/dE`` [erg s^-1] (``distance_cm=None``) or
+    ``E^2 dF/dE = E^2 dL/dE / (4 pi d^2)`` [erg cm^-2 s^-1], at
+    ``photon_energy_gev``."""
+    E = jnp.asarray(photon_energy_gev)
+    e2k_erg = E * E * pion_decay_emissivity_per_ecr(E, spectrum, **kernel_kwargs) / ERG_TO_GEV
+    sed = e2k_erg * (jnp.sum(target_field) * cell_volume_cm3)
+    if distance_cm is not None:
+        sed = sed / (_FOUR_PI * distance_cm ** 2)
+    return sed
+
+
+def pion_decay_band_map(
+    target_field,
+    cell_length_cm: float,
+    e_min_gev: float,
+    e_max_gev: float,
+    spectrum: ProtonMomentumSpectrum = ProtonMomentumSpectrum(),
+    axis: int = 2,
+    **band_kwargs,
+):
+    """Projected band energy intensity along ``axis`` (optically thin):
+
+        I = (1 / 4 pi) sum_LOS w dl * integral_band E K dE   [erg cm^-2 s^-1 sr^-1]
+
+    Distance-independent. The energy flux of one pixel (side ``cell_length``)
+    at distance d is ``I * (cell_length / d)^2``; summed over the map it equals
+    the band integral of :func:`pion_decay_sed`'s ``E dF/dE``."""
+    column = jnp.sum(target_field, axis=axis) * cell_length_cm
+    return column * pion_decay_band_energy_per_ecr(e_min_gev, e_max_gev, spectrum, **band_kwargs) / _FOUR_PI
+
+
 def _sigma_pp_inel(Tp):
     """Inelastic p-p cross section, Kafexhiu et al. (2014) Eq. 1, cm^2."""
     Tp_safe = jnp.maximum(Tp, _TINY)
@@ -378,19 +615,37 @@ def _trapz_loglog(y, x):
     matches ``naima.utils.trapz_loglog`` exactly (see that function for the
     derivation: locally treats each bin as an exact power law and integrates
     it analytically, falling back to the ``\\int 1/x = log(x)`` case when the
-    local index is -1)."""
+    local index is -1).
+
+    Zero-valued endpoints are masked (bin contributes 0, as in naima), *not*
+    floored: an absolute floor (``max(y, _TINY)``, used until 2026-11-13)
+    silently turned every bin with ``y < 1e-30`` into a constant (b = 0)
+    bin. That biased unit-amplitude pion kernels (item 15, Phase D) high by
+    up to ~1.2 % above a few GeV (GAMMA_RAY_PLAN.md step 1).
+
+    "Zero" means below the dtype's smallest *normal* number: subnormal
+    values (e.g. an exponential cutoff tail underflowing) would make the
+    backward pass of ``log(y)`` overflow (1/y = inf, times 0 -> NaN)."""
     y1, y2 = y[..., :-1], y[..., 1:]
     x1, x2 = x[..., :-1], x[..., 1:]
-    y1_safe = jnp.maximum(y1, _TINY)
-    y2_safe = jnp.maximum(y2, _TINY)
-    b = jnp.log(y2_safe / y1_safe) / jnp.log(x2 / x1)
+    y_min = jnp.finfo(jnp.result_type(y, float)).tiny
+    pos1 = y1 > y_min
+    pos2 = y2 > y_min
+    y1_safe = jnp.where(pos1, y1, 1.0)
+    y2_safe = jnp.where(pos2, y2, 1.0)
+    # b = 0 in masked bins: a masked endpoint's placeholder 1.0 next to a
+    # tiny real value gives |b| ~ 1e4, (x2/x1)**b = inf, and NaN in the
+    # backward pass even though the bin is masked in the forward pass.
+    # log(y2) - log(y1), not log(y2 / y1): the quotient's derivative
+    # y2 / y1**2 overflows for y ~ 1e-300 (cutoff tails).
+    b = jnp.where(pos1 & pos2, (jnp.log(y2_safe) - jnp.log(y1_safe)) / jnp.log(x2 / x1), 0.0)
     denom = b + 1.0
     is_regular = jnp.abs(denom) > 1e-10
     denom_safe = jnp.where(is_regular, denom, 1.0)
     powerlaw_term = (y1 * (x2 * (x2 / x1) ** b - x1)) / denom_safe
     loglinear_term = x1 * y1 * jnp.log(x2 / x1)
     trapz_i = jnp.where(is_regular, powerlaw_term, loglinear_term)
-    trapz_i = jnp.where((y1 == 0.0) | (y2 == 0.0), 0.0, trapz_i)
+    trapz_i = jnp.where(pos1 & pos2, trapz_i, 0.0)
     return jnp.sum(trapz_i, axis=-1)
 
 
@@ -435,9 +690,15 @@ def pion_decay_photon_spectrum(
     """
     n_ep = max(10, int(n_e_p_per_decade * math.log10(e_p_max_gev / e_p_min_gev)))
     Ep = jnp.logspace(math.log10(e_p_min_gev), math.log10(e_p_max_gev), n_ep)
-    Tp = Ep - M_P_GEV
     J = proton_number_density(spectrum, Ep)
+    return _pp_photon_rate(Ep, J, photon_energy_gev, gas_number_density_cm3, nuclear_enhancement, hi_e_model)
 
+
+def _pp_photon_rate(Ep, J, photon_energy_gev, gas_number_density_cm3, nuclear_enhancement, hi_e_model):
+    """Kafexhiu et al. (2014) photon production rate for J(E_p) [1/GeV] on the
+    total-energy grid ``Ep`` [GeV]: ``n c integral(dsigma/dE_gamma J dE_p)``,
+    photons / (s GeV). Shared by both spectrum conventions."""
+    Tp = Ep - M_P_GEV
     photon_energy_gev = jnp.asarray(photon_energy_gev)
     scalar_input = photon_energy_gev.ndim == 0
 
