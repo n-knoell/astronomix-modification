@@ -28,7 +28,7 @@ from analyse import INK, MUTED, _style  # noqa: E402
 RAW = Path("/export/scratch/nknoell/resolution_study")
 PICS = Path(__file__).resolve().parent / "pics"
 LAM_COL = {0.0: "#2a2a2a", 0.03: "#9ecae1", 0.1: "#4292c6", 0.3: "#08306b"}
-N_ALPHA = {48: 0.35, 64: 0.45, 96: 0.6, 128: 0.75, 160: 0.85, 192: 1.0}
+N_ALPHA = {48: 0.3, 64: 0.38, 96: 0.46, 128: 0.54, 160: 0.62, 192: 0.7, 256: 0.8, 320: 0.9, 384: 1.0}
 GAMMA = 5.0 / 3.0
 
 

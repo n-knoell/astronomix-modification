@@ -782,3 +782,74 @@ locally), ~30 at λ 0.1, ~10 at λ 0.3.
    finder artefact into the convergence).
 3. S-CP ζ 0.1 / KR13 λ 0.03 / 0.1 at 256-384 (E_cr not converged; KR13 Mach sensitivity).
 
+
+# H200 extension (EXTENSION_KICKSTART.md)
+
+## H200 extension: phase 0 (2026-11-07; `h200_phase0_check.py` → `pics/H200_phase0_check.txt`)
+
+compgpu12, all phase-0 jobs on one H200 (GPU-30623e85…, alone on it, pin verified), HEAD
+`a9ffc8f` (stamped diff = `launcher/autoqueue.py` only, no run code), backend NATIVE_JAX. The
+physics code of the old 2080 Ti runs is byte-identical to HEAD: their recorded
+`stamp_git_diff_sha1` (748fe9b…) equals `git diff c70df4d HEAD` over `stellar_wind.py` +
+`_cwb_setup.py`.
+
+**Checks: H200 rerun vs 2080 Ti file** (series: max_t |Δ| / max_t |old|; state: L1 per variable).
+
+| check | result | worst diagnostic | final state L1 | steps |
+|---|---|---|---|---|
+| S-PE 128 ζ 0.1 | **pass** | 3e-7 (M16), injected 2e-8 | ≤ 7e-6 | 1030 = 1030 |
+| S-CP 128 ζ 0.1 λ 0.1 | **pass** | 5e-7 (M16), injected 9e-8 | ≤ 8e-6 | 4453 = 4453 |
+| W 128 λ 0.1 | **pass** on the kickstart criteria (E_cr / injected 3e-6, M50_fs 1e-6, precursor `prof_ecr` 6e-5) | 6e-5 | 1.2e-3 in F_cr (vars 6-8), ≤ 6e-4 elsewhere | 20048 = 20048 |
+| CWB 128 ζ 0.1 | **FAIL** | per-shock M50 ≤ 6e-4 ok, but inj_wind1 4e-2, inj_wind2 9e-3, E_cr 1e-2, total injected 4e-3, axis `mach_ts1/2` 0.13 / 0.07 | F_cr 0.12-0.16, e_cr 3e-2 | 2615 = 2615 |
+
+CWB time trace (relative difference per snapshot): E_cr 1e-6 at t/t_end 0.05, 1e-4 by 0.15,
+4e-4 at 0.7, 1e-2 at 1.0; ax_ecr 7e-6 → 0.3; E_th stays ≤ 2e-4; the per-step injection first
+differs by > 1e-6 at step 94 of 2615. Same step count, same dt sequence to 4e-4. Smooth growth
+from round-off, not a jump: consistent with GPU-dependent summation order amplified by the
+unsteady CWB (the Sedov and wind runs, smooth and self-similar, stay at 1e-6). Not yet shown:
+that two runs on the *same* GPU type differ the same way (no run-to-run repeat exists).
+**Decision (user, 2026-11-07): explanation accepted as it stands, phase 1 started.** CWB noise
+floor (H200 vs 2080 Ti realisation of the same run, 128³): late-time (t/t_end ≥ 0.8) injection per
+wind 1-4%, E_cr up to 1%, axis Mach `mach_ts1/2` 5-13%; per-shock M50 ≤ 6e-4. CWB convergence
+statements below this level are not resolved by the study.
+
+**Memory and speed (step0 probes, H200, DSA on).** H200 speed-up = 2080 Ti s/step (224³ Sedov,
+192³ CWB probe, scaled ∝ N³) / H200 s/step. The 128³ checks (2.7-6.2×) under-load the GPU.
+
+| case | N | peak GB | s/step | speed-up |
+|---|---|---|---|---|
+| Sedov | 256 | 13.4 | 0.107 | 7.8 |
+| Sedov | 384 | 45.2 | 0.366 | 7.7 |
+| Sedov | 448 | 71.6 | 0.566 | 7.9 |
+| Sedov | 512 | 108.8 | 0.826 | 8.1 |
+| CWB | 256 | 16.4 | 0.126 | 7.5 |
+| CWB | 320 | 32.0 | 0.239 | 7.7 |
+| CWB | 384 | 54.9 | 0.432 | 7.3 |
+
+512³ Sedov peaks at 109 GB < 120 GB: the phase-3 512³ jobs fit. With ~7.7×: phase 1 ≈ 20
+GPU-h, phase 2 ≈ 24, phase 3 ≈ 6 (2 GPUs: ≈ 10 h / 12 h / 3 h of run time, plus the wait for
+free GPUs, which was 19 h and 16 h for the two phase-0 starts).
+
+## H200 extension: quick scaling check, phase 1 partial (2026-11-12; `h200_scaling_check.py` → `pics/H200_scaling_check.{png,txt}`)
+
+Data: Sedov 256 / 384 (S-PE, S-SS, S-CP control / ζ 0.1 / KR13) and S-CP control 448; 448 ζ 0.1 / KR13 and
+S-PE 448 still queued. Pooling and fit as S5 (settled snapshots, R/dx ≥ 15, power law in |1 − ratio|);
+"/old" = median of the new-grid points over the fit to N ≤ 224. S-CP reference trajectory = finest control
+grid present (now 448; 384 for ζ 0.1 / KR13). The S1-S5 outputs are not touched (full pass after phase 1).
+
+- **The Mach law holds to R/dx ≈ 150-185.** New grids / study fit 0.55 (R/dx)^-0.6: control S-SS 0.99 / 0.98
+  (256 / 384), S-PE 1.01 / 1.02, S-CP M ≤ 4 1.02 / 0.98 / 0.96 (448), S-CP M ≥ 8 1.05-1.07; DSA KR13
+  S-CP M ≤ 4 0.99 / 0.95. Fits with the new grids: p 0.61 (S-SS), 0.57 (S-CP M ≥ 8), 0.72 (S-CP M ≤ 4,
+  as before: the low-Mach branch is steeper). Pairwise orders S-SS control 0.57-0.61 for 128-256 and
+  192-384. Exception, small: DSA ζ 0.1 S-SS reads 1.12 / 1.16 of the study fit (but 1.03 / 1.06 of its own
+  old fit, p 0.57 → 0.55): with live CRs the Mach error decays slightly slower. M50 / M_true at t = 0.07,
+  384³ (R/dx 153): S-SS control 0.974, ζ 0.1 0.968; S-CP control 448³ (R/dx 184) 0.989.
+- **Injection keeps its old fits** (/old 1.02-1.06 S-SS, 1.09-1.12 S-CP ζ 0.1 M ≤ 4, 0.99-1.01 KR13 M ≤ 4,
+  0.85-0.92 S-PE). S-SS ζ 0.1 injection / exact 0.912 / 0.932 at 256 / 384 (t_end, R/dx 100 / 150), order
+  0.52-0.62: the strong-shock 5% extrapolation (~300 cells) stands. KR13 M ≤ 4 still 24% low at R/dx 150.
+- **Flag: S-PE control, late times.** M50 / M_true,ref at 384³ falls from 0.985 (t 0.035, R/dx 116) to 0.963
+  (t 0.07, R/dx 153), and at t 0.07 the pairwise order is 0.24-0.30 (S-SS: 0.55-0.60, same N). Against the
+  run's own trajectory the ratio is 0.937 for every N ≥ 192 at t_end (S-SS 0.96-0.97), and the front lead grows
+  from 0.6 to 1.1 cells. Present in the old data (192-224 order 0.40 at t 0.07), now clearer. S-SS uses the
+  same box, p0, E and solver, so this is tied to the point-explosion start (or the end-point trajectory fit), not
+  a finder floor. Not investigated; pooled S-PE still sits on the study fit.

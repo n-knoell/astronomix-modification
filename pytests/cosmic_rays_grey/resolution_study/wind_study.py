@@ -40,6 +40,7 @@ from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
 from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
     dsa_area_weights, dsa_efficiency_of_mach, dsa_mach_and_flux, dsa_shock_finder_kwargs)
 from sedov_diag import shock_front, weighted_quantiles
+from gpu_diag import WindGeometry, analyse_wind_snapshot_gpu
 
 CLASSES = ("fs", "ts", "other")
 
@@ -93,6 +94,8 @@ def main():
     ap.add_argument("--snapshots", type=int, default=24)
     ap.add_argument("--off-after", type=float, default=None,
                     help="dsa_efficiency = 0 from this fraction of t_end on (self re-acceleration probe)")
+    ap.add_argument("--gpu-diag", action="store_true",
+                    help="per-snapshot diagnostics on the GPU (gpu_diag.py) instead of host numpy")
     args = ap.parse_args()
     if args.n % 32:
         raise ValueError("N must be a multiple of 32 (injection radius 4 cells at 128)")
@@ -170,6 +173,23 @@ def main():
               f"E_cr {d['E_cr'] / (L_w * t):.4f} L t inj {d['inj_acc'] / (L_w * t):.4f} L t "
               f"ratio {d['E_cr'] / max(d['inj_acc'], 1e-30):.3f} wall {wall:.0f} s peak {peak_gpu_bytes() / 1e9:.2f} GB",
               flush=True)
+
+    if args.gpu_diag:
+        geom = WindGeometry(r_np, bin_np, nb, X, Y, Z)
+
+        def on_snapshot(t, s, wall):  # noqa: F811 (the GPU version of the block above; params as there)
+            if not bool(jnp.all(jnp.isfinite(s))):
+                raise FloatingPointError(f"non-finite state at t = {t}")
+            d, prof = analyse_wind_snapshot_gpu(s, t, config, params, rv, hd, geom, dx, box, rho0, m.GAMMA, CLASSES)
+            profs.append(prof)
+            R = d["R_front"]
+            d["inj_acc"] = acc.total()
+            rows.append(d)
+            walls.append(wall)
+            print(f"t/t_end {t / t_end:.3f} R_fs {R:.4f} ({R / dx:.1f} cells) M50 fs {d['M50_fs']:.2f} ts {d['M50_ts']:.2f} "
+                  f"E_cr {d['E_cr'] / (L_w * t):.4f} L t inj {d['inj_acc'] / (L_w * t):.4f} L t "
+                  f"ratio {d['E_cr'] / max(d['inj_acc'], 1e-30):.3f} wall {wall:.0f} s peak {peak_gpu_bytes() / 1e9:.2f} GB",
+                  flush=True)
 
     t_prev = 0.0
     p_cur = params

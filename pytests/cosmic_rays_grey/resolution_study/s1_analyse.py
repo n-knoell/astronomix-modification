@@ -31,7 +31,8 @@ XI0 = 1.15167  # Sedov, gamma 5/3
 SETUPS = (("pe", "pe", "S-PE point explosion (p0 = 1e-4)"),
           ("ss", "ss", "S-SS self-similar start (p0 = 1e-4)"),
           ("cp", "cp_p0.6", "S-CP counter-pressure (p0 = 0.6)"))
-CHAINS = ((32, 64, 128), (48, 96, 192), (64, 128, 224))
+CHAINS = ((32, 64, 128), (48, 96, 192), (64, 128, 224),
+          (64, 128, 256), (96, 192, 384), (128, 224, 448))  # last three: H200 extension
 TIMES = (0.01, 0.035, 0.07)
 
 

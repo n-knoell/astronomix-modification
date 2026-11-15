@@ -29,9 +29,11 @@ import common
 from common import RAW, InjectionAccumulator, peak_gpu_bytes, require_pinned_gpu, run_segments, save_npz
 
 import numpy as np
+import jax.numpy as jnp
 
 import cr_sedov_taylor as item7
 from sedov_diag import analyse_snapshot, shell_profiles
+from gpu_diag import SedovGeometry, SedovProfiles, analyse_snapshot_gpu
 from setups import build_sedov_pe, build_sedov_ss
 
 
@@ -78,6 +80,8 @@ def main():
     ap.add_argument("--limiter", default=None, help="limiter override by name, e.g. VAN_LEER (X1)")
     ap.add_argument("--kappa", type=float, default=None, help="CR diffusion coefficient (extension D)")
     ap.add_argument("--vred", type=float, default=None, help="reduced_streaming_speed (extension D)")
+    ap.add_argument("--gpu-diag", action="store_true",
+                    help="per-snapshot diagnostics on the GPU (gpu_diag.py) instead of host numpy")
     args = ap.parse_args()
     gpu = require_pinned_gpu()
     transport = args.kappa is not None or args.vred is not None
@@ -112,18 +116,28 @@ def main():
     print(f"{setup_dir} N {args.n} {name}: t {t0:.4g} -> {t_end:.4g}, {len(times)} snapshots, gpu {gpu}",
           flush=True)
 
+    if args.gpu_diag:
+        geom = SedovGeometry(hd.r, args.n, dx)
+        sprof = SedovProfiles(r_cells, cc, dx) if transport else None
     acc = InjectionAccumulator().activate()
     rows, walls, kept = [], [], {}
     profs = []
     r_flat = r_cells.reshape(-1)
 
     def on_snapshot(i, t, s, wall):
-        if not np.all(np.isfinite(np.asarray(s))):
-            raise FloatingPointError(f"non-finite state at t = {t}")
-        d = analyse_snapshot(s, t, config, params, rv, hd, rho0=item7.RHO_AMBIENT, gamma=item7.GAMMA)
+        if args.gpu_diag:
+            if not bool(jnp.all(jnp.isfinite(s))):
+                raise FloatingPointError(f"non-finite state at t = {t}")
+            d = analyse_snapshot_gpu(s, t, config, params, rv, hd, geom, rho0=item7.RHO_AMBIENT, gamma=item7.GAMMA)
+        else:
+            if not np.all(np.isfinite(np.asarray(s))):
+                raise FloatingPointError(f"non-finite state at t = {t}")
+            d = analyse_snapshot(s, t, config, params, rv, hd, rho0=item7.RHO_AMBIENT, gamma=item7.GAMMA)
         rows.append(d)
         walls.append(wall)
-        if transport:
+        if transport and args.gpu_diag:
+            profs.append(sprof(s, rv))
+        elif transport:
             a = np.asarray(s)
             ur = sum(a[c] * x for c, x in zip((rv.velocity_index.x, rv.velocity_index.y, rv.velocity_index.z),
                                               np.meshgrid(cc, cc, cc, indexing="ij"))) / np.maximum(r_cells, 1e-12)

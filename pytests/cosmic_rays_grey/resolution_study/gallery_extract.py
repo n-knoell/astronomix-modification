@@ -29,8 +29,8 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
 from sedov_diag import shell_profiles
 from setups import build_cwb, build_sedov_pe
 
-SEDOV_NS = (32, 48, 64, 96, 128, 192, 224)
-CWB_NS = (64, 96, 128, 160, 192)
+SEDOV_NS = (32, 48, 64, 96, 128, 192, 224, 256, 384, 448, 512)
+CWB_NS = (64, 96, 128, 160, 192, 256)  # z0.1 320/384 failed (DB12)
 
 
 def midplane(field):

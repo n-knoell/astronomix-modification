@@ -177,7 +177,8 @@ def main():
         ns = sorted(runs)
         inj = {n: float(runs[n]["acc_inj"].sum()) for n in ns}
         lines.append(f"{label}: " + ", ".join(f"N{n} {inj[n]:.4f}" for n in ns))
-        for trip in ((96, 128, 192), (128, 192, 224), (96, 192, 224)):
+        for trip in ((96, 128, 192), (128, 192, 224), (96, 192, 224),
+                     (128, 256, 384), (256, 384, 448), (256, 384, 512)):
             if not all(n in inj for n in trip):
                 continue
             h, q = [1.0 / n for n in trip[::-1]], [inj[n] for n in trip[::-1]]

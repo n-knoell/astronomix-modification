@@ -3,7 +3,7 @@ v_red x 2 at N 96, lambda 0.1: relative change of E_cr, injected, last M50 (forw
   wind  E_cr +0.0037  injected +0.0014  M50 -0.0001  steps 1.79x
   S-SS  E_cr -0.0019  injected -0.0005  M50 -0.0012  steps 1.83x
   S-CP  E_cr +0.0001  injected -0.0005  M50 +0.0000  steps 1.92x
-  CWB: missing
+  CWB   E_cr -0.0005  injected +0.0013  M50 +0.0005  steps 1.68x
 S-PE 128 z0.1, existing (v_red 1 placeholder) vs v_red 0: E_cr / injected 0.6466 vs 0.6217; M50 end 162.01 vs 162.78; injected 0.15136 vs 0.15157
   E_cr ratio (v_red 1 / v_red 0) at t/t_end 0.25 / 0.5 / 0.75 / 1: 1.0061 1.0138 1.0245 1.0386
 W 128 lam0.1, injection off after t_end/2: E_cr(t_end) / E_cr(t_end/2) = 1.181; work over the 2nd half +0.167 E_cr(t_end/2)

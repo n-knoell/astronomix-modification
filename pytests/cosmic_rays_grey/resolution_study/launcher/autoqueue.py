@@ -9,8 +9,8 @@ tags can be appended while the queue runs; the queue exits when every listed tag
 finished and nothing runs.
 
 Per job:
-1. ``autocvd(interval=5)`` blocks until a GPU has no compute process at all (any user), my
-   running jobs' GPUs excluded;
+1. ``autocvd(interval=5, timeout=60)``, repeated, waits until a GPU has no compute process at
+   all (any user), my running jobs' GPUs excluded; finished jobs are reaped between the waits;
 2. the job starts pinned to that GPU's UUID (``CUDA_VISIBLE_DEVICES=GPU-...``, what
    ``common.require_pinned_gpu`` demands), ``XLA_PYTHON_CLIENT_MEM_FRACTION`` set by the job;
 3. the queue waits until the job's python process holds that GPU (so the next selection
@@ -153,7 +153,11 @@ def main():
             (DONE / tag).write_text("missing\n")
             continue
         busy = [idx for _, idx, _ in running.values()]
-        idx = autocvd.autocvd(num_gpus=1, interval=5, set_env=False, progress=False, exclude=busy or None)[0]
+        try:  # bounded wait, so finished jobs are reaped (and their GPUs no longer excluded)
+            idx = autocvd.autocvd(num_gpus=1, interval=5, timeout=60, set_env=False, progress=False,
+                                  exclude=busy or None)[0]
+        except TimeoutError:
+            continue
         uuid = gpu_uuids()[idx]
         # autocvd may have waited for hours: one of my jobs may have ended meanwhile, fine;
         # re-check that the GPU is still empty right before the launch

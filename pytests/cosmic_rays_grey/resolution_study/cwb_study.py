@@ -43,6 +43,7 @@ from astronomix._modules._cosmic_rays_grey.cr_grey_injection import (
     dsa_area_weights, dsa_efficiency_of_mach, dsa_mach_and_flux, dsa_shock_finder_kwargs)
 from sedov_diag import weighted_quantiles
 from setups import build_cwb
+from gpu_diag import CwbGeometry, analyse_cwb_snapshot_gpu
 from astronomix._modules._cosmic_rays_grey.cosmic_ray_grey_options import DSA_EFFICIENCY_KANG_RYU_2013
 
 CLASSES = ("wind1", "wind2", "ambient")
@@ -162,6 +163,8 @@ def main():
     ap.add_argument("--name", default=None)
     ap.add_argument("--kappa", type=float, default=None, help="CR diffusion coefficient (extension D)")
     ap.add_argument("--vred", type=float, default=None, help="reduced_streaming_speed (extension D)")
+    ap.add_argument("--gpu-diag", action="store_true",
+                    help="per-snapshot diagnostics on the GPU (gpu_diag.py) instead of host numpy")
     args = ap.parse_args()
     gpu = require_pinned_gpu()
     transport = args.kappa is not None or args.vred is not None
@@ -181,11 +184,20 @@ def main():
     acc = InjectionAccumulator().activate()
     rows, walls = [], []
     last = {}
+    if args.gpu_diag:
+        geom = CwbGeometry(args.n, float(config.grid_spacing), cwb.BOX_SIZE, np.asarray(cwb.STAR_POSITIONS),
+                           SPHERE_RADIUS)
 
     def on_snapshot(i, t, s, wall):
-        if not np.all(np.isfinite(np.asarray(s))):
-            raise FloatingPointError(f"non-finite state at t = {t}")
-        d = analyse_cwb_snapshot(s, t, config, params, rv, hd)
+        if args.gpu_diag:
+            if not bool(jnp.all(jnp.isfinite(s))):
+                raise FloatingPointError(f"non-finite state at t = {t}")
+            d = analyse_cwb_snapshot_gpu(s, t, config, params, rv, hd, geom, np.asarray(cwb.STAR_POSITIONS),
+                                         (cwb.v_inf1, cwb.v_inf2), SPHERE_RADIUS, CLASSES)
+        else:
+            if not np.all(np.isfinite(np.asarray(s))):
+                raise FloatingPointError(f"non-finite state at t = {t}")
+            d = analyse_cwb_snapshot(s, t, config, params, rv, hd)
         rows.append(d)
         walls.append(wall)
         if i == len(times) - 1:

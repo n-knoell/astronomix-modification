@@ -34,7 +34,7 @@ from sedov_diag import weighted_quantiles  # noqa: E402
 
 RAW = Path("/export/scratch/nknoell/resolution_study")
 PICS = Path(__file__).resolve().parent / "pics"
-N = 192
+N = 192  # reset per figure in __main__ (W 320, Sedov 384)
 LAM_COL = {0.0: "#2a2a2a", 0.03: "#9ecae1", 0.1: "#4292c6", 0.3: "#08306b"}
 CMAP_RHO, CMAP_ECR = "viridis", "magma"
 
@@ -169,7 +169,7 @@ def figure(setup, model, title, out, study_dir, study_names, half_box, mach_key,
     ax_m.axhline(1.0, color=INK, lw=0.8)
     ax_m.set_xscale("log")
     from matplotlib.ticker import FixedLocator, NullFormatter, NullLocator, ScalarFormatter
-    ax_m.xaxis.set_major_locator(FixedLocator([10, 20, 30, 50, 70, 100]))
+    ax_m.xaxis.set_major_locator(FixedLocator([10, 20, 30, 50, 70, 100, 200]))
     ax_m.xaxis.set_major_formatter(ScalarFormatter())
     ax_m.xaxis.set_minor_locator(NullLocator())
     ax_m.xaxis.set_minor_formatter(NullFormatter())
@@ -188,8 +188,10 @@ def figure(setup, model, title, out, study_dir, study_names, half_box, mach_key,
 
 
 if __name__ == "__main__":
+    N = 320  # W runs exist at 256 / 320
     figure("wind", None, f"Wind bubble (W, ζ = 0.1) at t_end, {N}³: advective vs CR diffusion",
            "G3_wind_diffusion_gallery.png", RAW / "wind", ("adv", "lam"), 0.6, "M50_fs", wind=True)
+    N = 384  # Sedov D5 runs exist at 256 / 384
     figure("ss", "z0.1", f"Sedov S-SS (ζ = 0.1), final state, {N}³: advective vs CR diffusion",
            "G4_ss_diffusion_gallery.png", RAW / "sedov" / "ss", ("z0.1", "z0.1_lam"), 0.5, "M50")
     figure("cp_p0.6", "z0.1", f"Sedov S-CP (ζ = 0.1), final state, {N}³: advective vs CR diffusion",

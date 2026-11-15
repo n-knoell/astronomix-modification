@@ -29,8 +29,8 @@ from analyse import INK, MUTED, PICS, RAW, _style  # noqa: E402
 from sedov_diag import weighted_quantiles  # noqa: E402
 
 E_EXPLOSION, RHO0, GAMMA = 1.0, 1.0, 5.0 / 3.0
-SEDOV_SHOW = (32, 64, 128, 224)
-CWB_SHOW = (64, 96, 128, 192)
+SEDOV_SHOW = (64, 128, 256, 512)
+CWB_SHOW = (64, 128, 192, 256)
 CMAP_RHO, CMAP_ECR = "viridis", "magma"
 
 
