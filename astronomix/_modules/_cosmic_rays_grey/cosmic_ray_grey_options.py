@@ -469,7 +469,11 @@ class CosmicRayGreyParams(NamedTuple):
     #: energy is exact either way). Acts where the energy scheme has put
     #: CR energy into spurious gas heating that the gas cannot return, e.g.
     #: cold, CR-dominated, strongly expanding gas (DESIGN.md "Open:
-    #: conservative CR entropy at shocks", design step 6).
+    #: conservative CR entropy at shocks", design step 6). With the hybrid
+    #: transfer (CR_ENTROPY_TRANSFER_SHOCKS) the fraction applies to the heat
+    #: above the local upstream adiabat only, so unshocked gas (the CR
+    #: precursor of a shock with diffusion) is never drained
+    #: (cr_grey_sources._upstream_adiabat_pressure, 2026-11-16, DB13).
     cr_entropy_max_thermal_drain: float = 0.5
 
     #: CR_ENTROPY_TRANSFER_SHOCKS: minimum relative total-pressure jump

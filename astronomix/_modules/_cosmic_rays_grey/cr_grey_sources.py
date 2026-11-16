@@ -616,6 +616,38 @@ def cr_entropy_sync(
     )
 
 
+#: half-width (cells, along every axis) of the neighbourhood in which
+#: _upstream_adiabat_pressure looks for the upstream gas entropy: the shock
+#: mask's default dilation (2) plus one, so every cell of a 3-4 cell wide
+#: numerical shock sees unshocked gas.
+_UPSTREAM_ADIABAT_RADIUS = 3
+
+
+def _upstream_adiabat_pressure(p_th, rho, gamma, radius=_UPSTREAM_ADIABAT_RADIUS):
+    """Gas pressure a cell would have on the lowest adiabat in its neighbourhood,
+    ``K_min rho^gamma`` with ``K = P_th / rho^gamma`` and ``K_min`` the minimum of ``K`` over
+    the box of ``radius`` cells along every axis.
+
+    Across a shock the gas entropy only rises, so ``K_min`` is the upstream (unshocked)
+    value and ``P_th - K_min rho^gamma`` is the heat the shock has dissipated into the gas
+    of that cell. Non-periodic shifts (a boundary cell only sees cells inside the domain),
+    as in the dilation of ``cr_entropy_shock_mask``.
+    """
+    k_th = p_th / rho**gamma
+    k_min = k_th
+    for _ in range(radius):
+        lowest = k_min
+        for axis in range(k_th.ndim):
+            for offset in (1, -1):
+                shifted = jnp.roll(k_min, offset, axis=axis)
+                edge = [slice(None)] * k_th.ndim
+                edge[axis] = slice(0, 1) if offset > 0 else slice(-1, None)
+                shifted = shifted.at[tuple(edge)].set(jnp.inf)
+                lowest = jnp.minimum(lowest, shifted)
+        k_min = lowest
+    return k_min * rho**gamma
+
+
 @partial(jax.jit, static_argnames=["registered_variables"])
 def cr_entropy_to_energy(
     primitive_state: STATE_TYPE,
@@ -637,6 +669,19 @@ def cr_entropy_to_energy(
     fixes the partition. Where that would take more than
     ``cr_entropy_max_thermal_drain`` of the gas thermal energy, the transfer
     is limited and the rest stays in ``e_cr``.
+
+    In the hybrid (``shock_cells`` given) the gas energy that may be taken is
+    only the heat above the local upstream adiabat,
+    ``P_th - K_min rho^gamma`` with ``K = P_th / rho^gamma`` and ``K_min``
+    its minimum within ``_UPSTREAM_ADIABAT_RADIUS`` cells
+    (``_upstream_adiabat_pressure``): the transfer corrects how the heat a
+    shock dissipated is split between gas and CRs, so gas that has not been
+    shocked (``K = K_min``) has nothing to give. Without this, the smooth,
+    CR-dominated precursor of a shock with CR diffusion, which the shock mask
+    covers, was drained: ``e(s_cr)`` exceeds ``e_cr`` there by ~5e-4 of
+    ``e_cr``, which at ``P_cr / P_th ~ 1e3`` is the gas's whole thermal
+    energy (gas pressure 0.6-0.9 of adiabatic ahead of the shock, finder Mach
+    number +10-20%; PROGRESS_PHASEB.md 2026-11-16, DB13).
 
     Args:
         primitive_state: The primitive state after the full hydro step,
@@ -672,7 +717,11 @@ def cr_entropy_to_energy(
     # take at most cr_entropy_max_thermal_drain of its thermal energy above
     # the floor and leave the rest in e_cr.
     p_th = primitive_state[registered_variables.pressure_index]
-    available = jnp.maximum(p_th - params.minimum_pressure, 0.0) / (gamma - 1.0)
+    p_keep = params.minimum_pressure
+    if shock_cells is not None:
+        # Hybrid: only the heat above the local upstream adiabat may be taken.
+        p_keep = jnp.maximum(_upstream_adiabat_pressure(p_th, rho, gamma), p_keep)
+    available = jnp.maximum(p_th - p_keep, 0.0) / (gamma - 1.0)
     delta = jnp.maximum(
         delta, -params.cosmic_ray_grey_params.cr_entropy_max_thermal_drain * available
     )

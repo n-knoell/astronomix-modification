@@ -2279,6 +2279,22 @@ generic density-like passive row.
      without the safeguard the run goes NaN, with it K_cr stays within 0.9% (energy scheme
      9.1%).
    - Test: `cr_shock_tube_partition.test_cr_entropy_cold_rarefaction`.
+   - **Hybrid only, since 2026-11-16 (DB13): upstream-adiabat limit.** In the hybrid
+     (`CR_ENTROPY_TRANSFER_SHOCKS`) the fraction applies to the heat above the local upstream
+     adiabat, `P_th - K_min rho^gamma`, with `K = P_th / rho^gamma` and `K_min` its minimum
+     within 3 cells along every axis (`cr_grey_sources._upstream_adiabat_pressure`). The
+     transfer corrects how shock-dissipated heat is split between gas and CRs, so unshocked gas
+     (`K = K_min`) has nothing to give.
+     - Why: the shock mask (total-pressure jump, dilation 2) covers the smooth, CR-dominated
+       precursor of a shock with CR diffusion. There `e(s_cr)` exceeds `e_cr` by ~5e-4 of `e_cr`
+       per step, which at `P_cr / P_th ~ 1e3` is the gas's whole thermal energy; the 50%-per-step
+       limit let it drain the unshocked gas (pressure 0.6-0.9 of adiabatic, 1% of cells < 0.03;
+       finder Mach +10-20%).
+     - Rejected alternatives (measured, PROGRESS_PHASEB.md 2026-11-16): limit 0 (breaks HLL +
+       hybrid, the 3D Sedov shell and the global mode: the negative transfer is needed inside
+       shocks); negative transfer only in the un-dilated mask core (3D Sedov shell 3.9e-3 instead
+       of 1.9e-4); limit scaled by `min(1, P_th / P_cr)` (partial, worse at smaller time steps).
+     - The global transfer keeps the plain limit (the cold-rarefaction case above needs it).
 7. **Interplay with gas `dual_energy` (implemented, step 3).**
    - In cells where dual energy takes the gas pressure from the gas entropy
      (`evolve_state._dual_energy_entropy_cells`, factored out of `_dual_energy_select`),
