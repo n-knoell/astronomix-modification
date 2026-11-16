@@ -495,11 +495,17 @@ def test_cr_shock_tube_injection(
                       f"{true['mach_finder_rel']:+.4f}")
                 np.savez(RAW_DIR / f"{tag}.npz", x=run["x"], rho=run["rho"], u=run["u"],
                          p_th=run["p_th"], p_cr=run["p_cr"])
-                for key in ("dv_shock", "dP_th", "dP_cr", "drho", "mach_finder_rel"):
+                # zeta = 0.5 (tracked only): the finder Mach number at the final state sits in one
+                # of two states ~3.3% apart, and which one depends on details at the 1e-3 level
+                # (resolution, scheme, any small change of the transfer or the finder;
+                # PROGRESS_PHASEB.md 2026-11-16). A 0.01 band there only records which state.
+                mach_tol = 0.01 if zeta in GATED_ZETAS else 0.04
+                for key in ("dv_shock", "dP_th", "dP_cr", "drho"):
                     baselines.close(f"{tag}_fp_{key}", fp[key], abs_tol=0.01)
+                baselines.close(f"{tag}_fp_mach_finder_rel", fp["mach_finder_rel"], abs_tol=mach_tol)
                 baselines.close(f"{tag}_fp_rate", fp["rate"], rel=0.02)
                 baselines.close(f"{tag}_true_dP_cr", true["dP_cr"], abs_tol=0.01)
-                baselines.close(f"{tag}_true_mach_finder_rel", true["mach_finder_rel"], abs_tol=0.01)
+                baselines.close(f"{tag}_true_mach_finder_rel", true["mach_finder_rel"], abs_tol=mach_tol)
                 if scheme == "default" and n >= 400 and zeta in GATED_ZETAS:
                     for key, bound in (("dv_shock", max_dv), ("dP_th", max_dP_th),
                                        ("dP_cr", max_dP_cr), ("drho", max_drho),

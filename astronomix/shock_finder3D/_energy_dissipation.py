@@ -65,7 +65,6 @@ def _thermalization_efficiency(mach, gamma):
     static_argnames=[
         "config",
         "registered_variables",
-        "gamma_gas",
         "sampling_steps",
     ],
 )

@@ -290,6 +290,23 @@ class CosmicRayGreyConfig(NamedTuple):
     #: (1,1,1) M = 10: +70%). pytests/shock_finder3D/finder_v2_comparison/README.md.
     dsa_continuous_normal_surface: bool = True
 
+    #: read the shock's upstream and downstream state at the shock (only with
+    #: dsa_adaptive_shock_sampling; default since 2026-11-16, review of
+    #: 2026-11-15; find_shocks_pfrommer(mach_sampling_at_shock=True)):
+    #: (1) the pre-shock walk stops at the end of the shock's foot instead of
+    #: following a background gradient to the step cap (dissipated flux 0.69 /
+    #: 0.48 / 0.23 of exact at scale heights of 40 / 20 / 10 cells; 0.97-1.03
+    #: with (1) and (2)), (2) the pre-shock pressure and density are
+    #: extrapolated from the walk's sample (2-4 cells ahead) back to the shock
+    #: cell (r^-2 wind: the sampled density is up to 2x too high where the
+    #: termination shock is ~10 cells from the star), (3) the post-shock
+    #: velocity of the velocity-jump Mach number is read at the end of the
+    #: shock's own velocity jump, at or before the pressure peak (decelerating
+    #: flow behind a termination shock). Planar shocks and the Sedov shell in
+    #: uniform gas are unchanged. Costs ~1.5x per finder call. False: the
+    #: behaviour before. PROGRESS_PHASEB.md 2026-11-16 (finder).
+    dsa_sampling_at_shock: bool = True
+
     #: density-consistent DSA deposit (only with dsa_adaptive_shock_sampling;
     #: opt-in, Phase B decision DB9 = option b, 2026-10-21): scale each
     #: post-shock cell's share of the injection by

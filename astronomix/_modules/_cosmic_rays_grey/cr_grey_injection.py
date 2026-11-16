@@ -68,6 +68,8 @@ def dsa_shock_finder_kwargs(cr_config) -> dict:
         )
         if cr_config.dsa_continuous_normal_surface:
             kwargs["continuous_normal"] = True
+        if cr_config.dsa_sampling_at_shock:
+            kwargs["mach_sampling_at_shock"] = True
         return kwargs
     return dict()
 
@@ -401,7 +403,8 @@ def dsa_injection_rate_by_slope(
     gamma_gas = params.gamma
     sf_result = find_shocks_pfrommer(
         primitive_state, config, registered_variables, helper_data,
-        mach_min=cr_params.dsa_mach_min, **dsa_shock_finder_kwargs(cr_config),
+        mach_min=cr_params.dsa_mach_min, gamma_gas=gamma_gas,
+        **dsa_shock_finder_kwargs(cr_config),
     )
     mach, flux = dsa_mach_and_flux(primitive_state, sf_result, config, params, registered_variables)
     rate = (
@@ -504,6 +507,7 @@ def inject_crs_at_shocks(
         registered_variables,
         helper_data,
         mach_min=cr_params.dsa_mach_min,
+        gamma_gas=gamma_gas,
         **dsa_shock_finder_kwargs(cr_config),
     )
 

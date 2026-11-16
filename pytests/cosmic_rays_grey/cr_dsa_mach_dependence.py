@@ -324,7 +324,8 @@ def _formula_cross_check(control, cross_check_tol):
     adaptive = cr_config.dsa_adaptive_shock_sampling
     sf_result = find_shocks_pfrommer(
         control_state, kr13_config, registered_variables, helper_data,
-        mach_min=DSA_MACH_MIN, **dsa_shock_finder_kwargs(cr_config),
+        mach_min=DSA_MACH_MIN, gamma_gas=kr13_params.gamma,  # as inject_crs_at_shocks
+        **dsa_shock_finder_kwargs(cr_config),
     )
     # the finder's Mach number and flux, CR-aware since DB8 (the inversion itself is checked
     # against exact steady shocks in cr_dsa_efficiency_planar.py::test_cr_aware_mach_exact)

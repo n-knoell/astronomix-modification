@@ -225,7 +225,8 @@ def get_post_pre_shock_values(
         field_b_pre,
     )
 
-@partial(jax.jit, static_argnames=["max_steps", "extend_monotone", "return_sample_steps"])
+@partial(jax.jit, static_argnames=["max_steps", "extend_monotone", "return_sample_steps",
+                                   "pre_extension_drop_ratio"])
 def get_post_pre_shock_values_adaptive(
     shock_direction,
     field_a,
@@ -236,6 +237,7 @@ def get_post_pre_shock_values_adaptive(
     extension_tolerance=0.02,
     compressive=None,
     return_sample_steps=False,
+    pre_extension_drop_ratio=0.0,
 ):
     """
     Sample two scalar fields on both sides of a candidate shock, walking each
@@ -315,6 +317,20 @@ def get_post_pre_shock_values_adaptive(
             steps along the ray each side's sample lies from the origin cell
             (float fields; ``max_steps`` for rays that never left the zone).
             Used to spread DSA injection over the post-shock cells.
+        pre_extension_drop_ratio: Opt-in (default 0, off), only with
+            ``extend_monotone``: the pre-shock extension additionally stops
+            unless this step's (linear) drop of ``field_a`` is below this
+            fraction of the previous step's drop. The foot of a numerically
+            smeared shock is convex (the drops shrink step by step, by
+            exp(-2/w) = 0.14 / 0.37 / 0.51 for a tanh of width w = 1 / 2 / 3
+            cells), a resolved background gradient is not (exp(-1/H) > 0.8
+            for scale heights H >= 5 cells). Without it the 2% rule keeps
+            walking down any background gradient steeper than 2% per cell, to
+            the ``max_steps`` cap (dissipated flux 0.69 / 0.48 / 0.23 of
+            exact at H = 40 / 20 / 10 cells). The sample then still lies a
+            few cells upstream of the shock: combine with
+            ``extrapolate_pre_state_to_shock``. 0.7 in the finder
+            (``find_shocks_pfrommer(mach_sampling_at_shock=True)``).
 
     Returns:
         ``(field_a_post, field_a_pre, field_b_post, field_b_pre, exited_post,
@@ -368,7 +384,7 @@ def get_post_pre_shock_values_adaptive(
         # this is a real resource-usage fix, not just a style preference.
         def body_fun(step, carry):
             (a_val, b_val, exited_ever, still_inside, extending, a_peak, b_peak,
-             previous_compressive, val_step, peak_step) = carry
+             previous_compressive, val_step, peak_step, a_previous, previous_drop) = carry
             step = step.astype(dtype)
             coords = base_blk + sign * step * direction_blk
             coords_list = [coords[d] for d in range(ndim)]
@@ -399,6 +415,11 @@ def get_post_pre_shock_values_adaptive(
                 # from the shock (down on the pre side, up on the post side).
                 if sign > 0:
                     monotone = a_here < a_val * (1.0 - extension_tolerance)
+                    if pre_extension_drop_ratio > 0:
+                        # still in the (convex) shock foot, not on a background gradient
+                        monotone = monotone & (
+                            (a_previous - a_here) < pre_extension_drop_ratio * previous_drop
+                        )
                 else:
                     monotone = a_here > a_val * (1.0 + extension_tolerance)
                 advance = extending & monotone
@@ -415,14 +436,15 @@ def get_post_pre_shock_values_adaptive(
             if compressive is not None:
                 previous_compressive = _sample_mask(compressive_f, coords_list)
             return (a_val, b_val, exited_ever, inside_here, extending, a_peak, b_peak,
-                    previous_compressive, val_step, peak_step)
+                    previous_compressive, val_step, peak_step, a_here, a_previous - a_here)
 
         block_shape = a0_blk.shape
         no_cells = jnp.zeros(block_shape, dtype=jnp.bool_)
         no_steps = jnp.zeros(block_shape, dtype=dtype)
         init_carry = (a0_blk, b0_blk, no_cells, zones0_blk, no_cells, a0_blk, b0_blk,
-                      compressive0_blk, no_steps, no_steps)
-        a_val, b_val, exited_ever, _, _, a_peak, b_peak, _, val_step, peak_step = (
+                      compressive0_blk, no_steps, no_steps, a0_blk,
+                      jnp.full(block_shape, jnp.inf, dtype=a0_blk.dtype))
+        a_val, b_val, exited_ever, _, _, a_peak, b_peak, _, val_step, peak_step, _, _ = (
             jax.lax.fori_loop(1, max_steps + 1, body_fun, init_carry)
         )
         if extend_monotone and sign < 0:
@@ -503,6 +525,157 @@ def sample_along_direction(field, shock_direction, steps, order=1):
     )
 
 
+def extrapolate_pre_state_to_shock(field, shock_direction, pre_steps, pre_value, max_slope):
+    """Pre-shock value of ``field`` extrapolated from the walk's pre-shock
+    sample back to the origin (shock) cell.
+
+    The pre-shock sample of ``get_post_pre_shock_values_adaptive`` lies
+    ``pre_steps`` (typically 2-4) cells upstream of the shock cell. In a
+    background gradient that is not the state the shock runs into: the density
+    of an r^-2 wind is 22-33% higher there than at its termination shock
+    (colliding winds, 128^3-192^3), and in an exponential atmosphere of scale
+    height 10-20 cells the dissipated flux came out 0.55-0.83 of exact even
+    with the walk stopped at the end of the foot. Log-linear extrapolation
+    ``pre_value * exp(pre_steps * s)`` with the slope per step ``s`` taken
+    beyond the sample, where the shock has not touched the gas: the minmod of
+    the two one-step log-slopes between ``pre_steps``, ``+1`` and ``+2`` (zero
+    where they disagree in sign: a single steep step, e.g. a contact or the
+    last bit of the foot, does not extrapolate), limited to ``max_slope`` in
+    magnitude. A rising result is capped at the origin cell's own value (the
+    smeared shock only adds to the upstream profile). Flat upstream gas is
+    returned unchanged. The sample positions carry no gradient.
+    """
+    floor = 1e-30
+    log_0 = jnp.log(jnp.maximum(pre_value, floor))
+    log_1 = jnp.log(jnp.maximum(sample_along_direction(field, shock_direction, pre_steps + 1.0), floor))
+    log_2 = jnp.log(jnp.maximum(sample_along_direction(field, shock_direction, pre_steps + 2.0), floor))
+    slope_near = log_0 - log_1
+    slope_far = log_1 - log_2
+    slope = jnp.where(
+        slope_near * slope_far > 0,
+        jnp.sign(slope_near) * jnp.minimum(jnp.abs(slope_near), jnp.abs(slope_far)),
+        0.0,
+    )
+    slope = jnp.clip(slope, -max_slope, max_slope)
+    extrapolated = pre_value * jnp.exp(pre_steps * slope)
+    return jnp.minimum(extrapolated, jnp.maximum(pre_value, field))
+
+
+@partial(jax.jit, static_argnames=["search_steps"])
+def post_velocity_at_end_of_jump(
+    velocity, pressure, shock_direction, post_steps, post_pressure, post_velocity,
+    search_steps=6, plateau_fraction=0.9, increment_ratio=0.7,
+):
+    """Post-shock normal velocity at the end of the shock's own velocity jump.
+
+    The pressure peak along the post-shock walk (``post_steps``, the walk's
+    post-shock sample) is where the downstream *pressure* is best read, but
+    the velocity there can contain more than the shock's jump: behind a
+    wind's termination shock the flow keeps decelerating, and the peak can
+    lie one or more cells into that flow.
+
+    The velocity is read at the first step k, from the front edge of the
+    pressure plateau on (first step with ``pressure >= plateau_fraction *
+    post_pressure``) and at most the peak step, at which the jump stops
+    being the convex approach to a plateau: the next step reverses, or it
+    adds at least ``increment_ratio`` of what the step before added (the
+    increments no longer shrink: a background gradient; the counterpart of
+    the walk's ``pre_extension_drop_ratio``). If neither happens, or the peak
+    lies more than ``search_steps`` steps away, ``post_velocity`` (the value
+    at the peak) is kept.
+
+    Measured (2026-11-16): no change on planar tubes and on the Sedov shell
+    (Mach numbers to 1e-4); colliding winds at 192^3: dissipated flux -2% /
+    -5% (wind 1 / 2), apex Mach number / Chevalier & Clegg 1.14 / 1.17 ->
+    1.10 / 1.13. Rejected variants: "first step where the velocity reverses,
+    else the front edge" reads planar shocks 2.5-3% low in Mach number
+    (injection -8.5%); ending the jump where a step adds less than 2% / 0.5%
+    of it reads 1% / 0.1% low (the latter: KR13 efficiency -1% at M 2.5-3);
+    letting the jump end one step past the peak reads planar KR13 shocks
+    0.6% high (injection +2%). The stagnating layer between two colliding
+    winds (2-3 cells wide, velocity changing through the pressure peak) is
+    not recognised.
+
+    Args:
+        velocity: List of velocity component fields.
+        pressure: Gas pressure field.
+        shock_direction: Unit normal, pointing to the pre-shock side.
+        post_steps: Steps to the post-shock (pressure-peak) sample.
+        post_pressure: Pressure at that sample.
+        post_velocity: Normal velocity at that sample.
+        search_steps: Largest peak step the search covers (static).
+        plateau_fraction: Pressure fraction that defines the plateau's front edge.
+        increment_ratio: Ratio of successive velocity increments from which
+            on the profile is no longer the shock's.
+
+    Returns:
+        Normal velocity (along ``shock_direction``) at the chosen step.
+    """
+    shape = pressure.shape
+    ndim = pressure.ndim
+    dtype = shock_direction.dtype
+    shock_direction = jax.lax.stop_gradient(shock_direction)
+    base_coords = jnp.stack(
+        jnp.meshgrid(*[jnp.arange(n, dtype=dtype) for n in shape], indexing="ij"),
+        axis=0,
+    )
+
+    def _sample(field, coords):
+        return jax.scipy.ndimage.map_coordinates(field, coords, order=1, mode="nearest")
+
+    def _block(base_blk, direction_blk, post_steps_blk, post_pressure_blk, post_velocity_blk):
+        peak_step = jnp.maximum(jnp.ceil(post_steps_blk), 1.0)
+
+        def normal_velocity(coords):
+            return sum(_sample(v, coords) * direction_blk[d] for d, v in enumerate(velocity))
+
+        def body_fun(step, carry):
+            u_previous, u_before, at_edge, ended, u_end = carry
+            step = step.astype(dtype)
+            coords = base_blk - step * direction_blk
+            coords = [coords[d] for d in range(ndim)]
+            p_here = _sample(pressure, coords)
+            u_here = normal_velocity(coords)
+            # +shock_direction points upstream: across the shock the normal
+            # velocity rises towards the post-shock side. Did the jump end at
+            # the previous step?
+            increment = u_here - u_previous
+            previous_increment = u_previous - u_before
+            end_here = (
+                at_edge & ~ended & (step - 1.0 <= peak_step)
+                & ((increment < 0.0) | (increment >= increment_ratio * previous_increment))
+            )
+            u_end = jnp.where(end_here, u_previous, u_end)
+            ended = ended | end_here
+            at_edge = at_edge | (p_here >= plateau_fraction * post_pressure_blk) | (step >= peak_step)
+            return u_here, u_previous, at_edge, ended, u_end
+
+        u_origin = normal_velocity([base_blk[d] for d in range(ndim)])
+        no_cells = jnp.zeros(u_origin.shape, dtype=jnp.bool_)
+        init = (u_origin, u_origin, no_cells, no_cells, u_origin)
+        _, _, _, ended, u_end = jax.lax.fori_loop(1, search_steps + 2, body_fun, init)
+        return jnp.where(ended & (peak_step <= search_steps), u_end, post_velocity_blk)
+
+    # slabs of origin cells along the first axis, as the walk itself
+    num_blocks = _num_origin_blocks(shape)
+    scalars = (post_steps, post_pressure, post_velocity)
+    if num_blocks == 1:
+        return _block(base_coords, shock_direction, *scalars)
+    rows = shape[0] // num_blocks
+
+    def scalar_blocks(x):
+        return x.reshape((num_blocks, rows) + shape[1:])
+
+    def vector_blocks(x):
+        return jnp.moveaxis(x.reshape((ndim, num_blocks, rows) + shape[1:]), 1, 0)
+
+    out = jax.lax.map(
+        lambda blk: _block(*blk),
+        (vector_blocks(base_coords), vector_blocks(shock_direction)) + tuple(scalar_blocks(x) for x in scalars),
+    )
+    return out.reshape(shape)
+
+
 def _num_origin_blocks(shape, max_cells_per_block=2**21):
     """Smallest number of equal slabs along the first axis such that each
     slab has at most ``max_cells_per_block`` cells (1 for grids up to 128^3)."""
@@ -545,8 +718,8 @@ def _shock_zone_criterion_minimum_mach(
     helper_data: HelperData,
     shock_direction: FIELD_TYPE,
     mach_min: float = 1.3,
+    gamma_gas: float = 5 / 3,
 ) -> BOOL_FIELD_TYPE:
-    gamma_gas = 5 / 3
     pressure    = primitive_state[registered_variables.pressure_index]
     density     = primitive_state[registered_variables.density_index]
     temperature = pressure / density
@@ -585,6 +758,7 @@ def identify_shock_zones(
     helper_data: HelperData,
     shock_direction: FIELD_TYPE,
     mach_min: float = 1.3,
+    gamma_gas: float = 5 / 3,
 ) -> BOOL_FIELD_TYPE:
     """
     Identify all cells in shock zones (criteria 1 AND 2 AND 3).
@@ -597,6 +771,7 @@ def identify_shock_zones(
         helper_data:          geometric centers etc.
         shock_direction:      unit vector field (ndim, *spatial_shape)
         mach_min:             minimum Mach threshold
+        gamma_gas:            gas adiabatic index of the Rankine-Hugoniot thresholds
 
     Returns:
         Boolean field, shape (*spatial_shape)
@@ -611,7 +786,7 @@ def identify_shock_zones(
     criterion_2 = _shock_zone_criterion_aligned_gradients(pressure, density, config, r)
     criterion_3 = _shock_zone_criterion_minimum_mach(
         primitive_state, config, registered_variables, helper_data,
-        shock_direction, mach_min,
+        shock_direction, mach_min, gamma_gas,
     )
 
     return criterion_1 & criterion_2 & criterion_3

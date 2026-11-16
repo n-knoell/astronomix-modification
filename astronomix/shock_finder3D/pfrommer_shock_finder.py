@@ -17,9 +17,11 @@ from astronomix.shock_finder3D._gradients import (
     _calculate_velocity_divergence,
 )
 from astronomix.shock_finder3D._shock_zones import (
+    extrapolate_pre_state_to_shock,
     get_post_pre_shock_values,
     get_post_pre_shock_values_adaptive,
     identify_shock_zones,
+    post_velocity_at_end_of_jump,
     sample_along_direction,
 )
 from astronomix.shock_finder3D._shock_surface import identify_shock_surface
@@ -41,12 +43,26 @@ def _velocity_components(primitive_state, config, registered_variables):
     )
 
 
-def _velocity_consistent(primitive_state, config, registered_variables, shock_direction, fraction):
+#: pre-shock walk of ``mach_sampling_at_shock``: the extension continues only
+#: while a step's pressure drop is below this fraction of the previous step's
+#: (shock foot vs. background gradient; 0.5 stops inside wide feet and
+#: overshoots the flux by up to 12%). The same number bounds the gradient the
+#: upstream extrapolation follows: -ln(0.7) per cell, a scale height of 2.8
+#: cells; anything steeper is not told apart from the shock itself.
+_PRE_EXTENSION_DROP_RATIO = 0.7
+
+#: post-shock velocity search of ``mach_sampling_at_shock``: covers pressure
+#: peaks up to this many steps behind the shock cell (2-4 on resolved shocks);
+#: beyond, the velocity at the peak is used as without the option.
+_POST_VELOCITY_SEARCH_STEPS = 6
+
+
+def _velocity_consistent(primitive_state, config, registered_variables, shock_direction, fraction,
+                         gamma_gas=5 / 3):
     """Local Rankine-Hugoniot check, see find_shocks_pfrommer's
     ``mach_velocity_consistency``: True where the immediate-neighbour
     normal-velocity jump carries at least ``fraction`` of the Mach excess the
     immediate-neighbour pressure jump implies."""
-    gamma_gas = 5 / 3
     pressure = primitive_state[registered_variables.pressure_index]
     density = primitive_state[registered_variables.density_index]
     velocity = _velocity_components(primitive_state, config, registered_variables)
@@ -70,6 +86,7 @@ def _velocity_consistent(primitive_state, config, registered_variables, shock_di
         "mach_velocity_consistency",
         "mach_estimator",
         "continuous_normal",
+        "mach_sampling_at_shock",
     ],
 )
 def find_shocks_pfrommer(
@@ -84,6 +101,8 @@ def find_shocks_pfrommer(
     mach_velocity_consistency: float = 0.0,
     mach_estimator: str = "pressure",
     continuous_normal: bool = False,
+    mach_sampling_at_shock: bool = False,
+    gamma_gas: float = 5 / 3,
 ) -> ShockFinderResult:
     """
     Main entry point: Identify shocks using Pfrommer et al. 2017 methodology.
@@ -194,6 +213,30 @@ def find_shocks_pfrommer(
             ``surface_area_weights``. Mach sampling (phases 4-5) is unchanged.
             Sedov / planar / CWB comparison:
             ``pytests/shock_finder3D/finder_v2_comparison/README.md``.
+        mach_sampling_at_shock: default False here; DSA turns it on by default
+            (``CosmicRayGreyConfig.dsa_sampling_at_shock``). Only with
+            ``mach_sampling_adaptive`` and ``mach_sampling_extend``. Reads the
+            shock's upstream and downstream state at the shock instead of a few
+            cells away from it (review 2026-11-15, ``PROGRESS_PHASEB.md``
+            2026-11-16):
+            (1) the pre-shock extension stops where the pressure profile is no
+            longer the convex foot of the shock (``pre_extension_drop_ratio``
+            of the walk), instead of following any background gradient steeper
+            than 2% per cell to the step cap;
+            (2) pre-shock pressure and density (Mach number, dissipated flux,
+            ``pre_shock_pressure`` / ``pre_shock_density`` of the result) are
+            extrapolated from the walk's sample back to the shock cell
+            (``extrapolate_pre_state_to_shock``);
+            (3) with ``mach_estimator="velocity"`` the post-shock velocity is
+            read at the end of the shock's own velocity jump, at or before
+            the pressure peak (``post_velocity_at_end_of_jump``).
+            A shock with flat upstream gas and a post-shock plateau (planar
+            tubes, the Sedov shell) is unchanged (Mach number to 1e-4).
+            ``post_shock_steps`` / ``pre_shock_steps`` still point to the
+            walk's own samples.
+        gamma_gas: gas adiabatic index of the Rankine-Hugoniot relations
+            (zone threshold, Mach numbers, dissipated flux). Default 5/3; DSA
+            passes ``params.gamma``.
 
     Returns:
         ShockFinderResult
@@ -206,6 +249,8 @@ def find_shocks_pfrommer(
         raise ValueError(f"Unknown mach_estimator {mach_estimator!r}.")
     if mach_estimator == "velocity" and not mach_sampling_adaptive:
         raise ValueError("mach_estimator='velocity' requires mach_sampling_adaptive=True.")
+    if mach_sampling_at_shock and not mach_sampling_extend:
+        raise ValueError("mach_sampling_at_shock requires mach_sampling_extend=True.")
 
     pressure = primitive_state[registered_variables.pressure_index]
     density  = primitive_state[registered_variables.density_index]
@@ -220,7 +265,7 @@ def find_shocks_pfrommer(
     # (finder_v2_comparison/README.md, Part 4)
     shock_zones = identify_shock_zones(
         primitive_state, config, registered_variables,
-        helper_data, shock_direction, mach_min,
+        helper_data, shock_direction, mach_min, gamma_gas,
     )
 
     # Phase 3: shock surface (*spatial_shape)
@@ -237,7 +282,6 @@ def find_shocks_pfrommer(
         # two are consistent (FIXES_TODO.md round 24; previously the flux
         # used the fixed 1-cell sampler here). Rays that never leave the
         # zone within mach_sampling_steps are excluded from both.
-        gamma_gas = 5 / 3
         # the extension follows the shock's compression (div v < 0) and stops
         # one cell past it -- see get_post_pre_shock_values_adaptive
         compressive = (
@@ -249,8 +293,15 @@ def find_shocks_pfrommer(
                 shock_direction, pressure, density, shock_zones,
                 max_steps=mach_sampling_steps, extend_monotone=mach_sampling_extend,
                 compressive=compressive, return_sample_steps=True,
+                pre_extension_drop_ratio=_PRE_EXTENSION_DROP_RATIO if mach_sampling_at_shock else 0.0,
             )
         )
+        if mach_sampling_at_shock:
+            # upstream state at the shock cell, not pre_shock_steps ahead of it
+            normal = jax.lax.stop_gradient(shock_direction)
+            max_slope = -jnp.log(_PRE_EXTENSION_DROP_RATIO)
+            p_pre = extrapolate_pre_state_to_shock(pressure, normal, pre_shock_steps, p_pre, max_slope)
+            rho_pre = extrapolate_pre_state_to_shock(density, normal, pre_shock_steps, rho_pre, max_slope)
         pre_shock_pressure = p_pre
         pre_shock_density = rho_pre
         valid = shock_surface & exited_post & exited_pre
@@ -258,7 +309,7 @@ def find_shocks_pfrommer(
         if mach_velocity_consistency > 0:
             valid = valid & _velocity_consistent(
                 primitive_state, config, registered_variables, shock_direction,
-                mach_velocity_consistency,
+                mach_velocity_consistency, gamma_gas,
             )
         if mach_estimator == "velocity":
             # normal-velocity jump between the walk's own sample points
@@ -269,10 +320,17 @@ def find_shocks_pfrommer(
             # in a rollout adjoint (as for the walk, FIXES_TODO.md round 24).
             normal = jax.lax.stop_gradient(shock_direction)
             velocity = _velocity_components(primitive_state, config, registered_variables)
-            u_post = sum(sample_along_direction(v, normal, -post_shock_steps) * d
-                         for v, d in zip(velocity, normal))
             u_pre = sum(sample_along_direction(v, normal, pre_shock_steps) * d
                         for v, d in zip(velocity, normal))
+            u_post = sum(sample_along_direction(v, normal, -post_shock_steps) * d
+                         for v, d in zip(velocity, normal))
+            if mach_sampling_at_shock:
+                # end of the shock's own velocity jump, at or before the pressure peak
+                u_post = post_velocity_at_end_of_jump(
+                    velocity, pressure, normal, post_shock_steps, p_post, u_post,
+                    search_steps=min(mach_sampling_steps, _POST_VELOCITY_SEARCH_STEPS),
+                    increment_ratio=_PRE_EXTENSION_DROP_RATIO,
+                )
             mach_estimate = mach_from_velocity_jump(u_post - u_pre, p_pre, rho_pre, gamma_gas)
             # The converse of mach_velocity_consistency, at the same sample
             # points: a velocity jump without the matching pressure jump is
@@ -308,6 +366,7 @@ def find_shocks_pfrommer(
         mach_numbers = _calculate_mach_at_surface(
             primitive_state, shock_surface, shock_direction,
             config, registered_variables, sampling_steps=mach_sampling_steps,
+            gamma_gas=gamma_gas,
         )
 
         # Phase 5: thermal-energy flux at shock-surface cells, same fixed
@@ -319,6 +378,7 @@ def find_shocks_pfrommer(
             mach_numbers=mach_numbers,
             config=config,
             registered_variables=registered_variables,
+            gamma_gas=gamma_gas,
             sampling_steps=mach_sampling_steps,
         )
 

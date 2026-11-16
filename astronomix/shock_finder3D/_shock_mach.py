@@ -59,8 +59,8 @@ def _calculate_mach_at_surface(
     adaptive: bool = False,
     shock_zones: BOOL_FIELD_TYPE = None,
     extend_monotone: bool = False,
+    gamma_gas: float = 5 / 3,
 ) -> FIELD_TYPE:
-    gamma_gas = 5 / 3
 
     pressure = primitive_state[registered_variables.pressure_index]
     density  = primitive_state[registered_variables.density_index]

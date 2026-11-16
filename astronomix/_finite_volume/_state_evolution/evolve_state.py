@@ -145,6 +145,7 @@ def _dual_energy_shock_mask(
         helper_data,
         shock_direction,
         params.dual_energy_mach_min,
+        params.gamma,
     )
     # non-periodic shift (jnp.roll would wrap a shock at one open boundary
     # onto the opposite one)
