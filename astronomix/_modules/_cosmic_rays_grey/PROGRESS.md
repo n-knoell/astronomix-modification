@@ -7,6 +7,22 @@ file is what's actually done against it.
 Phase A test-plan work (`astronomix_CR_phaseA_test_plan.md`) is tracked in `PROGRESS_PHASEA.md`;
 scheme changes that come out of it are still logged here.
 
+## Done (2026-11-24): obliquity-dependent DSA efficiency, opt-in switch + planar MHD + MHD Sedov tests (uncommitted)
+
+- `dsa_obliquity_dependence` (MHD, default off) multiplies ζ(M) by g(θ_Bn) = ½[tanh((π/4 − θ)/(π/18)) + 1]
+  (Pais+18 Eq. 7, constants verified). θ_Bn is measured between the σ = 2 smoothed-T normal and B at the
+  walk's pre-shock sample.
+- `pytests/cosmic_rays_grey/cr_dsa_obliquity_mhd.py` passes at 64³: angle within 0.53°, injected on/off
+  equals g(θ) within 0.016, AD/FD 8e-4.
+- Finder normal −∇T is 3–5° off at (2,1,0), hence the smoothed normal. B at the surface cell is refracted
+  by 8–14°, hence the upstream read.
+- MHD Sedov in a uniform B (`cr_dsa_obliquity_sedov_mhd.py`, 128³) passes.
+  - Injected on/off is 0.3033, against the sphere average 0.3017.
+  - Per angle bin it is within 0.034 of g.
+  - The polar caps appear in the γ-ray proxy map.
+  - The shell normal is pulled toward 45° by ≤1.9°.
+- Details in `GAMMA_RAY_PLAN.md` "Optional — obliquity".
+
 ## Done (2026-11-15): γ-ray proxy steps 3 + 4, α budget passes and item-15 demo (uncommitted)
 
 - **Step 3.** New diagnostic `cr_grey_injection.dsa_injection_rate_by_slope`, evaluated in a snapshot

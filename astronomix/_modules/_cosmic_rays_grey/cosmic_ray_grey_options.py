@@ -322,6 +322,21 @@ class CosmicRayGreyConfig(NamedTuple):
     #: the RH post-shock state. PROGRESS_PHASEB.md 2026-10-21.
     dsa_density_consistent_deposit: bool = False
 
+    #: obliquity-dependent DSA efficiency (MHD only, opt-in; GAMMA_RAY_PLAN.md
+    #: "Optional -- obliquity"): multiply zeta(M) by
+    #: g(theta) = [tanh((theta_crit - theta) / delta) + 1] / 2 (Pais et al.
+    #: 2018, MNRAS 478, 5278, Eq. 7, a fit to Caprioli & Spitkovsky 2014),
+    #: theta = arccos(|n_s . b|) in [0, pi/2] the angle between the shock
+    #: normal (-grad T of the temperature smoothed over
+    #: dsa_area_normal_smoothing cells, the DB7 area-weight normal) and the
+    #: upstream magnetic field, read at the adaptive walk's pre-shock sample
+    #: (needs dsa_adaptive_shock_sampling; the downstream field is refracted
+    #: towards the shock plane). Quasi-parallel
+    #: shocks keep zeta, quasi-perpendicular ones inject nothing. Constants:
+    #: CosmicRayGreyParams.dsa_obliquity_theta_crit / dsa_obliquity_width.
+    #: False (default): no obliquity dependence.
+    dsa_obliquity_dependence: bool = False
+
     #: conservative CR entropy (DESIGN.md "Open: conservative CR entropy at
     #: shocks"): advect s_cr = P_cr rho^(1 - gamma_cr) as an extra passive row,
     #: re-synced from e_cr every hydro step; where cr_entropy_transfer says so,
@@ -479,6 +494,14 @@ class CosmicRayGreyParams(NamedTuple):
     #: cr_grey_injection.inject_crs_at_shocks. Matches
     #: find_shocks_pfrommer's own default.
     dsa_mach_min: float = 1.3
+
+    #: CosmicRayGreyConfig.dsa_obliquity_dependence: threshold obliquity
+    #: theta_crit (radians) of g(theta); pi/4 as Pais et al. (2018, Eq. 7).
+    dsa_obliquity_theta_crit: float = 0.7853981633974483
+
+    #: CosmicRayGreyConfig.dsa_obliquity_dependence: width delta (radians) of
+    #: the tanh transition of g(theta); pi/18 (10 deg) as Pais et al. (2018).
+    dsa_obliquity_width: float = 0.17453292519943295
 
     #: CosmicRayGreyConfig.cr_entropy gas-positivity safeguard: the per-step
     #: transfer e_cr(energy) - e_cr(s_cr) may take at most this fraction of the

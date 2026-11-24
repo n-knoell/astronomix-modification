@@ -32,6 +32,13 @@ The closest documents:
 §12 reconciles this scope with it. Where they differ, the outline is the paper, and §12 says what
 should change in it.
 
+**Update 2026-11-17: §13 (incl. §13.7 gate measurements: δ(x) GN spectrum dropped) supersedes the recommendation of §0 items 3–5, §2's "lead case" and
+§12.3's Case B.** §13 re-checks the code facts against the branch at `e15df58`, argues why the
+field-level η(Ω) case and the superbubble forecast are weaker than stated here, and gives the
+recommended Paper 1 (methods + gradient verification + a low-dimensional SNR–cloud recovery with
+an adjoint sensitivity map; the δ(x) Gauss–Newton spectrum as a stretch goal behind a cost gate).
+§§1–12 are kept unchanged as the record of the 2026-10-29 scope.
+
 **References** are in §11, with the marks used in
 [`SHOWCASE_bar_sgr_scope.md`](SHOWCASE_bar_sgr_scope.md):
 - **[A]**: the claim was read in the abstract;
@@ -633,3 +640,290 @@ gradient buys. **Recommended split, which keeps both of the outline's cases:**
   **Unverified; not yet looked up.** No citation until DOI-checked.
 - **Code availability:** a "version-pinned astronomix release" requires the branch merged into
   `leo1200/astronomix`, or a tagged fork commit (§10 item 3).
+
+---
+
+## 13. Revised recommendation (2026-11-17)
+
+**Basis.** The code facts below were re-read on `feature/cosmic-rays-grey` at `e15df58`
+(2026-11-16) plus the uncommitted γ-ray proxy work (`GAMMA_RAY_PLAN.md` steps 1–4). Nothing in
+§§1–12 was deleted. Where this section disagrees with them, this section holds.
+
+### 13.1 Code facts that changed since `ac4e411`
+
+| §1 / §12 statement | State at `e15df58` |
+|---|---|
+| `E_cr/E_SN` 0.0675 vs 0.140 (240³) | After DB7/DB8: item 7 gives 0.52 / 0.67 / 0.74 of the self-similar 0.1398 (`PROGRESS_PHASEB.md`). Still a deficit; much smaller |
+| Mach bias ≈ 10 % at 64 cells per radius | Resolution study Q1: Mach error ~10 % / ~5 % at ~20 / ~60 cells per radius (`resolution_study/RESULTS.md`) |
+| D2 live-DSA AD vs FD 0.10 % | Re-measured 6.9 % (2026-09-26, adaptive sampling) → 5.1e-3 (2026-10-10) → **2.1e-3 (2026-10-20)**. **Not re-measured** after DB8 (CR-aware velocity Mach), the continuous normal surface and `mach_sampling_at_shock`, which are all DSA defaults now |
+| Pion emissivity normalisation | Fixed: `pion_decay_emissivity_per_ecr`, momentum power law, default α = 2.3; band maps and SEDs from stored states; α budget passes (> 99.99 % of injected energy at α < 2.05 in the SNR runs) |
+| Obliquity η(θ_Bn) | Still **not implemented** (`GAMMA_RAY_PLAN.md` "Optional") |
+| Hadronic / Coulomb losses | Still **not implemented** (no loss term in the module) |
+| Instrument model | Still **none** |
+| Superbubble (Case B) setup | **None** exists |
+| `stop_gradient` on `dt` | Still at `time_integration.py:607–625` |
+| Hardware | 10 × RTX 2080 Ti (11 GB) locally; H200s on compgpu12 (max 2 GPUs). The scope's "A100/H100 by extrapolation" can be measured now |
+
+### 13.2 Where the science case of §2 / §12.3 is weaker than stated
+
+1. **η(Ω) as a free field does not need the adjoint.** At η ≈ 0.1 the CR back-reaction on the
+   shock is a few per cent, so the map is close to linear in the patch efficiencies:
+   map ≈ Σᵢ ηᵢ × (response of patch i). That frozen Jacobian can be built in **one forward run** by
+   tagging the CRs injected in each patch as a passive scalar. A non-differentiable code (AREPO
+   included) can do the same. The "only a differentiable code has `Jᵀ`" argument (§2, §7) fails
+   for η(Ω). The "information through the dynamics" ablation will most likely show a small
+   effect. The informed rank of η(Ω) is set mainly by PSF and projection geometry, which can be
+   estimated without a simulation. Physically, the question is η(θ_Bn) with 2–3 parameters
+   (θ_crit, width), not a free field on the sphere.
+2. **Grey + one global α makes band maps scaled copies of each other** (`GAMMA_RAY_PLAN.md`
+   step 2). A CTAO TeV map then has no morphology the GeV map lacks. A "Fermi-LAT vs CTAO informed
+   rank" comparison is only a PSF / photon-count comparison, and TeV morphology (set by
+   energy-dependent escape) is exactly what grey cannot predict. Do not make this a headline.
+3. **The cloud density field δ(x) is where autodiff genuinely wins.** δ enters both directly
+   (map ∝ n_H e_cr) and through the dynamics (when and how strongly each parcel is shocked), with
+   P ~ 10³–10⁵. The adjoint is needed, and the frozen-dynamics ablation separates the two paths
+   cleanly. The risk is the gradient's validity window through the shock–cloud encounter
+   (KH/RT, §6 G2), which has to be measured first.
+4. **Case B (Cygnus-like superbubble) is not Paper 1.** Nothing exists. Termination-shock injection
+   still changes by 20–30 % between 96 and 192 cells (resolution study, 2026-11-17 reruns), and
+   overlapping shocks are the surface-reselection regime of item 16.
+5. **Losses matter for an IC 443-like target.** t_pp ≈ 7e7 yr / n gives ~7e4 yr at n = 10³ cm⁻³,
+   comparable to IC 443's age. The `GAMMA_RAY_PLAN.md` estimate ("irrelevant") holds for the
+   2 kyr, n ≤ 100 demo only. If the outline keeps "calorimetric limit" and Λ_coll, implement them;
+   otherwise drop both.
+6. **Streaming:** drop it from the claims ("diffusion" only, streaming off in every run shown).
+7. **G0 is a measurement, not a code change.** The `stop_gradient` on `dt` already returns the
+   gradient for the realised step schedule; D2's 2e-3 agreement with FD shows that works on that
+   setup. Report the schedule as a systematic; differentiating through `dt` is not worth it.
+
+### 13.3 Recommended Paper 1
+
+**Question.** *How well do γ-ray maps of an SNR–molecular-cloud system constrain CR injection and
+transport, which cells of the shock and cloud does the observed flux respond to, and how much of
+that information arrives through the dynamics?*
+
+1. **Method + verification** (outline §§2–3). Exists; regenerate the figures at a frozen paper
+   commit. Limitations stated in the text: Mach bias, `E_cr` deficit, cross-field leak, no
+   streaming.
+2. **Gradient verification** (outline §4):
+   - G0 measured on the grey module (step schedule as a systematic);
+   - AD vs FD through live DSA on an expanding **and** a stalled shock (D2 and item 16 setups),
+     re-measured with the current DSA defaults;
+   - the validity window (tangent growth vs SNR age) on the 3D SNR–cloud fiducial, two resolutions.
+3. **Low-dimensional recovery on a magnetised SNR–cloud system** (outline Case A): η, κ,
+   n_cloud and the obliquity parameters (θ_crit, width), P ≈ 5–6:
+   - MAP + Laplace posterior from a mock map with a simple instrument model;
+   - the **AD Fisher matrix beside the FD one** (fp64; fp32 reported);
+   - the **frozen-dynamics ablation** (Fisher with the hydro response frozen vs live).
+4. **One adjoint sensitivity map**: ∂(flux in a region)/∂(initial density, injection) per cell.
+   One reverse pass; the figure a finite-difference code cannot make. This replaces the outline's
+   scalar ∂(γ-ray output)/∂η (Fig. 5).
+5. **~~Stretch goal: the δ(x) Gauss–Newton spectrum~~ — dropped 2026-11-17, fails all three gates (§13.7).** (effective number of constrained density
+   modes, live vs frozen dynamics). Only if the cost gate (§13.5) and the validity window pass;
+   otherwise it moves to the Discussion as the motivation for Paper 2.
+
+**Dropped from Paper 1:** η(Ω) as a free field (point 1); the Fermi-vs-CTAO rank headline
+(point 2); Case B superbubble (point 4); CWB (Paper 2, §8, unchanged); streaming (point 6).
+
+### 13.4 New code needed
+
+| Piece | Size | Needed for |
+|---|---|---|
+| Hadronic + Coulomb losses (sink + 1/6 gas heating, Pfrommer et al. 2017a; coefficients to verify) | ~1 day | item 3, if "calorimetric" stays |
+| Obliquity η(θ_Bn) (`GAMMA_RAY_PLAN.md` "Optional"), opt-in, oblique planar test | ~1–2 days | item 3 |
+| Magnetised SNR–cloud fiducial (item 15 + uniform B, MHD) | ~1 day + runs | items 3–5 |
+| Instrument model: parametrised PSF + exposure + Poisson likelihood in JAX | ~2–3 days | items 3, 5 |
+| Injection efficiency as a per-cell multiplier field (for the sensitivity map) | ~0.5 day | item 4 |
+
+Roughly a week of code, before runs and gradient checks.
+
+### 13.5 First step: cost of one checkpointed reverse pass
+
+Everything in items 4–5 depends on what one reverse pass of the 3D SNR–cloud run costs. The
+δ(x) Gauss–Newton spectrum needs ~100–200 tangent + adjoint solves; if one reverse pass at 128³
+costs well over an hour on an H200, item 5 is not affordable and Paper 1 is items 1–4.
+Measurement on the local 2080 Ti: see §13.6.
+
+### 13.6 Measured: one checkpointed reverse pass on the item-15 SNR–cloud setup (2026-11-17)
+
+**Setup.** Item 15 unchanged (E_SN = 1e51 erg, n = 1, T = 1e4 K, 100× cloud + two 10× clumps,
+2 kyr, constant η = 0.1, current DSA defaults at `e15df58`), **float32**, one RTX 2080 Ti (11 GB).
+Loss L = 1–10 GeV pion luminosity (α = 2.3) from inside a 1.5 pc disc around the cloud's projected
+centre. One `jax.value_and_grad` w.r.t. (η, the full initial density field ρ₀), `BACKWARDS` mode
+(equinox checkpointed while loop). Script, logs and gradient fields:
+`/export/scratch/nknoell/paper_adjoint/` (`reverse_pass_cost.py`; nothing in the repo was changed).
+**Nested remat** (`REMAT=1/2`) is a scratch monkeypatch: `jax.checkpoint` around the
+injection stage and each RK stage interior (level 1), plus the per-axis reconstruction /
+Riemann / CR-work pieces (level 2).
+
+| N | steps | forward | reverse pass | reverse / forward | temp memory | note |
+|---|---|---|---|---|---|---|
+| 64 | 464 | 7.3 s | 120 s | 16× | 4.81 GiB | no remat, 20 checkpoints |
+| 64 | 464 | 7.3 s | 91 s | 12.5× | 1.70 GiB | remat 1, 20 checkpoints; gradient = no-remat to 0.4 % (max) / 0.6 % (L2), fp32 |
+| 112 | 1331 | 109 s | **1459 s (24 min)** | 13.4× | 7.89 GiB | remat 2, 8 checkpoints |
+| 128 | 1686 | 205 s | — | — | 38.4 / 39.7 GiB | no remat, 5 / 20 checkpoints: **does not fit 11 GB** |
+| 128 | 1686 | 205 s | — | — | 12.5 GiB (remat 1, 20 ckpt), 12.0 GiB (remat 2, 8 ckpt) | **OOM on 2080 Ti** (~10.4 GiB usable) |
+
+**Reading.**
+- Checkpoint storage is small (~1 GiB at 128³ for 20 checkpoints). The memory is the
+  backward pass of a single time step. Nested remat cuts it ~3× and is *faster*, not slower,
+  at 64³. Splitting the per-axis flux pieces (level 2) gained little, so the remaining peak is
+  probably in the DSA injection stage (shock finder + walk + spread). Not yet confirmed: that
+  needs an XLA buffer-assignment dump.
+- **128³ on a 2080 Ti: not without further remat.** On an H200 it fits even without remat.
+  Extrapolated, not measured: ~45 min per reverse pass at 128³ on a 2080 Ti-class GPU; on an
+  H200 (~8× the memory bandwidth, and room for more checkpoints) plausibly 5–10 min.
+- **Gauss–Newton cost (item 5), extrapolated:** 100–200 tangent + adjoint solves at 128³ ≈
+  15–30 GPU-hours on one H200. That is feasible but not cheap. The tangent (forward-mode) cost
+  through the checkpointed loop has **not** been measured.
+- **Near-linearity in η, measured:** dL/dη · η / L = 0.97 (64³) and 0.95 (112³), i.e. the map is
+  linear in the injection efficiency to 3–5 %. This supports §13.2 point 1.
+- **Resolution:** L(112³) / L(64³) = 4.8. The cloud's γ-ray flux is far from converged between
+  these two resolutions. Before any information-content number is quoted, the fiducial needs a
+  resolution check of the observable itself.
+- **Adjoint sensitivity map (first look):**
+  `pytests/cosmic_rays_grey/pics/paper_adjoint/sensitivity_drho0_N112.png`. ∂L/∂ρ₀ is non-zero
+  throughout the volume the blast wave has swept up. It is positive in and around the cloud, with
+  alternating-sign shells where density changes the shock's arrival. This is a single fp32 pass,
+  **not yet FD-checked**.
+
+**Consequences for §13.3.** Items 1–4 are unaffected; the 112³ pass already gives item 4's figure
+type. Item 5 needs the H200s (or remat of the injection stage plus ≤ 112³ on the 2080 Tis) and
+a measured tangent-solve cost before it is committed to. *(Superseded in part by §13.7: the
+density sensitivity of the CR map fails the FD check.)*
+
+### 13.7 Measured: the three gates for the δ(x) Gauss–Newton spectrum (2026-11-17)
+
+**Setup.** As §13.6, but with the cloud edge smoothed over a fixed **0.3 pc** instead of 2 cells, so
+the fiducial does not change with N. Parameter field δ = ln ρ_init − ln ρ_fid, nonzero in the cloud plus
+a 50 % margin. Test directions are Gaussian random fields with smoothing scale ℓ = 0.5 pc, normalised
+to unit standard deviation inside the cloud. Observable: the full projected 1–10 GeV map, and L
+(its sum over the 1.5 pc disc). Metrics are given pixel by pixel and after a Gaussian PSF of 0.44 pc
+(≈ 1′ at 1.5 kpc) and 2 pc. fp32 throughout; 2080 Tis. Scripts: `gates.py`,
+`diag_noise.py`, `diag_split.py` and `plot_gates.py` in `/export/scratch/nknoell/paper_adjoint/`;
+data in `data/gates/`. Figure: `pics/paper_adjoint/gates_gauss_newton.png`.
+
+**Gate 1 — tangent solve: cost passes; agreement with the simulator fails.**
+
+*Cost and consistency:*
+
+| N | JVP / forward | JVP memory | VJP / forward | dot test ⟨w, Jv⟩ vs ⟨Jᵀw, v⟩ |
+|---|---|---|---|---|
+| 64 | 2.20 | 0.44 GiB | 12.5 (remat 1) | 3.4e-5, 5.3e-6 |
+| 112 | 2.09 | 2.31 GiB | 13.4 (remat 2, 8 ckpt) | 1.1e-5, 3.3e-5 |
+| 128 | 2.18 | 3.63 GiB | — | — |
+| 160 | 2.14 | 6.55 GiB | — | — |
+
+- Forward mode works through the whole grey CR + DSA path, using the `FORWARDS` while loop (equinox's
+  checkpointed loop has no forward mode).
+- A JVP costs ~2.1 forward runs and fits a 2080 Ti up to at least 160³. A GN product (JVP + VJP) is
+  therefore ~15 forward runs, and the VJP dominates.
+- JVP and VJP are the same linear operator to 1e-5.
+- The η tangent reproduces the reverse-mode value (dL/dη·η/L = 0.975 / 0.948 / 0.946 / 0.947).
+
+*JVP vs central FD of the actual simulator, along a GRF direction (ε = 1e-2; stable for
+ε = 3e-2 … 3e-3):*
+
+| N | image (pixels) | image (2 pc PSF) | L | ‖Ju‖/‖F₀‖ |
+|---|---|---|---|---|
+| 64 | 1.00 | 1.06 | 1.87 | 0.020 |
+| 112 | 0.52 | 0.33 | 0.33 | 0.93 |
+| 128 | 0.80 | 0.74 | 0.75 | 1.02 |
+| 160 | 0.29 | 0.19 | 0.11 | 1.00 |
+
+*Diagnosis at 64³:*
+
+- **Not GPU noise.** Repeat runs differ by 1e-5 (relative).
+- **The difference is local to the cloud.** For ε ≥ 1e-3, 94–98 % of |F(εu) − F₀| lies inside the cloud disc.
+- **It is a jump, not a smooth response.** |ΔF|/ε is 4–7× the AD tangent at every ε from 1e-3 to 1e-1.
+- **The hydro is differentiable; the CR part is not.** Same runs, same direction:
+
+  | Projected observable | AD vs FD |
+  |---|---|
+  | ρ | 0.1 % |
+  | ρ² | 0.1 % |
+  | p_gas | 3.6 % |
+  | e_cr | 62 % |
+  | ρ·e_cr (the pion map) | 100 % |
+
+- **No single CR switch removes it.** Pion-map error with each switch group off:
+
+  | Variant | Error |
+  |---|---|
+  | baseline | 1.00 |
+  | adaptive sampling off | 0.87 |
+  | continuous-normal surface / sampling-at-shock off | 0.88 |
+  | hybrid entropy off | 1.00 |
+  | flux cap off | 1.00 |
+  | guard off | 1.00 |
+  | pressure-based Mach | 0.91 |
+  | KR13 η(M), continuous at M_min | 0.99 |
+  | all of the above off | 0.87–0.92 |
+
+**Reading.** The remaining non-differentiability is the shock finder itself: its zone masks and the
+discrete choice of shock/deposit cells along each normal. AD treats these as constants. In the
+simulator, a density perturbation flips them, moving injection between cells across the cloud's
+100× density edge. The jump term is O(1) of the response at 64–128³. It falls to ~0.2 (PSF) /
+0.1 (L) at 160³, but not monotonically (128³ is worse than 112³), so it cannot be extrapolated to
+"fine at production resolution". **The η derivative is unaffected** (η multiplies the injection after
+all discrete choices), which is why D2 and §13.6 passed.
+
+**Gate 2 — validity window: fails.** The linear prediction σJu is compared with the actual ΔF for
++σ perturbations, σ_lnρ = 0.1 … 1.5 (two GRF seeds); error measured on the 2 pc PSF image:
+
+| N | Seed | σ = 0.1 | 0.3 | 0.6 | 1.0 | 1.5 |
+|---|---|---|---|---|---|---|
+| 64 | 0 and 1 | ≥ 0.8 | ≥ 0.8 | ≥ 0.8 | ≥ 0.8 | ≥ 0.8 |
+| 112 | 0 | 0.39 | 0.20 | 0.17 | 0.47 | 1.22 |
+| 112 | 1 | 1.8 | 2.2 | 4.4 | 3.0 | 3.5 |
+
+- Linearising in ρ instead of ln ρ does not help.
+- At 112³ the response is large (σ = 0.1 already changes L by −5 % / −14 %) and in these runs negative
+  for every perturbation. The smooth cloud sits near a maximum of L, so the first-order term alone
+  misdescribes it.
+- There is no σ range in which the linearisation holds for both seeds. **With a molecular-cloud prior
+  (σ_lnρ ~ 1) the Gauss–Newton spectrum of δ(x) would describe the AD operator, not the simulator.**
+
+**Gate 3 — resolution: fails.** L in the 1.5 pc disc [1e33 erg/s]:
+
+| N (cloud radius in cells) | 48 (2.4) | 64 (3.2) | 80 (4) | 96 (4.8) | 112 (5.6) | 128 (6.4) | 160 (8) | 192 (9.6) |
+|---|---|---|---|---|---|---|---|---|
+| edge 0.3 pc | 0.139 | 0.161 | 0.270 | 0.582 | 0.751 | 0.885 | 1.226 | 1.638 |
+| edge 2 cells (item 15) | 0.112 | 0.186 | 0.658 | 0.799 | 0.889 | 0.918 | 1.037 | 1.164 |
+
+- With the fixed-width edge, L still grows ~linearly in N at 192³; the 2-cell series flattens only
+  because its cloud edge sharpens with N.
+- The total map grows 4.3 → 7.1 over the same range.
+- The cloud-response derivatives also drift with N. From FD at ε = 0.1, d ln L/dε is:
+
+  | N | Uniform ln ρ shift in the cloud | Dipole (front/back) |
+  |---|---|---|
+  | 48–64 | −0.02 … 0.03 | −0.01 … 0.03 |
+  | 112 | 0.13 | 0.12 |
+  | 192 | 0.40 | 0.06 |
+
+- This is the known non-convergence of inviscid shock–cloud problems at ≲ 100 cells per cloud radius
+  (Klein, McKee & Colella 1994). At ≤ 10 cells per radius no information-content number about the
+  cloud's density structure is resolution-independent.
+
+**Verdict on item 5.** Do not run the δ(x) Gauss–Newton spectrum. It fails gates 1–3 independently:
+1. The derivative w.r.t. density misses the shock finder's discrete jumps.
+2. The response is non-linear at prior-sized amplitudes.
+3. The fiducial is unconverged.
+
+Fixing (1) would need a smoothed shock finder (soft masks, soft cell selection), which is a research
+project of its own. Fixing (3) needs ≳ 50–100 cells per cloud radius, i.e. a cloud-zoom setup, not a
+20 pc box. Compute cost was *not* the blocker: tangent solves are cheap (2×).
+
+**Consequences for the rest of §13.3.**
+- **Item 4 (sensitivity map w.r.t. ρ₀):** the §13.6 figure is the AD operator and is *not* what the
+  simulator does (FD disagrees at O(1)). Use an **η(x) (per-cell injection) sensitivity map** instead:
+  η enters after the discrete choices, its tangent is validated (0.95–0.97 linear, AD = reverse), and
+  it needs the 0.5-day per-cell η field of §13.4.
+- **Item 3 (low-dim recovery):** n_cloud is a density parameter, so its AD derivative is suspect in the
+  same way. Validate AD vs FD for n_cloud (and θ_crit, if the obliquity switch is discrete) before
+  using the AD Fisher; otherwise use FD for those entries. η and κ are not affected by this finding;
+  κ is untested.
+- **Item 2 (gradient verification)** gains a concrete, publishable negative result: AD through a
+  shock-finder-based DSA is exact for injection parameters and biased at O(1) for parameters that
+  move the shocks. That belongs in the paper as the limitation, with the split table above.

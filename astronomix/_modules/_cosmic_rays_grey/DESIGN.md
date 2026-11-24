@@ -313,6 +313,44 @@ pass the physical kappa straight into `diffusion_coefficient` (`m5_cr_driven_out
 The `CosmicRayGreyParams.diffusion_coefficient` docstring ("physical CR diffusion coefficient
 kappa") contradicts this, because "physical kappa" means the `e_cr` diffusivity in the literature.
 
+#### Literature origin of the factor 3 (added 2026-11-23)
+
+The `kappa/3` convention came from Jiang & Oh 2018 (JO18), which contradicts itself:
+- Their flux equation (eqs. 5/9), `(1/V_m^2) dF_c/dt + grad(P_c) = -sigma_c [F_c - v (E_c + P_c)]`
+  with `P_c = E_c/3`, gives `F_c = -grad(P_c)/sigma_c = -grad(E_c)/(3 sigma_c)` in steady state
+  (fluid frame). So `e_cr` diffuses with `D = 1/(3 sigma_c)`.
+- Their own test solutions use exactly that: eq. 25 (`1 + 160 t / (3 sigma')`) and the ring test
+  (`D = sqrt(4 t / (3 sigma'_c))`).
+- But the text below eq. 10 calls `1/sigma'_c` "equivalent to kappa_p in equation 1", and Appendix
+  eq. 38 defines `kappa = 1/sigma'_c`. Setting `sigma = 1/kappa_phys` therefore diffuses 3x too slowly.
+
+Thomas & Pfrommer 2019 (MNRAS 485, 2977) derive the scattering term from pitch-angle scattering
+(eqs. 61-66): `(df_cr/dt)_scatt = -nu_bar f_cr = -(c^2/(3 kappa)) f_cr` with
+`kappa = c^2/(3 nu_bar)` (eq. 66); the gas force carries the same factor, `g_gri = b f_cr/(3 kappa)`
+(eq. 16). In flux-equation units, `sigma = 1/(3 kappa) = (gamma_cr - 1)/kappa`, and the steady
+state is `f_cr = -kappa grad(e_cr)`.
+
+The fix follows TP19 with `c -> v_red`: `nu = (gamma_cr - 1) v_red^2 / kappa`
+(`cr_grey_sources.py`, `kappa_step`). The same `(gamma_cr - 1)` enters the JO18 optical-depth
+wave-speed reduction (`cr_wave_speed_reduction`, `kappa_dx`).
+
+TP19's other criticisms of JO18, checked against our diffusion-only scheme:
+- *Gas energy bookkeeping.* JO18 push the gas with the scattering force
+  `sigma_c [F_c - v (E_c + P_c)]` but charge its energy `-v . grad(P_c)`. The two differ by
+  `v . (1/V_m^2) dF_c/dt`, which becomes spurious heating/cooling, enhanced by a reduced `V_m`.
+  Not present here: the gas gets `-grad(P_cr)` with its matching work `-v . grad(P_cr)`
+  (`cr_pressure_gradient_source`), which is also TP19's own conservation limit (their eq. 23,
+  CR inertia neglected).
+- *Flux frame.* JO18 evolve a lab-frame `F_c` relaxing toward `v (E_c + P_c)`. TP19 (eqs. 43/44)
+  and this code evolve the comoving flux: `e_cr` flux `u e_cr + F_cr`, source `-P_cr div(u)`,
+  `F_cr` flux `u F_cr + v_red^2 P_cr`, relaxing toward 0.
+- *Scattering to `O(nu_bar v_a^2/c^2)`* (TP19 Sec. 4.3, eq. 64): needed only for Galilean-invariant
+  streaming; out of scope here.
+- *Omitted pseudo-force* `-(b . grad u) . (b f_cr)` on the right of TP19 eq. 44. Relative to the
+  scattering term it is `~3 kappa |grad u| / v_red^2`: ~1% (v_red = 3000 km/s) and ~0.1%
+  (1e4 km/s) for M7 (`kappa = 1e28`, `|grad u| ~ 100 km/s / 100 pc`). Physically it is
+  suppressed by `1/c^2`, so adding it with `v_red` would inflate an artificial term. Not added.
+
 ### Problem 2: anisotropic diffusion is dominated by numerical diffusion across B
 
 M7 (MHD) gets anisotropy by projecting `F_cr` onto `b` once per step (`anisotropic_flux_projection`)

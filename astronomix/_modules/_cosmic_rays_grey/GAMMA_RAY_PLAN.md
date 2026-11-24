@@ -205,6 +205,34 @@ It is what sets SNR γ-ray *morphology* (polar caps vs a full shell). It is also
 
 Test: oblique planar MHD shocks θ = 0…90° (`cr_oblique_planar_shocks.py`): injected/ζ(M) ≈ g(θ).
 
+**DONE 2026-11-24 (switch + planar test + MHD Sedov morphology, see below).**
+- Constants checked against Pais et al. 2018 (arXiv:1805.00128) Eq. 7: θ_crit = π/4, δ = π/18,
+  cos θ = n̂_s·b̂ folded to [0, π/2] (Eqs. 5–6), B taken from the pre-shock region. Their test: Sedov in a
+  uniform B gives a constant eccentricity 0.25 ± 0.02 (ζ0 = 0.5) and a mean efficiency 0.302 ζ0 for a sphere.
+- Code: `CosmicRayGreyConfig.dsa_obliquity_dependence` (default False, MHD only, needs adaptive sampling),
+  `CosmicRayGreyParams.dsa_obliquity_theta_crit/width`; `cr_grey_injection.obliquity_efficiency_factor`,
+  `shock_obliquity`, `dsa_obliquity_factor`. ζ(M)·g(θ) is used in the injection, in the CR-aware Hugoniot
+  and in `dsa_injection_rate_by_slope`. B is read at the walk's pre-shock sample. The normal is −∇T of the
+  σ = 2 smoothed temperature (the DB7 area normal); the finder's own normal is off by 3–5° at (2,1,0),
+  which near θ_crit would be a 0.13–0.20 error in g.
+- Test `pytests/cosmic_rays_grey/cr_dsa_obliquity_mhd.py` (new file; `cr_oblique_planar_shocks.py` is the
+  grid-obliquity test): planar M = 10, β = 100 shocks, normals (1,0,0) and (2,1,0), θ = 0–90°, 64³, PASSES.
+  The angle is within 0.53°. Injected on/off matches g(θ_true) within 0.016 (at 45°, (2,1,0)) and within
+  0.003 away from 45°. AD/FD (θ_crit) is 8e-4. B read at the surface cell instead would be 8–14° off. With
+  the default CR-aware Hugoniot, on/off is ~1.5 % higher at 45°, as expected. Figure
+  `pics/gamma_obliquity/dsa_obliquity_mhd.png`, raw `/export/scratch/nknoell/gamma_obliquity/`.
+- Switch off: `cr_dsa_slope_budget.py` still matches the injection to 3.4e-13.
+- **MHD Sedov DONE 2026-11-24.** Test `pytests/cosmic_rays_grey/cr_dsa_obliquity_sedov_mhd.py`: uniform B_z,
+  β = 100, ζ = 0.1, M ~ 200, 128³, PASSES.
+  - Global injected on/off is 0.3033, against the sphere average ⟨g⟩ = 0.3017 (Pais Eq. 20: 0.302).
+  - Per 5° polar-angle bin the ratio is within 0.034 of g.
+  - E_cr(t_end) on/off is 0.312.
+  - The angle read is pulled toward 45° by ≤1.9° (3.1° at 64³; first order in N).
+  - The γ-ray proxy map viewed ⊥B shows two polar caps and a dark equatorial belt; viewed ∥B it is a dim
+    filled disk.
+  - Figure `pics/gamma_obliquity/dsa_obliquity_sedov_mhd.png`; final states in
+    `/export/scratch/nknoell/gamma_obliquity/sedov_N128_final_states.npz`.
+
 ---
 
 ## 4. Effort

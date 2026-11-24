@@ -46,7 +46,11 @@ from astronomix.variable_registry.registered_variables import RegisteredVariable
 
 # astronomix functions
 from astronomix.shock_finder3D.pfrommer_shock_finder import find_shocks_pfrommer
-from astronomix.shock_finder3D._surface_area import column_area_weights, surface_area_weights
+from astronomix.shock_finder3D._surface_area import (
+    _smoothed_temperature_gradient,
+    column_area_weights,
+    surface_area_weights,
+)
 from astronomix.shock_finder3D._shock_zones import sample_along_direction
 from astronomix.shock_finder3D._energy_dissipation import (
     _thermalization_efficiency,
@@ -323,13 +327,103 @@ def dsa_efficiency_of_mach(cr_config, cr_params):
     return efficiency_of_mach
 
 
-def dsa_mach_and_flux(primitive_state, sf_result, config, params, registered_variables):
+def obliquity_efficiency_factor(theta, theta_crit, width):
+    """``g(theta) = [tanh((theta_crit - theta) / width) + 1] / 2``, the shape
+    of the DSA ion efficiency with the shock obliquity ``theta`` in [0, pi/2]
+    (Pais et al. 2018, MNRAS 478, 5278, Eq. 7, with ``zeta_0`` factored out;
+    a fit to Caprioli & Spitkovsky 2014)."""
+    return 0.5 * (jnp.tanh((theta_crit - theta) / width) + 1.0)
+
+
+def shock_obliquity(primitive_state, sf_result, registered_variables, normal_smoothing=2.0):
+    """Angle ``theta_Bn`` in [0, pi/2] between the shock normal and the
+    upstream magnetic field, ``arccos(|n_s . b|)`` (Pais et al. 2018,
+    Eqs. 5-6), with B read at the adaptive walk's pre-shock sample
+    (``sf_result.pre_shock_steps``) -- not at the surface cell, where the
+    smeared shock has already refracted the field towards the shock plane.
+
+    The normal is ``-grad T`` of the temperature smoothed with a Gaussian of
+    ``normal_smoothing`` cells (the DB7 area-weight normal,
+    ``shock_finder3D._surface_area``), within 0.5 deg at planar shocks; the
+    finder's own ``-grad T`` is off by 3-6 deg at planar shocks oblique to
+    the grid and 5-7 deg on the Sedov shell, which near theta_crit is a 15-30%
+    error in ``g``. ``normal_smoothing=None`` uses the finder's normal.
+
+    Computed as ``arctan2(|b x n|, |b . n|)``, which keeps the derivative
+    finite at theta = 0. Where ``|B|`` is zero the obliquity is undefined;
+    0 is returned there (no suppression).
+
+    Returns:
+        ``(theta, |B_pre|)`` per cell (meaningful at shock-surface cells only).
+    """
+    if sf_result.pre_shock_steps is None:
+        raise ValueError(
+            "the shock obliquity needs dsa_adaptive_shock_sampling (pre-shock sample points)"
+        )
+    walk = jax.lax.stop_gradient(sf_result.shock_direction)
+    if normal_smoothing is None:
+        normal = walk
+    else:
+        grad = _smoothed_temperature_gradient(
+            primitive_state[registered_variables.pressure_index],
+            primitive_state[registered_variables.density_index],
+            normal_smoothing,
+        )
+        norm = jnp.sqrt(jnp.sum(grad**2, axis=0))
+        normal = -grad / jnp.where(norm > 0.0, norm, 1.0)
+    b_pre = [
+        sample_along_direction(primitive_state[i], walk, sf_result.pre_shock_steps)
+        for i in registered_variables.magnetic_index
+    ]
+    b_dot_n = sum(b * n for b, n in zip(b_pre, normal))
+    b_sq = sum(b * b for b in b_pre)
+    tiny = jnp.finfo(b_sq.dtype).tiny
+    magnetised = b_sq > 1e3 * tiny
+    b_sq_safe = jnp.where(magnetised, b_sq, 1.0)
+    b_dot_n = jnp.where(magnetised, b_dot_n, 1.0)
+    # |b x n|^2 = |b|^2 - (b . n)^2 for unit n; small floor keeps sqrt' finite
+    cross = jnp.sqrt(jnp.maximum(b_sq_safe - b_dot_n**2, 1e-12 * b_sq_safe))
+    theta = jnp.where(magnetised, jnp.arctan2(cross, jnp.abs(b_dot_n)), 0.0)
+    return theta, jnp.sqrt(b_sq)
+
+
+def dsa_obliquity_factor(primitive_state, sf_result, config, params, registered_variables):
+    """Per-cell factor on ``zeta(M)`` from the shock obliquity
+    (``dsa_obliquity_dependence``): ``g(theta_Bn)`` of
+    :func:`obliquity_efficiency_factor` at the :func:`shock_obliquity` angle,
+    or ``None`` when the switch is off."""
+    cr_config = config.cosmic_ray_grey_config
+    if not cr_config.dsa_obliquity_dependence:
+        return None
+    if not config.mhd:
+        raise ValueError("dsa_obliquity_dependence needs mhd=True")
+    cr_params = params.cosmic_ray_grey_params
+    theta, _ = shock_obliquity(
+        primitive_state, sf_result, registered_variables,
+        normal_smoothing=cr_config.dsa_area_normal_smoothing,
+    )
+    return obliquity_efficiency_factor(
+        theta, cr_params.dsa_obliquity_theta_crit, cr_params.dsa_obliquity_width
+    )
+
+
+def _efficiency_with_obliquity(efficiency_of_mach, obliquity_factor):
+    if obliquity_factor is None:
+        return efficiency_of_mach
+    return lambda mach: efficiency_of_mach(mach) * obliquity_factor
+
+
+def dsa_mach_and_flux(
+    primitive_state, sf_result, config, params, registered_variables, obliquity_factor=None
+):
     """Mach number and dissipated thermal-energy flux per shock-surface cell
     that DSA injection uses, from the finder result of
     ``find_shocks_pfrommer(..., **dsa_shock_finder_kwargs(cr_config))``: the
     finder's own, or with ``dsa_mach_cr_aware`` (Phase B DB8) recomputed from
     its velocity jump with the CR-loaded Hugoniot. For callers (tests,
     diagnostics) that need the same values as ``inject_crs_at_shocks``.
+    ``obliquity_factor`` (:func:`dsa_obliquity_factor`) scales the efficiency
+    the CR-aware Hugoniot assumes.
 
     Returns:
         ``(mach_numbers, thermal_energy_flux)``, zero away from injecting cells.
@@ -359,7 +453,8 @@ def dsa_mach_and_flux(primitive_state, sf_result, config, params, registered_var
         sf_result.pre_shock_pressure, 1e-30
     )
     mach_numbers, _ = cr_aware_velocity_mach(
-        sf_result.mach_numbers, cr_ratio, dsa_efficiency_of_mach(cr_config, cr_params),
+        sf_result.mach_numbers, cr_ratio,
+        _efficiency_with_obliquity(dsa_efficiency_of_mach(cr_config, cr_params), obliquity_factor),
         cr_params.dsa_mach_min, gamma_gas, cr_params.gamma_cr,
     )
     valid = mach_numbers > cr_params.dsa_mach_min
@@ -406,9 +501,12 @@ def dsa_injection_rate_by_slope(
         mach_min=cr_params.dsa_mach_min, gamma_gas=gamma_gas,
         **dsa_shock_finder_kwargs(cr_config),
     )
-    mach, flux = dsa_mach_and_flux(primitive_state, sf_result, config, params, registered_variables)
+    g = dsa_obliquity_factor(primitive_state, sf_result, config, params, registered_variables)
+    mach, flux = dsa_mach_and_flux(
+        primitive_state, sf_result, config, params, registered_variables, obliquity_factor=g
+    )
     rate = (
-        dsa_efficiency_of_mach(cr_config, cr_params)(mach) * flux
+        _efficiency_with_obliquity(dsa_efficiency_of_mach(cr_config, cr_params), g)(mach) * flux
         * dsa_area_weights(primitive_state, sf_result, cr_config, registered_variables)
         * config.grid_spacing ** (config.dimensionality - 1)
     )
@@ -496,6 +594,9 @@ def inject_crs_at_shocks(
     dissipated flux are recomputed from the finder's velocity jump with the
     CR-loaded Hugoniot (``cr_aware_velocity_mach``) before the efficiency is
     applied.
+
+    With ``dsa_obliquity_dependence`` (MHD, opt-in) the efficiency is
+    multiplied by ``g(theta_Bn)`` (:func:`dsa_obliquity_factor`).
     """
     cr_params = params.cosmic_ray_grey_params
     cr_config = config.cosmic_ray_grey_config
@@ -511,9 +612,16 @@ def inject_crs_at_shocks(
         **dsa_shock_finder_kwargs(cr_config),
     )
 
-    efficiency_of_mach = dsa_efficiency_of_mach(cr_config, cr_params)
-    mach_numbers, thermal_energy_flux = dsa_mach_and_flux(
+    # obliquity (opt-in, MHD): zeta(M) g(theta_Bn), also in the CR-aware Hugoniot
+    obliquity_factor = dsa_obliquity_factor(
         primitive_state, sf_result, config, params, registered_variables
+    )
+    efficiency_of_mach = _efficiency_with_obliquity(
+        dsa_efficiency_of_mach(cr_config, cr_params), obliquity_factor
+    )
+    mach_numbers, thermal_energy_flux = dsa_mach_and_flux(
+        primitive_state, sf_result, config, params, registered_variables,
+        obliquity_factor=obliquity_factor,
     )
 
     delta_e_cr_density = (
