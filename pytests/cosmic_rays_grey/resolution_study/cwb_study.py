@@ -163,15 +163,18 @@ def main():
     ap.add_argument("--name", default=None)
     ap.add_argument("--kappa", type=float, default=None, help="CR diffusion coefficient (extension D)")
     ap.add_argument("--vred", type=float, default=None, help="reduced_streaming_speed (extension D)")
+    ap.add_argument("--advective", action="store_true",
+                    help="CRs advected with the gas: no F_cr relaxation, v_red 0 (G7 gallery)")
     ap.add_argument("--gpu-diag", action="store_true",
                     help="per-snapshot diagnostics on the GPU (gpu_diag.py) instead of host numpy")
     args = ap.parse_args()
     gpu = require_pinned_gpu()
-    transport = args.kappa is not None or args.vred is not None
+    transport = args.kappa is not None or args.vred is not None or args.advective
     InjectionAccumulator.install(
         coarse_cells=32, work_bins=(args.n, np.zeros(args.n**3, int), 1) if transport else None)
     state, config, params, hd, rv = build_cwb(args.n, args.zeta if not args.kr13 else cwb.DSA_EFFICIENCY,
-                                              kappa=args.kappa, vred=args.vred)
+                                              kappa=args.kappa, vred=args.vred,
+                                              advective=args.advective)
     if args.kr13:
         cr = config.cosmic_ray_grey_config._replace(dsa_efficiency_model=DSA_EFFICIENCY_KANG_RYU_2013)
         config = config._replace(cosmic_ray_grey_config=cr)

@@ -125,11 +125,14 @@ def build_sedov_ss(num_cells, zeta, p_ambient=item7.P_AMBIENT, r_start=0.15, kr1
     return state, config, params, helper_data, rv
 
 
-def build_cwb(num_cells, zeta, kappa=None, vred=None):
-    """The CWB of ``_cwb_setup.run_cwb`` (defaults) with efficiency ``zeta``."""
-    state, config, params, helper_data, rv = _cwb_setup.build_cwb(
-        num_cells, dsa_efficiency=zeta,
-        **({} if kappa is None else {"diffusion_coefficient": float(kappa)}))
+def build_cwb(num_cells, zeta, kappa=None, vred=None, advective=False):
+    """The CWB of ``_cwb_setup.run_cwb`` (defaults) with efficiency ``zeta``.
+    ``advective``: no F_cr relaxation and ``v_red`` 0 (CRs carried with the gas; G7 gallery)."""
+    if advective:
+        kwargs, vred = {"diffusion_coefficient": None}, 0.0
+    else:
+        kwargs = {} if kappa is None else {"diffusion_coefficient": float(kappa)}
+    state, config, params, helper_data, rv = _cwb_setup.build_cwb(num_cells, dsa_efficiency=zeta, **kwargs)
     if vred is not None:
         params = params._replace(cosmic_ray_grey_params=params.cosmic_ray_grey_params._replace(
             reduced_streaming_speed=float(vred)))

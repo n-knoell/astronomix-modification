@@ -5,6 +5,13 @@ continuous-normal DSA surface default + re-baselined registry) plus the uncommit
 `_cwb_setup.build_cwb` split; every output file carries `stamp_git_head` /
 `stamp_git_diff_sha1`. From C0 on (2026-11-05) also the `_wind_ei3D` normalisation fix.
 
+> **Being redone (2026-11-17).** The CWB, wind (W) and S-SS-diffusion runs are being rerun
+> with code e15df58 (DB13 entropy fix + finder option `dsa_sampling_at_shock`; RERUN_LIST.md).
+> Until the re-analysis is in, the numbers in C1-C5, the CWB part of X2, D1, the S-SS part
+> of D2 / D4, the CWB / W rows of Q1-Q5 and figures C*, D1, D_wind*, D2_ss, G2-G4 come from
+> the old states. Unaffected: S0-S5, X1, the Sedov part of X2, S-CP diffusion (probe: keep,
+> D2), the H200 sections.
+
 ## Summary: answers to Q1-Q5 (2026-11-05)
 
 - **Q1 Hydro.** Sedov radius and speed are converged to < 1% at every N used (the front
@@ -690,6 +697,13 @@ time; (f) false-positive fraction. Readings:
   snapshots, with injection up to 2×, while the CR precursor forms from the precursor-free
   initial state. It is gone by R/dx ≈ 35.
 - S-CP: M50 / M50_adv falls smoothly with R/dx (to 0.97-0.98 at λ 0.1); no false positives.
+  **Probe with the 2026-11-16 changes (entropy fix A = DB13, finder option B; code e15df58,
+  run 2026-11-17, `RAW/cp_probe_compare.py`):** λ 0.1 at 128³ rerun, new vs stored, with the
+  stored 128³ → 192³ difference in brackets. ζ 0.1: M50 max over time 0.2% (4.9%), M50 at end
+  -0.16% (+0.69%), injected +0.26% (+6.6%), E_cr at end +0.14% (+9.1%). KR13: 1.5% (5.7%),
+  -0.19% (+0.44%), +0.14% (+9.0%), -0.02% (+9.9%). All below the resolution step, so the S-CP
+  diffusion runs are kept (RERUN_LIST.md Sec. 4); the probe files are in
+  `RAW/sedov/cp_probe_20261117/N128/`, the ladder keeps the stored files.
 - E_cr / (E_cr0 + injected) (S-SS 192³) ends at 0.61 advective, 0.87 / 0.92 / 0.95 (λ 0.03 / 0.1
   / 0.3): with diffusion the interior adiabatic loss of the initial CR content is largely offset.
 
